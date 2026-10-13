@@ -1,0 +1,30 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# 测试与缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 环境与凭据（绝不提交）
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+*.pem
+*.key
+credentials.*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
