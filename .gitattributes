@@ -1,0 +1,2 @@
+# 统一行尾为 LF，消除跨平台噪音
+* text=auto eol=lf
