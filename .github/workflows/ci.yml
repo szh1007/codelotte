@@ -22,7 +22,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # 注意：setup-uv 在 v7 之后不再发布浮动主版本 tag（无 v8/v9/v10 ref），
+      # 必须用精确版本 pin；升级时手动改这里（或后续接 Dependabot）
+      - uses: astral-sh/setup-uv@v10.3.0
       - name: Sync dependencies
         run: uv sync --locked
       - name: Lint
