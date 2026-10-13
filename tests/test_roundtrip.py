@@ -116,7 +116,9 @@ def _make_body_handler(sse_body: bytes) -> type[BaseHTTPRequestHandler]:
     return _BodyHandler
 
 
-def _run_cli_against(port: int, prompt: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _run_cli_against(
+    port: int, prompt: str, tmp_path: Path, *extra_args: str
+) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "PYTHONUTF8": "1",
@@ -125,7 +127,7 @@ def _run_cli_against(port: int, prompt: str, tmp_path: Path) -> subprocess.Compl
         "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
     }
     return subprocess.run(
-        [sys.executable, "-m", "codelotte", "-p", prompt],
+        [sys.executable, "-m", "codelotte", "-p", prompt, *extra_args],
         capture_output=True,
         check=False,
         text=True,
@@ -170,6 +172,33 @@ def test_reasoning_content_is_recorded(tmp_path: Path) -> None:
     )
     assert assistant["reasoningContent"] == "先想再答"
     assert assistant["content"] == "答案"
+    assert "先想" not in result.stdout  # 默认不打印思考过程
+    assert "先想" not in result.stderr
+
+
+def test_show_reasoning_streams_to_stderr_without_polluting_stdout(tmp_path: Path) -> None:
+    """-r/--reasoning：思考过程走 stderr，stdout 保持"只有答案"（可安全重定向/管道）。
+
+    短 flag 写在提示词之后，同时覆盖 cli 的 argparse 透传路径（-p 打头但提示词不以 "-" 开头）。
+    """
+    body = _sse(
+        '{"choices":[{"delta":{"reasoning_content":"先想"},"index":0}]}',
+        '{"choices":[{"delta":{"reasoning_content":"再答"},"index":0}]}',
+        '{"choices":[{"delta":{"content":"答案"},"index":0}]}',
+        '{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+        '{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":5}}',
+        "[DONE]",
+    )
+    server, port = _serve_once(body)
+    try:
+        result = _run_cli_against(port, "问题", tmp_path, "-r")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "答案\n"  # stdout 只有答案
+    assert "先想再答\n\n" in result.stderr  # 思考结束后空一行再输出回答
+    assert "\x1b" not in result.stderr  # 非终端不写 ANSI 转义序列
 
 
 def test_dash_leading_prompt_is_accepted(tmp_path: Path) -> None:
