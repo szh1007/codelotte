@@ -212,3 +212,41 @@ def test_truncated_stream_saves_partial_answer_and_exits_nonzero(tmp_path: Path)
     )
     assert assistant["content"] == "前半"
     assert assistant["stopReason"] == "interrupted"  # 记录是事实源：部分内容也落盘
+
+
+def test_dotenv_is_loaded_without_env_file_flag(tmp_path: Path) -> None:
+    """验收：项目目录里放好 .env 后，直接 `codelotte -p ...` 即可（无需 --env-file）。"""
+    server, port = _serve_once(SSE_BODY)
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".env").write_text(
+        "DEEPSEEK_API_KEY=from-dotenv\n"
+        f"CODELOTTE_BASE_URL=http://127.0.0.1:{port}\n"
+        "CODELOTTE_SESSION_DIR=" + str(tmp_path / "sessions") + "\n",
+        encoding="utf-8",
+    )
+    empty_home = tmp_path / "home"
+    empty_home.mkdir()
+    env = {
+        "PYTHONUTF8": "1",
+        "CODELOTTE_HOME": str(empty_home),
+        "PATH": os.environ.get("PATH", ""),
+        "SystemRoot": os.environ.get("SystemRoot", ""),
+    }
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "codelotte", "-p", "用一句话解释递归"],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            env=env,
+            cwd=project,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.returncode == 0, result.stderr
+    assert "".join(ANSWER_PARTS) in result.stdout
+    assert len(list((tmp_path / "sessions").rglob("*.jsonl"))) == 1

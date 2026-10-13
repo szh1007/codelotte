@@ -7,7 +7,7 @@ import asyncio
 import sys
 
 from codelotte import __version__
-from codelotte.config import ConfigError
+from codelotte.config import ConfigError, get_home_dir, load_env_files
 from codelotte.providers.base import ProviderError
 from codelotte.run import run_once
 
@@ -59,6 +59,7 @@ def _run_prompt(prompt: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     _reconfigure(sys.stdout)
     _reconfigure(sys.stderr)
+    load_env_files(home=get_home_dir())  # 自动加载 ~/.codelotte/.env 与 ./.env
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     # 兼容以 "-" 开头的提示词（如 `codelotte -p --dry-run`）：
     # argparse 会把 --dry-run 当选项；当 -p/--print 是首个参数时，其后全部按提示词处理

@@ -70,8 +70,9 @@ def test_version_matches_pyproject() -> None:
     assert data["project"]["version"] == codelotte.__version__
 
 
-def test_missing_api_key_fails_with_readable_error() -> None:
+def test_missing_api_key_fails_with_readable_error(tmp_path: Path) -> None:
     env = {k: v for k, v in child_env().items() if k != "DEEPSEEK_API_KEY"}
+    env["CODELOTTE_HOME"] = str(tmp_path / "home")  # 隔离用户级 .env
     result = subprocess.run(
         [sys.executable, "-m", "codelotte", "-p", "hi"],
         capture_output=True,
@@ -80,7 +81,7 @@ def test_missing_api_key_fails_with_readable_error() -> None:
         encoding="utf-8",
         timeout=TIMEOUT_SECONDS,
         env=env,
-        cwd=PROJECT_ROOT,
+        cwd=tmp_path,  # 空目录：不加载项目级 .env
     )
     assert result.returncode == 2
     assert "DEEPSEEK_API_KEY" in result.stderr
