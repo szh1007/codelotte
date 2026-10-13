@@ -35,7 +35,7 @@
 
 | # | 标题 | Blocked by | 状态 |
 |---|---|---|---|
-| [01](01-project-scaffold-cli-ci.md) | 项目骨架 + 可安装 CLI + 测试与 CI 底座 | None | ready-for-agent |
+| [01](01-project-scaffold-cli-ci.md) | 项目骨架 + 可安装 CLI + 测试与 CI 底座 | None | ✅ done（仅 CI 推送验证待办） |
 | [02](02-first-end-to-end-roundtrip.md) | 一次真实的一问一答（全链路首穿） | 01 | ready-for-agent |
 | [03](03-agent-loop-read-tool.md) | Agent 循环 + read 工具 | 02 | ready-for-agent |
 | [04](04-write-edit-bash-tools.md) | write / edit / bash 工具 + 本地执行器 | 03 | ready-for-agent |

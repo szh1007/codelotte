@@ -6,11 +6,11 @@
 
 **Blocked by:** None（可立即开始）
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-14；commit c66567e + 代码评审修复）——唯一未验证项：CI 实际运行结果待推送后确认
 
-- [ ] `uv run codelotte --version` 输出正确版本号并正常退出（退出码 0）
-- [ ] `uv run pytest` 全绿；至少含一个冒烟测试（断言 `--version` 的输出）
-- [ ] `uv.lock` 已生成并纳入版本控制；`pyproject.toml` 含 `[project.scripts]` 入口
-- [ ] 推送后 GitHub Actions 自动运行测试工作流且通过
-- [ ] `.gitattributes` 强制 LF 行尾；`README` 尚不存在属正常（W4 建立）
-- [ ] `.env.example` 含 `DEEPSEEK_API_KEY=your-key-here` 占位符，且无任何真实密钥入库
+- [x] `uv run codelotte --version` 输出正确版本号并正常退出（退出码 0）——实测 `codelotte 0.1.0` / exit 0
+- [x] `uv run pytest` 全绿；至少含一个冒烟测试（断言 `--version` 的输出）——4 个测试：--version、无参数帮助路径、console script 入口、版本一致性
+- [x] `uv.lock` 已生成并纳入版本控制；`pyproject.toml` 含 `[project.scripts]` 入口
+- [ ] 推送后 GitHub Actions 自动运行测试工作流且通过 —— ⏳ 工作流已就绪（ubuntu + windows 双平台矩阵、ruff/pyright/pytest 三关），待 push 后勾选
+- [x] `.gitattributes` 强制 LF 行尾；`README` 尚不存在属正常（W4 建立）
+- [x] `.env.example` 含 `DEEPSEEK_API_KEY=your-key-here` 占位符，且无任何真实密钥入库

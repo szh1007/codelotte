@@ -3,6 +3,7 @@ name = "codelotte"
 version = "0.1.0"
 description = "A minimal-core, extensible terminal coding agent (portfolio project)"
 requires-python = ">=3.13"
+license = "MIT"
 dependencies = []
 
 [project.scripts]
@@ -23,9 +24,13 @@ build-backend = "uv_build"
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py313"
 line-length = 120
 
+[tool.ruff.lint]
+# 显式启用 E501 行宽检查：ruff 默认规则集不含 E501，
+# 不启用则 line-length 只是一句无人执行的声明。target-version 交给
+# ruff 从 requires-python 推断（避免两处版本声明漂移）。
+select = ["E4", "E7", "E9", "E501", "F"]
+
 [tool.pyright]
-pythonVersion = "3.13"
-typeCheckingMode = "standard"
+# 不显式 pin 版本/严格度：让 pyright 跟随解释器（.python-version 已锁 3.13）

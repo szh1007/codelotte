@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     parser.parse_args(argv)
-    # 无参数时暂打印帮助；后续票据接入 `-p` 无头模式与交互式 TUI
+    # 当前阶段尚无任何子命令：唯一可达路径是"无参数"，打印帮助并成功退出。
+    # 票据 02 起在此按解析结果分发（`-p` 无头模式 / 交互式 TUI）。
     parser.print_help()
     return 0
