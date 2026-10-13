@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "A minimal-core, extensible terminal coding agent (portfolio project)"
 requires-python = ">=3.13"
 license = "MIT"
-dependencies = []
+dependencies = [
+    "httpx2>=2.13.1",
+]
 
 [project.scripts]
 codelotte = "codelotte.cli:main"

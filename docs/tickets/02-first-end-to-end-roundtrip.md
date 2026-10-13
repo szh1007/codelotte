@@ -6,11 +6,11 @@
 
 **Blocked by:** 01（项目骨架 + 可安装 CLI + 测试与 CI 底座）
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-14；含真机验收：`codelotte -p` 实测 exit=0、会话落盘含 usage、UTF-8 输出修正）
 
-- [ ] `codelotte -p "用一句话解释递归"` 流式打印回答后正常退出（退出码 0）
-- [ ] API Key 仅从环境变量读取；缺失时给出可读的错误提示而非堆栈
-- [ ] 会话 JSONL 文件生成：含 session 头（schema 版本/工作目录）与 message 记录
-- [ ] usage 记录完整（输入 token / 输出 token / 缓存命中 token）
-- [ ] SSE 解码器有单元测试，覆盖分片乱序、空回复、`[DONE]` 边界
-- [ ] 429/5xx/网络错误有指数退避重试且可测（不改变请求前缀，保持缓存友好）
+- [x] `codelotte -p "用一句话解释递归"` 流式打印回答后正常退出（退出码 0）—— 真机实测两轮通过（DeepSeek 实际调用）
+- [x] API Key 仅从环境变量读取；缺失时给出可读的错误提示而非堆栈 —— 无 Key 时退出码 2 + 中文提示（有测试）
+- [x] 会话 JSONL 文件生成：含 session 头（schema 版本/工作目录）与 message 记录 —— 实测落盘 `~/.codelotte/sessions/--D--__WorkSpace__-codelotte--/`
+- [x] usage 记录完整（输入 token / 输出 token / 缓存命中 token）—— 实测 `in=34 out=114 hit=0 miss=34`
+- [x] SSE 解码器有单元测试，覆盖分片乱序、空回复、`[DONE]` 边界 —— 8 个用例（含逐字节切分、跨分片多字节 UTF-8、CRLF、keep-alive、多行 data）
+- [x] 429/5xx/网络错误有指数退避重试且可测（不改变请求前缀，保持缓存友好）—— 3 个重试用例，含"重试请求体逐字节相同"断言；已输出内容后不再重试

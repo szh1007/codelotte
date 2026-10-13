@@ -1,9 +1,7 @@
-"""CLI 入口的冒烟测试（票据 01 验收项）。
+"""CLI 入口的冒烟测试（票据 01/02 验收项）。
 
-TDD 说明：这些测试先行于实现编写。测试缝在"进程边界"——以子进程方式运行
-真实的 CLI（`python -m codelotte` 与控制台脚本），只验证外部可观察行为。
-
-编码说明：子进程强制 PYTHONUTF8=1（UTF-8 模式），父进程按 UTF-8 解码；
+测试缝在"进程边界"——以子进程方式运行真实 CLI，只验证外部可观察行为。
+子进程强制 PYTHONUTF8=1（UTF-8 模式），父进程按 UTF-8 解码，
 避免 Windows ANSI 代码页（cp936）与 UTF-8 解码错位导致的假失败。
 """
 
@@ -70,3 +68,20 @@ def test_console_script_entry_point_works() -> None:
 def test_version_matches_pyproject() -> None:
     data = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["project"]["version"] == codelotte.__version__
+
+
+def test_missing_api_key_fails_with_readable_error() -> None:
+    env = {k: v for k, v in child_env().items() if k != "DEEPSEEK_API_KEY"}
+    result = subprocess.run(
+        [sys.executable, "-m", "codelotte", "-p", "hi"],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        timeout=TIMEOUT_SECONDS,
+        env=env,
+        cwd=PROJECT_ROOT,
+    )
+    assert result.returncode == 2
+    assert "DEEPSEEK_API_KEY" in result.stderr
+    assert "Traceback" not in result.stderr
