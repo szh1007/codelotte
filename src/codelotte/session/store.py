@@ -17,11 +17,15 @@ from codelotte import __version__
 
 SCHEMA = "session/v1"
 
+# 合法 JSON 但会被 str.splitlines 按换行拆开的字符（破坏"一条记录一行"不变量）
+_LINE_BREAKER_CHARS = (chr(0x2028), chr(0x2029), chr(0x0085))
+_BACKSLASH = chr(92)
+
 
 def project_key(cwd: Path) -> str:
     """把项目路径编码为目录名（沿用 pi 的规则：去首分隔符，斜杠、反斜杠、冒号换成 -）。"""
-    trimmed = str(cwd).lstrip("/\\")
-    for ch in ("/", "\\", ":"):
+    trimmed = str(cwd).lstrip("/" + _BACKSLASH)
+    for ch in ("/", _BACKSLASH, ":"):
         trimmed = trimmed.replace(ch, "-")
     return f"--{trimmed}--"
 
@@ -32,6 +36,13 @@ def _now_iso() -> str:
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+def _escape_line_breakers(line: str) -> str:
+    for ch in _LINE_BREAKER_CHARS:
+        if ch in line:
+            line = line.replace(ch, _BACKSLASH + f"u{ord(ch):04x}")
+    return line
 
 
 class SessionStore:
@@ -57,7 +68,9 @@ class SessionStore:
             "timestamp": _now_iso(),
             **fields,
         }
-        line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+        line = _escape_line_breakers(
+            json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+        )
         with self.path.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(line + "\n")
         self._last_id = entry["id"]

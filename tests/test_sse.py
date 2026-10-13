@@ -53,3 +53,19 @@ def test_empty_stream_yields_nothing() -> None:
 def test_leading_space_after_colon_is_stripped_once() -> None:
     events = _collect(b"data:  two spaces\n\n")
     assert [e.data for e in events] == [" two spaces"]
+
+
+def test_bom_prefix_is_stripped() -> None:
+    events = _collect(b"\xef\xbb\xbfdata: x\n\n", chunk_size=1)
+    assert events == [SSEEvent(event=None, data="x")]
+
+
+def test_invalid_utf8_bytes_do_not_crash() -> None:
+    events = _collect(b"data: \xff\xfe bad\n\n")
+    assert len(events) == 1
+    assert "bad" in events[0].data
+
+
+def test_unterminated_tail_event_is_flushed_at_eof() -> None:
+    events = _collect(b"data: tail")
+    assert events == [SSEEvent(event=None, data="tail")]

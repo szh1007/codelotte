@@ -51,3 +51,12 @@ def test_project_key_encoding(tmp_path: Path) -> None:
     key = project_key(Path("D:/__WorkSpace__/codelotte"))
     assert key.startswith("--") and key.endswith("--")
     assert "/" not in key and "\\" not in key and ":" not in key
+
+
+def test_line_breakers_are_escaped_so_records_stay_one_line(tmp_path: Path) -> None:
+    store = SessionStore.start(Path("D:/work/proj"), base_dir=tmp_path)
+    store.append("message", role="user", content="line1\u2028line2\u0085line3")
+    lines = [x for x in store.path.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(lines) == 2  # 头记录 + 1 条消息，未被 U+2028/U+0085 拆行
+    entry = json.loads(lines[1])
+    assert entry["content"] == "line1\u2028line2\u0085line3"

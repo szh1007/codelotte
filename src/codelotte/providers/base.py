@@ -17,6 +17,13 @@ class TextDelta:
 
 
 @dataclass(frozen=True)
+class ReasoningDelta:
+    """一段增量推理内容（thinking 模式的 reasoning_content）。"""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class StreamUsage:
     """一次模型调用的 token 用量。"""
 
