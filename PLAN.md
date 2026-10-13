@@ -1,6 +1,6 @@
 # codelotte 开发方案（v1 · 2026-10-13）
 
-> 本文档是三轮设计访谈（grilling + domain-modeling）收敛后的完整方案。所有关键决策已记录在 [docs/adr/](docs/adr/)（0001–0005），术语定义见 [CONTEXT.md](CONTEXT.md)。事实依据：[技术栈调研](docs/research/README.md)、[pi 设计笔记](docs/research/pi-agent-design.md)、[岗位 JD 调研](docs/research/agent-job-market.md)、[生态差异化扫描](docs/research/portfolio-differentiation.md)、[DeepSeek API 笔记](docs/tech/deepseek-api.md)、[Python 栈笔记](docs/tech/python-stack.md)。
+> 本文档是三轮设计访谈（grilling + domain-modeling）收敛后的完整方案。所有关键决策已记录在 [docs/adr/](docs/adr/)（0001–0005），术语定义见 [CONTEXT.md](CONTEXT.md)。事实依据：[技术栈调研](docs/research/README.md)、[pi 设计笔记](docs/research/pi-agent-design.md)、[岗位 JD 调研](docs/research/agent-job-market.md)、[生态差异化扫描](docs/research/portfolio-differentiation.md)、[DeepSeek API 笔记](docs/tech/deepseek-api.md)、[Python 栈笔记](docs/tech/python-stack.md)。技术要求与实现细节见 [SPEC.md](SPEC.md)；任务拆解见 [docs/tickets/](docs/tickets/README.md)。
 
 ## 0. 一页速览
 
