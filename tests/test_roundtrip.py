@@ -281,6 +281,46 @@ def test_dotenv_is_loaded_without_env_file_flag(tmp_path: Path) -> None:
     assert len(list((tmp_path / "sessions").rglob("*.jsonl"))) == 1
 
 
+def test_continue_resumes_previous_session_without_loss_or_duplication(tmp_path: Path) -> None:
+    """--continue（票据 05 验收）：第二个进程重建上一轮的上下文、续写同一会话文件。"""
+    project = tmp_path / "proj"
+    project.mkdir()
+    handler_cls, _received = _scripted_handler([_answer_turn("第一答")])
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        first = _run_cli_against(port, "第一问", tmp_path, cwd=project)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert first.returncode == 0, first.stderr
+
+    handler_cls2, received2 = _scripted_handler([_answer_turn("第二答")])
+    server2, port2 = _serve_once(b"", handler_cls=handler_cls2)
+    try:
+        second = _run_cli_against(port2, "第二问", tmp_path, "--continue", cwd=project)
+    finally:
+        server2.shutdown()
+        server2.server_close()
+    assert second.returncode == 0, second.stderr
+    assert second.stdout == "第二答\n"
+
+    # 重建的上下文被原样发给模型：上一轮完整对话 + 新问题
+    messages = received2[0]["messages"]
+    assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+    assert messages[0]["content"] == "第一问"
+    assert messages[1]["content"] == "第一答"
+    assert messages[2]["content"] == "第二问"
+
+    # 同一个会话文件：两问两答，不重不漏
+    session_files = list((tmp_path / "sessions").rglob("*.jsonl"))
+    assert len(session_files) == 1
+    entries = [json.loads(x) for x in session_files[0].read_text(encoding="utf-8").splitlines() if x.strip()]
+    users = [e["content"] for e in entries if e["type"] == "message" and e["role"] == "user"]
+    assistants = [e["content"] for e in entries if e["type"] == "message" and e["role"] == "assistant"]
+    assert users == ["第一问", "第二问"]
+    assert assistants == ["第一答", "第二答"]
+
+
 def _scripted_handler(
     bodies: list[bytes],
 ) -> tuple[type[BaseHTTPRequestHandler], list[dict]]:
@@ -437,7 +477,7 @@ def test_tool_error_is_fed_back_and_loop_recovers(tmp_path: Path) -> None:
 
 def test_iteration_cap_forces_turn_end(tmp_path: Path) -> None:
     """验收：迭代硬上限兜底——模型永远请求工具时，回合被强制结束并记为事件。"""
-    from codelotte.run import MAX_ITERATIONS
+    from codelotte.loop import MAX_ITERATIONS
 
     handler_cls, received = _scripted_handler([_tool_call_turn("read", {"path": "CONTEXT.md"})])
     server, port = _serve_once(b"", handler_cls=handler_cls)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 
 class ProviderError(Exception):
@@ -63,3 +65,33 @@ class UsageEvent:
 @dataclass(frozen=True)
 class StreamEnd:
     reason: str | None
+
+
+# 统一流事件的联合类型（协议实现方与消费方——如 loop 的客户端接口、测试假客户端——共用）
+ProviderEvent = TextDelta | ReasoningDelta | ToolCallsEvent | UsageEvent | StreamEnd
+
+
+def assistant_message(
+    *,
+    content: str,
+    reasoning: str | None = None,
+    tool_calls: Sequence[tuple[str, str, str]] | None = None,
+) -> dict[str, Any]:
+    """OpenAI 兼容协议的 assistant 消息（键序固定——请求前缀逐字节稳定的前提）。
+
+    实时路径（loop）与恢复路径（session/context 的重建）共用这一处 wire 形状；
+    tool_calls 逐项为 (id, name, arguments)，arguments 原样回传（原始 JSON 文本）。
+    """
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    if tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+            for call_id, name, arguments in tool_calls
+        ]
+    return message

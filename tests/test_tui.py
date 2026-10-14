@@ -1,0 +1,295 @@
+"""TUI（票据 05）：事件 → widget 渲染、Ctrl+C 中断后会话完好、--continue 回放与续写。
+
+组件测试走 Textual 的 pilot（无头驱动）；模型走 Provider 缝的脚本化假客户端，
+工具是真实实现——覆盖"事件流 → 界面"与"中断恢复"两条验收。
+渲染快照（snap_compare）见文件末尾四例：空会话 / 流式文本 / 工具块 / 中断态。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+import pytest
+from textual.pilot import Pilot
+from textual.widgets import Input, Markdown, Static
+
+from codelotte.loop import AgentLoop
+from codelotte.providers.base import TextDelta
+from codelotte.sandbox import LocalExecutor
+from codelotte.session.context import messages_from_entries
+from codelotte.session.store import SessionStore, load_entries
+from codelotte.tools import default_tools
+from codelotte.tui import TuiApp
+from codelotte.tui.app import ToolCallBlock
+from tests.fake_client import PAUSE, ScriptedClient, text_turn, tool_turn
+
+SESSION_NAME = "20260101T000000Z_testtest.jsonl"
+
+
+def _make(
+    tmp_path: Path,
+    turns: Sequence[Sequence[object]],
+    *,
+    history: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+) -> tuple[TuiApp, ScriptedClient, SessionStore]:
+    path = tmp_path / SESSION_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    store = SessionStore.resume(path)
+    client = ScriptedClient(turns)
+    loop = AgentLoop(
+        client=client,
+        tools=default_tools(LocalExecutor()),
+        store=store,
+        model="fake-model",
+        messages=messages,
+    )
+    return TuiApp(agent=loop, model="fake-model", history=history or []), client, store
+
+
+def _as_tui(pilot: Pilot) -> TuiApp:
+    """pilot.app 的静态类型是 App[Any]（Pilot 的泛型参数是 App 的返回类型）：断言收窄。"""
+    app = pilot.app
+    assert isinstance(app, TuiApp)
+    return app
+
+
+async def _submit(pilot: Pilot, text: str) -> None:
+    _as_tui(pilot).query_one(Input).value = text
+    await pilot.press("enter")
+
+
+async def _wait_idle(pilot: Pilot) -> None:
+    for _ in range(500):
+        if not _as_tui(pilot).turn_running:
+            return
+        await pilot.pause(0.02)
+    raise AssertionError("回合没有在预期时间内结束")
+
+
+def _texts(app: TuiApp) -> list[str]:
+    return [str(widget.content) for widget in app.query(Static)]
+
+
+def test_turn_renders_user_tool_block_and_answer(tmp_path: Path) -> None:
+    target = tmp_path / "note.txt"
+    target.write_text("hello\n", encoding="utf-8")
+
+    async def scenario() -> None:
+        app, _client, store = _make(
+            tmp_path, [tool_turn("read", {"path": str(target)}), text_turn("读到了 hello")]
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
+            await _submit(pilot, "读一下 note.txt")
+            await _wait_idle(pilot)
+
+            assert any("读一下 note.txt" in t for t in _texts(app))
+            block = app.query_one(ToolCallBlock)
+            assert block.collapsed is True  # 验收：默认收起
+            assert "read" in block.title and block.title.endswith("✓")
+            assert "hello" in str(block.query_one(".tool-result", Static).content)
+            args_text = str(block.query_one(".tool-args", Static).content)
+            assert '"path"' in args_text and "note.txt" in args_text  # 完整参数在展开体里
+            assert any("读到了 hello" in md.source for md in app.query(Markdown))
+
+            entries = load_entries(store.path)
+            assert [e["type"] for e in entries].count("tool_call") == 1
+            assert [e["type"] for e in entries].count("tool_result") == 1
+
+    asyncio.run(scenario())
+
+
+def test_ctrl_c_interrupts_turn_and_session_survives(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app, client, store = _make(
+            tmp_path, [[TextDelta("先说一半"), PAUSE], text_turn("第二答")]
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
+            await _submit(pilot, "第一问")
+            await asyncio.wait_for(client.paused.wait(), 5)  # 已卡在流中间
+            await pilot.press("ctrl+c")
+            for _ in range(200):
+                if not app.turn_running:
+                    break
+                await pilot.pause(0.02)
+            assert app.is_running  # 验收：中断不退出会话
+            assert not app.turn_running
+            assert any("已中断" in t for t in _texts(app))
+
+            entries = load_entries(store.path)
+            assistants = [e for e in entries if e.get("role") == "assistant"]
+            assert assistants[-1]["stopReason"] == "interrupted"  # 记录是事实源
+            assert assistants[-1]["content"] == "先说一半"
+
+            # 会话完好：接着提问能完成，同一文件不重不漏
+            await _submit(pilot, "第二问")
+            await _wait_idle(pilot)
+
+        entries = load_entries(store.path)
+        users = [e["content"] for e in entries if e.get("role") == "user"]
+        assistants = [e["content"] for e in entries if e.get("role") == "assistant"]
+        assert users == ["第一问", "第二问"]
+        assert assistants == ["先说一半", "第二答"]
+
+    asyncio.run(scenario())
+
+
+def test_ctrl_c_during_tool_execution_keeps_context_valid(tmp_path: Path) -> None:
+    """回归（审查发现）：取消落在工具执行中时，assistant 声明的 tool_call 仍必须有一条 tool 应答，
+    否则同一进程里继续提问，下一次请求整个 400（deepseek 协议要求）。"""
+    sleep_cmd = f'"{sys.executable}" -c "import time; time.sleep(30)"'
+
+    async def scenario() -> None:
+        app, client, store = _make(
+            tmp_path,
+            [tool_turn("bash", {"command": sleep_cmd}, call_id="c1"), text_turn("收尾完成")],
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
+            await _submit(pilot, "跑个长命令")
+            for _ in range(200):  # 等工具块出现（ToolRequested 已广播、执行已开始）
+                if app.query(ToolCallBlock):
+                    break
+                await pilot.pause(0.02)
+            assert app.query(ToolCallBlock), "工具块没有出现"
+            await pilot.pause(0.2)
+            await pilot.press("ctrl+c")
+            for _ in range(500):
+                if not _as_tui(pilot).turn_running:
+                    break
+                await pilot.pause(0.02)
+            assert app.is_running
+            block = app.query_one(ToolCallBlock)
+            assert "已中断" in block.title  # 块有明确收尾，不骗人地停在"运行中…"
+
+            # 会话还活着：继续提问；重建的请求里 c1 有 tool 应答（协议有效即可正常发出）
+            await _submit(pilot, "继续")
+            await _wait_idle(pilot)
+            assert len(client.requests) == 2
+            roles = [m["role"] for m in client.requests[1]]
+            assert roles == ["user", "assistant", "tool", "user"]
+            assert client.requests[1][2]["tool_call_id"] == "c1"
+            assert "中断" in client.requests[1][2]["content"]
+            assert not any("模型调用失败" in t for t in _texts(app))
+
+            entries = load_entries(store.path)
+            assert [e["type"] for e in entries].count("tool_call") == 1
+            assert [e["type"] for e in entries].count("tool_result") == 0  # 中断落在结果之前
+
+    asyncio.run(scenario())
+
+
+def test_resume_replays_usage_into_status_bar(tmp_path: Path) -> None:
+    """--continue 后状态栏带上记录里的 token 用量（记录里有的，界面也要有）。"""
+
+    async def scenario() -> None:
+        history = [
+            {"type": "message", "role": "user", "content": "上一问"},
+            {"type": "message", "role": "assistant", "content": "上一答", "stopReason": "stop"},
+            {"type": "usage", "inputTokens": 12, "outputTokens": 7, "cacheHitTokens": 8, "cacheMissTokens": 4},
+        ]
+        app, _client, _store = _make(
+            tmp_path, [text_turn("x")], history=history, messages=messages_from_entries(history)
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(0.05)
+            status = str(app.query_one("#status", Static).content)
+            assert "tokens in=12 out=7" in status
+            assert "缓存命中 67%" in status  # 8/(8+4)
+
+    asyncio.run(scenario())
+
+
+def test_continue_renders_history_and_appends(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        # 1) 先真实制造一段"被中断的上一轮"
+        path = tmp_path / SESSION_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        store = SessionStore.resume(path)
+        client1 = ScriptedClient([[TextDelta("上回说到一半"), PAUSE]])
+        loop1 = AgentLoop(
+            client=client1, tools=default_tools(LocalExecutor()), store=store, model="fake-model"
+        )
+
+        async def drain() -> None:
+            async for _event in loop1.run_turn("上回的问题"):
+                pass
+
+        task = asyncio.create_task(drain())
+        await asyncio.wait_for(client1.paused.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # 2) --continue 语义：同一文件重建上下文 + 回放历史
+        history = load_entries(path)
+        messages = messages_from_entries(history)
+        app, client2, _ = _make(tmp_path, [text_turn("这回接上了")], history=history, messages=messages)
+        async with app.run_test(size=(100, 30)) as pilot:
+            assert any("上回的问题" in t for t in _texts(app))  # 历史被回放
+            assert any("上回说到一半" in md.source for md in app.query(Markdown))
+            assert any("中断" in t for t in _texts(app))
+            await _submit(pilot, "新问题")
+            await _wait_idle(pilot)
+
+        # 重建的上下文真的发给了模型：中断的 assistant 被跳过、新问题在最后
+        assert [m["role"] for m in client2.requests[0]] == ["user", "user"]
+        assert client2.requests[0][0]["content"] == "上回的问题"
+        assert client2.requests[0][1]["content"] == "新问题"
+
+        entries = load_entries(path)
+        assert [e["content"] for e in entries if e.get("role") == "user"] == ["上回的问题", "新问题"]
+
+    asyncio.run(scenario())
+
+
+# ---- 渲染快照（首批四例，票据 05 验收）----
+
+
+def test_snapshot_empty_session(snap_compare: Any, tmp_path: Path) -> None:
+    app, _client, _store = _make(tmp_path, [text_turn("不会用到")])
+    assert snap_compare(app, terminal_size=(92, 24))
+
+
+def test_snapshot_streaming_text(snap_compare: Any, tmp_path: Path) -> None:
+    app, _client, _store = _make(
+        tmp_path, [text_turn("我先看一下项目说明，然后给你结论。\n\n- 第一步：读取\n- 第二步：总结")]
+    )
+
+    async def before(pilot: Pilot) -> None:
+        await _submit(pilot, "读一下说明并总结")
+        await _wait_idle(pilot)
+
+    assert snap_compare(app, terminal_size=(92, 24), run_before=before)
+
+
+def test_snapshot_tool_block(snap_compare: Any, tmp_path: Path) -> None:
+    app, _client, _store = _make(
+        tmp_path, [tool_turn("bash", {"command": "echo 42 passed"}), text_turn("测试全部通过。")]
+    )
+
+    async def before(pilot: Pilot) -> None:
+        await _submit(pilot, "跑一下测试")
+        await _wait_idle(pilot)
+
+    assert snap_compare(app, terminal_size=(92, 24), run_before=before)
+
+
+def test_snapshot_interrupted_turn(snap_compare: Any, tmp_path: Path) -> None:
+    app, client, _store = _make(tmp_path, [[TextDelta("我正在整理思路，先写下第一段……"), PAUSE]])
+
+    async def before(pilot: Pilot) -> None:
+        await _submit(pilot, "想一个复杂的问题")
+        await asyncio.wait_for(client.paused.wait(), 5)
+        await pilot.press("ctrl+c")
+        for _ in range(200):
+            if not _as_tui(pilot).turn_running:
+                break
+            await pilot.pause(0.02)
+
+    assert snap_compare(app, terminal_size=(92, 24), run_before=before)

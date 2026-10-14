@@ -43,10 +43,59 @@ def test_version_flag_prints_version_and_exits_zero() -> None:
     assert result.stdout.strip() == f"codelotte {codelotte.__version__}"
 
 
-def test_no_args_prints_help_and_exits_zero() -> None:
-    result = run_cli()
-    assert result.returncode == 0
-    assert "usage" in result.stdout.lower()
+def test_no_args_without_a_real_terminal_fails_readably(tmp_path: Path) -> None:
+    """无参数 = 进 TUI（票据 05）：管道/CI 里没有真实终端时给可读错误，不往 stdout 喷转义码。"""
+    env = {
+        **child_env(),
+        "DEEPSEEK_API_KEY": "test-key",
+        "CODELOTTE_HOME": str(tmp_path / "home"),
+        "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "codelotte"],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        timeout=TIMEOUT_SECONDS,
+        env=env,
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode == 2
+    assert "真实终端" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "\x1b[" not in result.stdout  # 没把全屏转义码喷进管道
+
+
+def test_continue_without_any_session_fails_readably(tmp_path: Path) -> None:
+    env = {
+        **child_env(),
+        "DEEPSEEK_API_KEY": "test-key",
+        "CODELOTTE_HOME": str(tmp_path / "home"),
+        "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "codelotte", "-p", "hi", "--continue"],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        timeout=TIMEOUT_SECONDS,
+        env=env,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 1
+    assert "没有可继续的会话" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_continue_flags_parse() -> None:
+    from codelotte.cli import build_parser
+
+    assert build_parser().parse_args(["--continue"]).continue_ is True
+    assert build_parser().parse_args(["-c"]).continue_ is True
+    assert build_parser().parse_args([]).continue_ is False
 
 
 def test_console_script_entry_point_works() -> None:
@@ -63,6 +112,27 @@ def test_console_script_entry_point_works() -> None:
     )
     assert result.returncode == 0
     assert result.stdout.strip() == f"codelotte {codelotte.__version__}"
+
+
+def test_config_error_leaves_no_session_file(tmp_path: Path) -> None:
+    """回归（审查发现）：没密钥的启动不得留下"只有会话头"的空会话文件——
+    否则 --continue 按 mtime 会挑中它，真实历史被跳过。"""
+    env = {k: v for k, v in child_env().items() if k != "DEEPSEEK_API_KEY"}
+    env["CODELOTTE_HOME"] = str(tmp_path / "home")
+    env["CODELOTTE_SESSION_DIR"] = str(tmp_path / "sessions")
+    result = subprocess.run(
+        [sys.executable, "-m", "codelotte", "-p", "hi"],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        timeout=TIMEOUT_SECONDS,
+        env=env,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 2
+    sessions = tmp_path / "sessions"
+    assert not (sessions.exists() and list(sessions.rglob("*.jsonl")))
 
 
 def test_version_matches_pyproject() -> None:
