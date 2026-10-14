@@ -20,19 +20,44 @@ from codelotte.sandbox import ExecResult, LocalExecutor
 # （stderr 默认 backslashreplace），两类断言都会误伤。UTF-8 模式下与机器 locale 无关。
 PY = f'"{sys.executable}" -X utf8'
 
-# 外层脚本：启动一个 2 秒后写标记文件的孙进程，自己睡 30 秒。
-# 若超时只杀到 shell 或只杀到本进程，孙进程会活下来写出标记——用它证明"杀的是整棵树"。
+# 外层脚本：启动一个持续"心跳"的孙进程（每 0.5 秒往文件追加一行，最多 60 秒），自己睡 30 秒。
+# 若超时/取消只杀到 shell 或只杀到本进程，孙进程会继续心跳——"心跳停止"就是整树被杀的直接证据。
+# 用心跳采样而不是"睡固定时长看某个标记"：后者依赖"杀进程发生在标记写入之前"的时序假设，
+# CI 冷启动下孙进程的创建恰好撞上杀进程时刻时会误报（真实翻车过）；心跳法只要求两个事实：
+# 活着（杀之前已有心跳）与 死了（杀之后没有新心跳），不含任何时刻假设。
 SPAWNER_SCRIPT = """\
 import subprocess, sys, time
-marker = sys.argv[1]
-inner = "import sys, time; time.sleep(2); open(sys.argv[1], 'w').write('x')"
-subprocess.Popen([sys.executable, "-c", inner, marker])
+
+beat = sys.argv[1]
+inner = (
+    "import sys, time" + chr(10)
+    + "for _ in range(120):" + chr(10)
+    + "    open(sys.argv[1], 'a').write('x' + chr(10))" + chr(10)
+    + "    time.sleep(0.5)" + chr(10)
+)
+subprocess.Popen([sys.executable, "-c", inner, beat])
 time.sleep(30)
 """
 
 
 def _run(command: str, cwd: Path, timeout: float = 30.0) -> ExecResult:
     return asyncio.run(LocalExecutor().run(command, cwd=cwd, timeout=timeout))
+
+
+def _beat_count(beat: Path) -> int:
+    """孙进程的心跳行数（文件还不存在=0）。"""
+    try:
+        return beat.read_text(encoding="utf-8").count("\n")
+    except OSError:
+        return 0
+
+
+def _assert_heartbeat_stopped(beat: Path) -> None:
+    """杀完后再采两次心跳行数：整树被杀 → 不再有新行（两个样本相等）。"""
+    time.sleep(1.5)  # 留出一整拍的心跳间隔：还活着的话，这期间必然有新行
+    beats_after = _beat_count(beat)
+    time.sleep(1.5)
+    assert _beat_count(beat) == beats_after, "孙进程还在心跳——杀掉/收回的不是整棵进程树"
 
 
 def test_echo_succeeds_with_stdout(tmp_path: Path) -> None:
@@ -71,14 +96,14 @@ def test_invalid_utf8_output_does_not_crash(tmp_path: Path) -> None:
 def test_timeout_kills_whole_process_tree(tmp_path: Path) -> None:
     spawner = tmp_path / "spawner.py"
     spawner.write_text(SPAWNER_SCRIPT, encoding="utf-8")
-    marker = tmp_path / "survived.txt"
+    beat = tmp_path / "beat.txt"
     started = time.perf_counter()
-    result = _run(f'{PY} "{spawner}" "{marker}"', tmp_path, timeout=1.0)
+    result = _run(f'{PY} "{spawner}" "{beat}"', tmp_path, timeout=3.0)
     elapsed = time.perf_counter() - started
     assert result.timed_out is True
     assert elapsed < 10.0  # 没有傻等 30 秒：超时即杀即返回
-    time.sleep(2.6)  # 等过孙进程本该写标记的时刻
-    assert not marker.exists(), "孙进程存活了——杀掉的是 shell 而不是整个进程树"
+    assert _beat_count(beat) > 0, "孙进程没有跑起来（心跳为空）——测试前提不成立"
+    _assert_heartbeat_stopped(beat)
 
 
 def test_console_encoding_fallback_for_legacy_output(
@@ -106,20 +131,24 @@ def test_cancellation_kills_whole_process_tree(tmp_path: Path) -> None:
     """回合被中断（Ctrl+C → 协程取消）时也要收回子进程：不能让命令留在后台继续跑。"""
     spawner = tmp_path / "spawner2.py"
     spawner.write_text(SPAWNER_SCRIPT, encoding="utf-8")
-    marker = tmp_path / "survived_cancel.txt"
+    beat = tmp_path / "beat_cancel.txt"
 
     async def scenario() -> None:
         task = asyncio.create_task(
-            LocalExecutor().run(f'{PY} "{spawner}" "{marker}"', cwd=tmp_path, timeout=60)
+            LocalExecutor().run(f'{PY} "{spawner}" "{beat}"', cwd=tmp_path, timeout=60)
         )
-        await asyncio.sleep(1.0)  # 让命令真正跑起来
+        # 等孙进程确实开始心跳（轮询而非固定时长：CI 冷启动下启动慢也不误伤）
+        for _ in range(150):
+            if _beat_count(beat) > 0:
+                break
+            await asyncio.sleep(0.1)
+        assert _beat_count(beat) > 0, "孙进程没有跑起来（心跳为空）——测试前提不成立"
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
     asyncio.run(scenario())
-    time.sleep(2.6)  # 等过孙进程本该写标记的时刻
-    assert not marker.exists(), "取消后子进程仍存活——取消路径没有收回进程树"
+    _assert_heartbeat_stopped(beat)
 
 
 def test_windows_prefers_git_bash_so_bash_syntax_works(tmp_path: Path) -> None:
