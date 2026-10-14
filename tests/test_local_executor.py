@@ -14,7 +14,11 @@ import pytest
 
 from codelotte.sandbox import ExecResult, LocalExecutor
 
-PY = f'"{sys.executable}"'
+# 子进程一律以 UTF-8 模式跑（-X utf8）：stdout/stderr 的编码不随机器区域设置漂移。
+# 反例（CI windows runner 真实翻过车）：英文 locale 下管道编码是 cp1252——子进程 print 中文
+# 直接 UnicodeEncodeError（stdout 严格编码），写 stderr 则退化成 "坏了" 转义
+# （stderr 默认 backslashreplace），两类断言都会误伤。UTF-8 模式下与机器 locale 无关。
+PY = f'"{sys.executable}" -X utf8'
 
 # 外层脚本：启动一个 2 秒后写标记文件的孙进程，自己睡 30 秒。
 # 若超时只杀到 shell 或只杀到本进程，孙进程会活下来写出标记——用它证明"杀的是整棵树"。
