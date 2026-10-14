@@ -124,3 +124,17 @@ def test_permission_error_maps_to_tool_error(tmp_path: Path, monkeypatch: pytest
         read_file(str(path))
     assert "读取失败" in str(excinfo.value)
     assert "Permission denied" in str(excinfo.value)
+
+
+def test_handler_caps_huge_single_line_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """行数上限挡不住超长行：handler 层再有字符级截断兜底（SPEC §D）。"""
+    art_dir = tmp_path / "artifacts"
+    monkeypatch.setattr("codelotte.tools.base.ARTIFACT_DIR", art_dir)
+    huge = tmp_path / "huge.txt"
+    huge.write_text("x" * 50_000, encoding="utf-8")  # 单行 5 万字符
+    raw = asyncio.run(READ_TOOL.handler({"path": str(huge)}))
+    assert isinstance(raw, str)  # handler 的静态类型是 str | ToolOutcome，read 实际返回 str
+    result = raw
+    assert len(result) < 30_000
+    assert "中间省略" in result
+    assert str(next(art_dir.iterdir())) in result

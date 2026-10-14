@@ -33,8 +33,10 @@ from codelotte.providers.base import (
     UsageEvent,
 )
 from codelotte.providers.openai_completions import OpenAICompletionsClient
+from codelotte.sandbox import LocalExecutor
 from codelotte.session.store import SessionStore
-from codelotte.tools import ToolResult, execute_tool, wire_tools
+from codelotte.tools import ToolResult, default_tools, execute_tool, wire_tools
+from codelotte.tools.base import Tool
 
 _ANSI_DIM = "\x1b[2m"
 _ANSI_RESET = "\x1b[0m"
@@ -162,10 +164,17 @@ def _assistant_message(turn: _Turn) -> dict[str, Any]:
     return message
 
 
-async def _run_tool_call(store: SessionStore, call: ToolCall) -> str:
+async def _run_tool_call(
+    store: SessionStore,
+    call: ToolCall,
+    *,
+    tools: tuple[Tool, ...],
+    env: str,
+) -> str:
     """执行一次工具调用：先落盘、再呈现、执行、落盘结果（SPEC §E 事件先落盘再呈现）。
 
     参数畸形（模型输出缺陷）不执行也不报错：错误作为工具结果回传让它自纠（SPEC §D）。
+    env 是执行环境标记（SPEC §E：tool_call/tool_result 记录 sandbox/local，可审计）。
     """
     if call.parse_error is not None:
         store.append(
@@ -174,6 +183,7 @@ async def _run_tool_call(store: SessionStore, call: ToolCall) -> str:
             name=call.name,
             arguments=call.arguments,  # 无法解析时记原始文本，parseError 说明原因
             parseError=call.parse_error,
+            env=env,
         )
         sys.stderr.write(f"[codelotte] → {call.name}（参数畸形，未执行）\n")
         sys.stderr.flush()
@@ -185,19 +195,25 @@ async def _run_tool_call(store: SessionStore, call: ToolCall) -> str:
     else:
         arguments = json.loads(call.arguments)  # 装配器已校验：合法 JSON 对象
         store.append(
-            "tool_call", toolCallId=call.id, name=call.name, arguments=arguments
+            "tool_call",
+            toolCallId=call.id,
+            name=call.name,
+            arguments=arguments,
+            env=env,
         )
         display = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
         sys.stderr.write(f"[codelotte] → {call.name}({_preview(display)})\n")
         sys.stderr.flush()
-        result = await execute_tool(call.name, arguments)
+        result = await execute_tool(call.name, arguments, tools=tools)
 
     store.append(
         "tool_result",
         toolCallId=call.id,
+        name=call.name,  # 自我描述：导出/归因按行读会话时不必回查 tool_call 也能知道是哪个工具
         ok=result.ok,
         content=result.content,
         durationMs=result.duration_ms,
+        env=env,
     )
     if result.ok:
         size = len(result.content)
@@ -222,7 +238,9 @@ async def run_once(prompt: str, *, show_reasoning: bool = False) -> int:
     store.append("message", role="user", content=prompt)
 
     client = OpenAICompletionsClient(base_url=base_url, api_key=api_key, model=model)
-    tools = wire_tools()
+    executor = LocalExecutor()  # 票据 10：按配置换成 Docker 沙箱实现，工具代码零改动
+    toolset = default_tools(executor)
+    tool_schemas = wire_tools(toolset)
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
 
     calls_made = 0
@@ -235,7 +253,11 @@ async def run_once(prompt: str, *, show_reasoning: bool = False) -> int:
     live = sys.stdout.isatty()  # 真终端实时流式；管道/重定向轮末决定文本去向
     for _ in range(MAX_ITERATIONS):
         turn = await _stream_once(
-            client, messages, tools=tools, show_reasoning=show_reasoning, live=live
+            client,
+            messages,
+            tools=tool_schemas,
+            show_reasoning=show_reasoning,
+            live=live,
         )
         calls_made += 1
         stop_reason = turn.stop_reason
@@ -267,7 +289,7 @@ async def run_once(prompt: str, *, show_reasoning: bool = False) -> int:
             break  # 一次回复中没有工具调用 = 回合结束
         messages.append(_assistant_message(turn))
         for call in turn.tool_calls:
-            content = await _run_tool_call(store, call)
+            content = await _run_tool_call(store, call, tools=toolset, env=executor.env)
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": content}
             )

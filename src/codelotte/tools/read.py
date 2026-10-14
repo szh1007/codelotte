@@ -2,6 +2,7 @@
 
 返回带行号的内容（模型据此引用行、配合后续 edit 的精确替换）；
 可预期失败一律抛 ToolError，由执行层转为结果文本回传模型。
+换行约定：读入时 \r\n 与 \r 统一成 \n（Python 文本模式）——模型看到的永远是 LF 视图。
 """
 
 from __future__ import annotations
@@ -9,7 +10,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from codelotte.tools.base import Tool, ToolError
+from codelotte.tools.base import (
+    Tool,
+    ToolError,
+    cap_output,
+    int_arg,
+    resolve_path,
+    str_arg,
+)
 
 DEFAULT_LIMIT = 2000  # 默认读取行数，同时也是单次读取的行数上限（防单次输出吃光上下文）
 
@@ -31,12 +39,7 @@ def read_file(
     Raises:
         ToolError: 文件不存在、是目录、非 UTF-8 文本、无权限、offset 越界。
     """
-    base = cwd if cwd is not None else Path.cwd()
-    target = Path(path)
-    if not target.is_absolute():
-        target = base / target
-    if target.is_dir():
-        raise ToolError(f"不是文件（是目录）：{path}")
+    target = resolve_path(path, cwd)
     if not target.is_file():
         raise ToolError(f"文件不存在：{path}")
     try:
@@ -66,31 +69,15 @@ def read_file(
     return f"{header}\n{numbered}"
 
 
-def _int_arg(args: dict[str, Any], key: str, default: int) -> int:
-    """取整数参数：缺失/None 用默认值；接受 int 或数字字符串（模型偶尔把数字写成字符串）。
-
-    其它类型一律抛 ToolError——静默回退会让模型永远学不到错，错误回传才能自纠（SPEC §D）。
-    """
-    value = args.get(key)
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        raise ToolError(f"参数 {key} 应为整数，收到 {value!r}")
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        raise ToolError(f"参数 {key} 应为整数，收到 {value!r}") from None
-
-
 async def _read_handler(args: dict[str, Any]) -> str:
-    path = args.get("path")
-    if not isinstance(path, str) or not path.strip():
-        raise ToolError("缺少必需参数 path（要读取的文件路径）")
-    return read_file(
+    path = str_arg(args, "path")
+    text = read_file(
         path.strip(),
-        offset=_int_arg(args, "offset", 1),
-        limit=_int_arg(args, "limit", DEFAULT_LIMIT),
+        offset=int_arg(args, "offset", 1),
+        limit=int_arg(args, "limit", DEFAULT_LIMIT),
     )
+    # 行数上限挡不住"少数超长行"（一行的字符数无上限）：统一再过一遍字符级截断（SPEC §D）
+    return cap_output(text, label="read")
 
 
 READ_TOOL = Tool(

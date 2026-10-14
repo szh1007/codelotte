@@ -117,7 +117,7 @@ def _make_body_handler(sse_body: bytes) -> type[BaseHTTPRequestHandler]:
 
 
 def _run_cli_against(
-    port: int, prompt: str, tmp_path: Path, *extra_args: str
+    port: int, prompt: str, tmp_path: Path, *extra_args: str, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -134,7 +134,7 @@ def _run_cli_against(
         encoding="utf-8",
         timeout=60,
         env=env,
-        cwd=PROJECT_ROOT,
+        cwd=cwd if cwd is not None else PROJECT_ROOT,
     )
 
 
@@ -565,3 +565,48 @@ def test_intermediate_narration_goes_to_stderr_not_stdout(tmp_path: Path) -> Non
     narrated = entries[2]
     assert narrated["content"] == "我先读一下这个文件。"
     assert narrated["toolCalls"][0]["id"] == "c1"
+
+
+def test_agent_writes_edits_and_verifies_with_bash(tmp_path: Path) -> None:
+    """验收：agent 修改真实文件并运行命令验证改动（write → edit → bash 全链路，本地模式）。"""
+    project = tmp_path / "proj"
+    project.mkdir()
+    # 验证命令要跟执行器实际选用的 shell 一致：Windows 优先 Git Bash（cat 可用），
+    # 找不到 Git Bash、退回 cmd 时才用 type
+    from codelotte.sandbox.local import _find_git_bash
+
+    use_cmd = os.name == "nt" and _find_git_bash() is None
+    verify_cmd = "type hello.txt" if use_cmd else "cat hello.txt"
+    handler_cls, received = _scripted_handler(
+        [
+            _tool_call_turn("write", {"path": "hello.txt", "content": "你好\n"}, call_id="w1"),
+            _tool_call_turn(
+                "edit",
+                {"path": "hello.txt", "old_string": "你好", "new_string": "你好，世界"},
+                call_id="e1",
+            ),
+            _tool_call_turn("bash", {"command": verify_cmd}, call_id="b1"),
+            _answer_turn("已完成"),
+        ]
+    )
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, "创建 hello.txt 并改成问候", tmp_path, cwd=project)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "已完成\n"
+    assert (project / "hello.txt").read_text(encoding="utf-8") == "你好，世界\n"
+    # 第四次请求里：bash 的真实输出被回填（验证链路闭环）
+    assert len(received) == 4
+    assert "你好，世界" in received[3]["messages"][-1]["content"]
+
+    entries = _load_entries(tmp_path)
+    tool_calls = [e for e in entries if e["type"] == "tool_call"]
+    assert [e["name"] for e in tool_calls] == ["write", "edit", "bash"]
+    assert all(e["env"] == "local" for e in tool_calls)  # 执行环境可审计（SPEC §E）
+    results = [e for e in entries if e["type"] == "tool_result"]
+    assert [e["ok"] for e in results] == [True, True, True]
+    assert all(e["env"] == "local" for e in results)
