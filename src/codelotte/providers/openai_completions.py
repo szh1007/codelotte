@@ -11,6 +11,10 @@ wire protocol（anthropic-messages 为后续第二条）。
   已收到 finish_reason 后连接被切断 → 按成功处理（回答已完整）
 - 配置类错误（InvalidURL/UnsupportedProtocol）不重试，立即报可读错误
 - 每次重试记 warning 日志（不静默）
+- tool_calls 分片由 ToolCallAssembler 按 index 攒齐（每次尝试用新装配器，
+  重试不会混入上一次的残片），流正常结束后统一产出 ToolCallsEvent；
+  参数畸形的调用记入 ToolCall.parse_error（回传模型自纠），只有缺工具名
+  这种协议级缺陷才中止回合
 """
 
 from __future__ import annotations
@@ -30,9 +34,12 @@ from codelotte.providers.base import (
     StreamEnd,
     StreamUsage,
     TextDelta,
+    ToolCall,
+    ToolCallsEvent,
     UsageEvent,
 )
 from codelotte.providers.sse import decode_sse_async
+from codelotte.providers.tool_calls import ToolCallAssembler, ToolCallAssemblyError
 
 logger = logging.getLogger(__name__)
 
@@ -97,26 +104,44 @@ class OpenAICompletionsClient:
             delay += random.uniform(0, delay * self._jitter)
         return delay
 
+    @staticmethod
+    def _assemble(assembler: ToolCallAssembler) -> tuple[ToolCall, ...]:
+        """装配分片。缺工具名是协议级缺陷（没有可回填的执行错误），中止本回合。"""
+        try:
+            return assembler.finish()
+        except ToolCallAssemblyError as exc:
+            raise ProviderError(f"模型返回的工具调用无法装配：{exc}") from exc
+
     async def stream_chat(
         self,
         messages: list[dict[str, Any]],
         *,
+        tools: list[dict[str, Any]] | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
-    ) -> AsyncIterator[TextDelta | ReasoningDelta | UsageEvent | StreamEnd]:
-        body = {
+    ) -> AsyncIterator[
+        TextDelta | ReasoningDelta | ToolCallsEvent | UsageEvent | StreamEnd
+    ]:
+        body: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
             "max_tokens": max_tokens,
         }
-        headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+        if tools:
+            # tool_choice 不显式设置（默认 auto）：思考模式不支持 required/指定工具
+            body["tools"] = tools
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
         usage: StreamUsage | None = None
         stop_reason: str | None = None
         emitted = False
         attempt = 0
         while True:
             attempt += 1
+            assembler = ToolCallAssembler()  # 每次尝试用新装配器，重试不混入残片
             try:
                 async with httpx2.AsyncClient(
                     base_url=self._base_url,
@@ -126,16 +151,23 @@ class OpenAICompletionsClient:
                     async with client.stream(
                         "POST", "/chat/completions", json=body, headers=headers
                     ) as response:
-                        if response.status_code in RETRYABLE_STATUS or response.status_code >= 500:
+                        if (
+                            response.status_code in RETRYABLE_STATUS
+                            or response.status_code >= 500
+                        ):
                             raise _RetryableStatus(response.status_code)
                         if response.status_code >= 400:
-                            detail = (await response.aread()).decode("utf-8", errors="replace")
+                            detail = (await response.aread()).decode(
+                                "utf-8", errors="replace"
+                            )
                             raise ProviderError(
                                 f"DeepSeek API 返回 {response.status_code}：{detail[:300]}"
                             )
                         content_type = response.headers.get("content-type", "")
                         if "text/event-stream" not in content_type:
-                            detail = (await response.aread()).decode("utf-8", errors="replace")
+                            detail = (await response.aread()).decode(
+                                "utf-8", errors="replace"
+                            )
                             raise ProviderError(
                                 f"响应不是 SSE 流（HTTP {response.status_code}，"
                                 f"content-type={content_type!r}）：{detail[:300]}"
@@ -150,7 +182,9 @@ class OpenAICompletionsClient:
                             if not isinstance(payload, dict):
                                 continue
                             if "error" in payload:
-                                detail = json.dumps(payload["error"], ensure_ascii=False)
+                                detail = json.dumps(
+                                    payload["error"], ensure_ascii=False
+                                )
                                 raise ProviderError(f"服务端流内错误：{detail[:300]}")
                             chunk_usage = payload.get("usage")
                             if chunk_usage:
@@ -164,8 +198,35 @@ class OpenAICompletionsClient:
                                 if isinstance(text, str) and text:
                                     emitted = True
                                     yield TextDelta(text)
+                                for fragment in delta.get("tool_calls") or []:
+                                    if not isinstance(fragment, dict):
+                                        continue
+                                    function = fragment.get("function")
+                                    if not isinstance(function, dict):
+                                        function = {}
+                                    raw_index = fragment.get("index")
+                                    call_id = fragment.get("id")
+                                    name = function.get("name")
+                                    arguments = function.get("arguments")
+                                    assembler.add_fragment(
+                                        raw_index if isinstance(raw_index, int) else 0,
+                                        id=(
+                                            call_id
+                                            if isinstance(call_id, str)
+                                            else None
+                                        ),
+                                        name=name if isinstance(name, str) else None,
+                                        arguments=(
+                                            arguments
+                                            if isinstance(arguments, str)
+                                            else ""
+                                        ),
+                                    )
                                 if choice.get("finish_reason"):
                                     stop_reason = choice["finish_reason"]
+                        calls = self._assemble(assembler)
+                        if calls:
+                            yield ToolCallsEvent(calls=calls)
                         if usage is not None:
                             yield UsageEvent(usage)
                         yield StreamEnd(reason=stop_reason)
@@ -175,6 +236,11 @@ class OpenAICompletionsClient:
             except (httpx2.HTTPError, _RetryableStatus) as exc:
                 if stop_reason is not None:
                     logger.warning("流在 finish_reason 之后被切断，按成功处理：%s", exc)
+                    calls = self._assemble(
+                        assembler
+                    )  # reason 已到但连接断：工具调用照常产出
+                    if calls:
+                        yield ToolCallsEvent(calls=calls)
                     if usage is not None:
                         yield UsageEvent(usage)
                     yield StreamEnd(reason=stop_reason)
@@ -184,7 +250,9 @@ class OpenAICompletionsClient:
                         f"流式响应中途失败（已输出部分内容，不再重试）：{exc}"
                     ) from exc
                 if attempt >= self._max_attempts:
-                    raise ProviderError(f"模型服务连续 {attempt} 次失败：{exc}") from exc
+                    raise ProviderError(
+                        f"模型服务连续 {attempt} 次失败：{exc}"
+                    ) from exc
                 delay = self._backoff_delay(attempt)
                 logger.warning(
                     "模型请求失败（第 %d/%d 次：%s），%.1f 秒后重试",

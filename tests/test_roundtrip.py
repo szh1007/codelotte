@@ -279,3 +279,289 @@ def test_dotenv_is_loaded_without_env_file_flag(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "".join(ANSWER_PARTS) in result.stdout
     assert len(list((tmp_path / "sessions").rglob("*.jsonl"))) == 1
+
+
+def _scripted_handler(
+    bodies: list[bytes],
+) -> tuple[type[BaseHTTPRequestHandler], list[dict]]:
+    """按序应答的假服务器 handler；返回 (handler 类, 收到的请求体列表)。
+
+    请求数超出剧本时复用最后一个 body（迭代上限类测试需要"永远调工具"的服务器）。
+    """
+    received: list[dict] = []
+
+    class _ScriptedHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", 0))
+            received.append(json.loads(self.rfile.read(length)))
+            body = bodies[min(len(received) - 1, len(bodies) - 1)]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    return _ScriptedHandler, received
+
+
+def _tool_call_turn(tool_name: str, arguments: dict, call_id: str = "call_r1") -> bytes:
+    """一轮"请求调用工具"的 SSE 回复（带思考与用量）。"""
+    payload = json.dumps(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "reasoning_content": "先读文件",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": tool_name, "arguments": json.dumps(arguments)},
+                            }
+                        ],
+                    },
+                    "index": 0,
+                }
+            ]
+        }
+    )
+    return _sse(
+        payload,
+        '{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}',
+        '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+        "[DONE]",
+    )
+
+
+def _answer_turn(text: str) -> bytes:
+    return _sse(
+        json.dumps({"choices": [{"delta": {"content": text}, "index": 0}]}),
+        '{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+        '{"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":8}}',
+        "[DONE]",
+    )
+
+
+def test_agent_loop_reads_file_and_answers(tmp_path: Path) -> None:
+    """验收：模型触发 read 拿到真实文件内容；工具调用与结果成对落盘；stdout 只有回答。"""
+    handler_cls, received = _scripted_handler(
+        [
+            _tool_call_turn("read", {"path": "CONTEXT.md"}),
+            _answer_turn("第一行是 # codelotte"),
+        ]
+    )
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, "读一下 CONTEXT.md 并告诉我第一行", tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "第一行是 # codelotte\n"  # stdout 只有答案：思考与工具活动都在 stderr
+    assert "→ read(" in result.stderr
+    assert "← read" in result.stderr
+    assert "calls=2" in result.stderr
+
+    # 第二次请求：assistant 回传了 tool_calls 与 reasoning_content（deepseek 带 tools 时必须回传），
+    # 且带上了工具结果（role=tool，内容来自真实读取的 CONTEXT.md）
+    assert len(received) == 2
+    messages = received[1]["messages"]
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["reasoning_content"] == "先读文件"
+    assert messages[1]["tool_calls"][0]["id"] == "call_r1"
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == json.dumps({"path": "CONTEXT.md"})
+    assert messages[2]["role"] == "tool"
+    assert messages[2]["tool_call_id"] == "call_r1"
+    assert "1\t# codelotte" in messages[2]["content"]
+
+    entries = _load_entries(tmp_path)
+    assert [e["type"] for e in entries] == [
+        "session",
+        "message",  # user
+        "message",  # assistant（含工具调用）
+        "usage",
+        "tool_call",
+        "tool_result",
+        "message",  # 最终回答
+        "usage",
+    ]
+    assistant_with_call = entries[2]
+    assert assistant_with_call["content"] == ""
+    assert assistant_with_call["stopReason"] == "tool_calls"
+    assert assistant_with_call["reasoningContent"] == "先读文件"
+    assert assistant_with_call["toolCalls"] == [
+        {"id": "call_r1", "name": "read", "arguments": json.dumps({"path": "CONTEXT.md"})}
+    ]
+    tool_call_entry = entries[4]
+    assert tool_call_entry["toolCallId"] == "call_r1"
+    assert tool_call_entry["name"] == "read"
+    assert tool_call_entry["arguments"] == {"path": "CONTEXT.md"}
+    tool_result_entry = entries[5]
+    assert tool_result_entry["toolCallId"] == "call_r1"
+    assert tool_result_entry["ok"] is True
+    assert tool_result_entry["content"].startswith("CONTEXT.md（第 1-")
+    assert isinstance(tool_result_entry["durationMs"], int)
+    # 每个 usage 属于一次模型调用：in=10+20
+    usages = [e for e in entries if e["type"] == "usage"]
+    assert [u["inputTokens"] for u in usages] == [10, 20]
+
+
+def test_tool_error_is_fed_back_and_loop_recovers(tmp_path: Path) -> None:
+    """验收：读取失败（文件不存在）不是系统错误——错误文本回传模型，循环继续。"""
+    handler_cls, received = _scripted_handler(
+        [
+            _tool_call_turn("read", {"path": "no-such-file.txt"}),
+            _answer_turn("那个文件不存在。"),
+        ]
+    )
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, "读一下 no-such-file.txt", tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "那个文件不存在。\n"
+    feedback = received[1]["messages"][2]["content"]
+    assert feedback.startswith("错误：")
+    assert "文件不存在" in feedback
+    tool_result_entry = next(e for e in _load_entries(tmp_path) if e["type"] == "tool_result")
+    assert tool_result_entry["ok"] is False
+
+
+def test_iteration_cap_forces_turn_end(tmp_path: Path) -> None:
+    """验收：迭代硬上限兜底——模型永远请求工具时，回合被强制结束并记为事件。"""
+    from codelotte.run import MAX_ITERATIONS
+
+    handler_cls, received = _scripted_handler([_tool_call_turn("read", {"path": "CONTEXT.md"})])
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, "无限读文件", tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 1
+    assert f"已达迭代上限 {MAX_ITERATIONS} 轮" in result.stderr
+    assert len(received) == MAX_ITERATIONS
+    entries = _load_entries(tmp_path)
+    assert entries[-1]["type"] == "event"
+    assert entries[-1]["kind"] == "iterationLimit"
+    assert entries[-1]["iterations"] == MAX_ITERATIONS
+    assert sum(1 for e in entries if e["type"] == "tool_call") == MAX_ITERATIONS
+
+
+def test_malformed_parallel_call_is_fed_back_while_sibling_executes(tmp_path: Path) -> None:
+    """一个坏调用不拖垮并行的好调用：畸形参数回传错误让模型自纠，好调用照常执行。"""
+    malformed_turn = _sse(
+        json.dumps(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "bad",
+                                    "type": "function",
+                                    "function": {"name": "read", "arguments": '{"path": '},
+                                },
+                                {
+                                    "index": 1,
+                                    "id": "good",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read",
+                                        "arguments": json.dumps({"path": "CONTEXT.md", "limit": 1}),
+                                    },
+                                },
+                            ]
+                        },
+                        "index": 0,
+                    }
+                ]
+            }
+        ),
+        '{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}',
+        "[DONE]",
+    )
+    handler_cls, received = _scripted_handler([malformed_turn, _answer_turn("好")])
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, "读文件", tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "好\n"
+    messages = received[1]["messages"]
+    # assistant 原样回传两个调用（含畸形那个的原始文本——回传雷区要求逐字节一致）
+    assert [c["id"] for c in messages[1]["tool_calls"]] == ["bad", "good"]
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == '{"path": '
+    # 坏调用收到错误结果、好调用拿到真实文件内容
+    assert messages[2]["tool_call_id"] == "bad"
+    assert messages[2]["content"].startswith("错误：")
+    assert messages[3]["tool_call_id"] == "good"
+    assert "1\t# codelotte" in messages[3]["content"]
+
+    entries = _load_entries(tmp_path)
+    bad_call = next(e for e in entries if e["type"] == "tool_call" and e["toolCallId"] == "bad")
+    assert bad_call["parseError"]
+    assert bad_call["arguments"] == '{"path": '  # 无法解析时记原始文本
+    bad_result = next(e for e in entries if e["type"] == "tool_result" and e["toolCallId"] == "bad")
+    assert bad_result["ok"] is False
+    good_result = next(e for e in entries if e["type"] == "tool_result" and e["toolCallId"] == "good")
+    assert good_result["ok"] is True
+
+
+def test_intermediate_narration_goes_to_stderr_not_stdout(tmp_path: Path) -> None:
+    """管道/重定向下 stdout 只有终轮答案：中间轮次的过渡叙述走 stderr。"""
+    narration_turn = _sse(
+        json.dumps(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "content": "我先读一下这个文件。",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read",
+                                        "arguments": json.dumps({"path": "CONTEXT.md", "limit": 1}),
+                                    },
+                                }
+                            ],
+                        },
+                        "index": 0,
+                    }
+                ]
+            }
+        ),
+        '{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}',
+        "[DONE]",
+    )
+    handler_cls, _received = _scripted_handler([narration_turn, _answer_turn("第一行是 # codelotte。")])
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, "读文件", tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "第一行是 # codelotte。\n"  # 答案通道纯净
+    assert "我先读一下这个文件。" in result.stderr  # 叙述不丢，在 stderr
+    entries = _load_entries(tmp_path)
+    narrated = entries[2]
+    assert narrated["content"] == "我先读一下这个文件。"
+    assert narrated["toolCalls"][0]["id"] == "c1"

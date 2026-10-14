@@ -37,7 +37,7 @@
 |---|---|---|---|
 | [01](01-project-scaffold-cli-ci.md) | 项目骨架 + 可安装 CLI + 测试与 CI 底座 | None | ✅ done（CI 已验证） |
 | [02](02-first-end-to-end-roundtrip.md) | 一次真实的一问一答（全链路首穿） | 01 | ✅ done（真机验收通过） |
-| [03](03-agent-loop-read-tool.md) | Agent 循环 + read 工具 | 02 | ready-for-agent |
+| [03](03-agent-loop-read-tool.md) | Agent 循环 + read 工具 | 02 | ✅ done（真机验收通过） |
 | [04](04-write-edit-bash-tools.md) | write / edit / bash 工具 + 本地执行器 | 03 | ready-for-agent |
 | [05](05-tui-v1.md) | TUI v1（Textual 终端界面） | 04 | ready-for-agent |
 | [06](06-session-tree-fork.md) | 会话树与分支 / fork | 03 | ready-for-agent |

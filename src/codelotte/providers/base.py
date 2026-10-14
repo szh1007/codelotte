@@ -24,6 +24,28 @@ class ReasoningDelta:
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """模型请求的一次工具调用（分片已装配完成）。
+
+    arguments 为原始 JSON 文本：回传模型时逐字节一致，是前缀缓存稳定的前提。
+    parse_error 非空表示参数不是合法 JSON 对象——这是模型输出缺陷而非系统错误，
+    执行层不执行它、把错误作为工具结果回传让它自纠（SPEC §D）。
+    """
+
+    id: str
+    name: str
+    arguments: str
+    parse_error: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolCallsEvent:
+    """一次回复中请求的全部工具调用（流结束、分片装配完成后统一发出）。"""
+
+    calls: tuple[ToolCall, ...]
+
+
+@dataclass(frozen=True)
 class StreamUsage:
     """一次模型调用的 token 用量。"""
 
