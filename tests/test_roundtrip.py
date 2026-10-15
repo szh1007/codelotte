@@ -607,6 +607,114 @@ def test_intermediate_narration_goes_to_stderr_not_stdout(tmp_path: Path) -> Non
     assert narrated["toolCalls"][0]["id"] == "c1"
 
 
+def _run_cli_list(tmp_path: Path, project: Path) -> subprocess.CompletedProcess[str]:
+    """`--resume`（无序号）：只读列出可恢复的会话/分支（不需要假服务器）。"""
+    env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "DEEPSEEK_API_KEY": "test-key",
+        "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "codelotte", "--resume"],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        env=env,
+        cwd=project,
+    )
+
+
+def _one_turn(
+    tmp_path: Path, project: Path, answer: str, prompt: str, *extra_args: str
+) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
+    """跑一次真实 CLI（单轮问答），返回 (进程结果, 假服务器收到的请求体)。"""
+    handler_cls, received = _scripted_handler([_answer_turn(answer)])
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, prompt, tmp_path, *extra_args, cwd=project)
+    finally:
+        server.shutdown()
+        server.server_close()
+    return result, received
+
+
+def test_fork_and_resume_keep_two_branches_independent(tmp_path: Path) -> None:
+    """验收（票据 06）：fork 之后两条分支各自 --continue/--resume，互不污染（真实 CLI 全链路）。"""
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    # 线性两问两答：Q1 A1 Q2 A2
+    first, _ = _one_turn(tmp_path, project, "第一答", "第一问")
+    assert first.returncode == 0, first.stderr
+    second, _ = _one_turn(tmp_path, project, "第二答", "第二问", "--continue")
+    assert second.returncode == 0, second.stderr
+
+    # --fork 2：在"第二问"处分岔——请求里不该再出现"第二答"
+    fork_run, fork_received = _one_turn(tmp_path, project, "方案B答", "换个方案", "--fork", "2")
+    assert fork_run.returncode == 0, fork_run.stderr
+    assert [m["content"] for m in fork_received[0]["messages"]] == [
+        "第一问",
+        "第一答",
+        "第二问",
+        "换个方案",
+    ]
+
+    # --resume 列表：两条分支各一行，分支行带标注、排在前面（活动更新）
+    listing = _run_cli_list(tmp_path, project)
+    assert listing.returncode == 0, listing.stderr
+    assert "可恢复的会话/分支（2 个）" in listing.stdout
+    assert listing.stdout.count("⎇ 分支（fork 于 ") == 1
+    assert "第一问" in listing.stdout
+
+    # --continue 回到最后说话的分支（新分支）：请求含"换个方案"，不含"第二答"
+    branch_run, branch_received = _one_turn(tmp_path, project, "分支续答", "分支续问", "--continue")
+    assert branch_run.returncode == 0, branch_run.stderr
+    assert [m["content"] for m in branch_received[0]["messages"]] == [
+        "第一问",
+        "第一答",
+        "第二问",
+        "换个方案",
+        "方案B答",
+        "分支续问",
+    ]
+
+    # --resume 2 回到主线老分支：请求完整重建线性历史，分支的记录一条都不在
+    main_run, main_received = _one_turn(tmp_path, project, "主线续答", "主线续问", "--resume", "2")
+    assert main_run.returncode == 0, main_run.stderr
+    assert [m["content"] for m in main_received[0]["messages"]] == [
+        "第一问",
+        "第一答",
+        "第二问",
+        "第二答",
+        "主线续问",
+    ]
+
+    # --resume 2 --fork 1：在第 2 行（现在 = 分叉分支）上再分岔——组合形式覆盖"非最近分支"
+    combo_run, combo_received = _one_turn(
+        tmp_path, project, "组合答", "组合问", "--resume", "2", "--fork", "1"
+    )
+    assert combo_run.returncode == 0, combo_run.stderr
+    assert [m["content"] for m in combo_received[0]["messages"]] == [
+        "第一问",
+        "第一答",
+        "第二问",
+        "换个方案",
+        "方案B答",
+        "分支续问",
+        "分支续答",
+        "组合问",
+    ]  # 操作对象是分叉分支，不是主线
+
+    # 文件层面：同一棵树上两条链，各自的叶子都还在（互不污染）
+    entries = _load_entries(tmp_path)
+    assert sum(1 for e in entries if e["type"] == "event" and e.get("kind") == "fork") == 2
+    users = [e["content"] for e in entries if e.get("role") == "user"]
+    assert users == ["第一问", "第二问", "换个方案", "分支续问", "主线续问", "组合问"]
+
+
 def test_agent_writes_edits_and_verifies_with_bash(tmp_path: Path) -> None:
     """验收：agent 修改真实文件并运行命令验证改动（write → edit → bash 全链路，本地模式）。"""
     project = tmp_path / "proj"

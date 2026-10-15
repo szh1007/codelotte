@@ -157,6 +157,11 @@ class AgentLoop:
     def session_path(self) -> Path:
         return self._store.path
 
+    @property
+    def leaf_id(self) -> str | None:
+        """当前活动分支的叶子记录 id（消费方按它取分支记录，如 TUI 的历史回放）。"""
+        return self._store.leaf_id
+
     async def run_turn(self, prompt: str) -> AsyncIterator[LoopEvent]:
         """跑一个完整回合并广播事件。工具失败不中断（错误文本回传模型自纠）。
 
