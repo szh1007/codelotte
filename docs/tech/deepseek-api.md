@@ -41,7 +41,7 @@
 - **OpenAI-compatible**（`/`）；**Anthropic-compatible**（`/anthropic`，`claude-*` 模型名自动映射）；另有 Responses API（为 Codex 适配）
 - Tool Calls ✓；Json Output ✓（仅 `json_object`，无 json_schema）；strict 工具 schema 为 Beta，需 `/beta` 端点
 - 流式：SSE + `[DONE]`；`stream_options.include_usage=true` 每 chunk 带 usage
-- 思考字段：`reasoning_content`（流式在 `delta.reasoning_content`）；控制用 `thinking` + `reasoning_effort`（low/high/max）
+- 思考字段：`reasoning_content`（流式在 `delta.reasoning_content`）；控制用 `reasoning_effort`（档位 none/minimal/low/medium/high/xhigh/max/ultra，官方映射表 minimal→low、medium→high、xhigh/ultra→max）；OpenAI 格式另有 `thinking:{type:enabled/disabled}` 开关，但**实测（2026-10-17）`reasoning_effort:"none"` 单字段即可关闭**：200、无 reasoning_content（对照 `high` 有；"1+1"一题 41 vs 1 输出 token）
 - **三条关键约束（agent 循环最易踩）**：
   1. **带 `tools` 时，历史所有 assistant 的 `reasoning_content` 必须回传，否则 400**
   2. 思考模式下 `temperature` 等参数无效；`tool_choice=required/指定工具` 返回 400（仅 none/auto 可用）——与 Anthropic 5.5 的迁移约束同构

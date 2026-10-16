@@ -211,7 +211,7 @@
   3. `max_tokens` 必须显式设置（默认值远小于上限，会静默截断长输出）。
 - **并发与重试**：DeepSeek 限流按**并发数**（flash 2500）而非 RPM——实现"在途请求信号量"即可；对 429/5xx/网络错误做指数退避重试（上限与抖动策略写进测试）。
 - **提示缓存友好**是适配层的核心纪律：请求前缀（系统提示 + 工具定义 + 历史）的序列化必须**逐字节确定**，任何"随机顺序/时间戳混入"都是线上事故。
-- **密钥只从环境变量读取**（如 `DEEPSEEK_API_KEY`），配置文件与仓库永不出现明文。
+- **密钥只从用户级 `~/.codelotte/models.json` 的 provider 条目读取**（2026-10-17 起：环境变量来源全部移除），仓库与随包文件永不出现明文（有测试守卫）。
 
 ### D. 工具（四个）
 
@@ -337,10 +337,11 @@
 
 ### M. 配置系统
 
-- 配置级联：**命令行参数（如 `-r`）> 用户级 `~/.codelotte/settings.json` 顶层字段 > 用户级 `~/.codelotte/models.json` 的 provider 条目（apiKey/baseUrl）> 必填报错指路**。**没有内置默认，也没有任何环境变量来源**（`.env`、`env` 包层、`CODELOTTE_*` 变量均已移除）；用户级目录固定为系统家目录；不存在任何项目级配置文件。模型/密钥/端点缺哪个就报错并指出去哪补。
-- 模型目录（模型元数据）与权限规则是两类独立配置（前者是"能力与价格表"，后者是"安全策略"）：models.json 采用 **pi 风格 `providers` 结构**（provider 级 baseUrl/apiKey/计费规则——峰谷/节假日/货币都是 provider 的事实——+ models 列表），随包目录在 `src/codelotte/providers/models.json`，用户文件**逐字段、按模型 id 合入**；权限规则走 `permissions.json` + 项目级信任门槛。
-- **配置一律只从用户级目录读取**（固定的系统家目录下的 `~/.codelotte/`）：settings/models 能决定请求去向与所用密钥，放进项目目录等于让陌生仓库遥控你的请求；且没有任何开关（如从前的 `CODELOTTE_HOME`）能把这个目录重定位。
-- 密钥来源：用户级 models.json 的 provider 条目 `apiKey`（必填）；不进仓库——随包 models.json 带密钥会被测试拦下。
+- 配置取值链：**命令行参数（如 `--allow`）> 用户级 `~/.codelotte/settings.json`（选 provider/模型/超时）→ 用户级 `~/.codelotte/models.json`（端点/密钥/模型条目）> 随包默认值（窗口/输出上限/展示名/思考强度）> 必填报错指路**。**没有替你猜的默认，也没有任何环境变量来源**（`.env`、`env` 包层、`CODELOTTE_*` 变量均已移除）；用户级目录固定为系统家目录；不存在任何项目级配置文件。缺哪个就报错并指出去哪补。思考开关与强度统一在模型条目的 `reasoning_effort`（直接进请求体；`none` 关闭思考，其余档位开启并控制强度，照官方 thinking_mode 的档位表）：**展示总是跟随开关**——开启时思考内容既落盘又展示，没有单独的展示配置。
+- 三份配置分家（2026-10-17 v3）：随包 `src/codelotte/providers/models.json` 只用于**计费、展示与上限参考**（纯函数逻辑：价目/峰谷/节假日/官方端点提示/展示名/窗口与输出默认值）；用户级 `~/.codelotte/models.json` 是**运行参数的唯一来源**（provider 级 baseUrl/apiKey + models 清单）。随包文件不参与请求，密钥只进用户级文件。
+- 用户配置的模型 `id` 必须命中随包目录里**已适配**的模型（没适配的不给用）；`contextWindow`/`maxTokens` 可省（随包默认）、写了不能超过随包值；`name` 用户优先；`reasoning_effort` 可省（默认随包的 `high`），写在模型条目里直接进请求体；多写的字段（含计费字段）一律忽略——钱的事以随包文件为准。
+- `settings.json` 的文件键与 `Settings` 字段一一对应：`lastChangelogVersion`（更新提示水位，启动比对 `CHANGELOG.md` 并写回）、`defaultProvider`、`defaultModel`、`commandTimeoutSeconds`。会话目录固定为 `~/.codelotte/sessions`。
+- 权限规则走 `permissions.json` + 项目级信任门槛（票据 09）；**配置一律只从用户级目录读取**（固定的系统家目录下的 `~/.codelotte/`）：settings/models 能决定请求去向与所用密钥，放进项目目录等于让陌生仓库遥控你的请求；且没有任何开关能把这个目录重定位。
 - 完整键表与示例见 [docs/tech/configuration.md](docs/tech/configuration.md)。
 
 ### N. 可靠性与错误处理

@@ -16,7 +16,7 @@
 
 ## 实施记录（2026-10-15）
 
-- **价目表数据化**（[models.json](../../src/codelotte/models.json)，随包内置）：**人民币元**峰价表（flash 命中 0.04 / 未命中 2 / 输出 8；v4-pro 0.30 / 9.0 / 27.0，出处：官方定价页 api-docs.deepseek.com/zh-cn/quick_start/pricing，2026-10-16 核对）+ 峰谷窗口 + 节假日表 + `offPeakMultiplier: 0.5`。**谷价不存第二份**：它是"峰价 × 系数"这条规则——数据里存规则，同一个事实只有一个来源。可被 `~/.codelotte/models.json` **整份覆写**（节假日表"可配置"的落实；坏文件以 ConfigError 报出，退出码 2）。账单带货币标识（记录里落 `currency`，导出/审计可追溯——本票刚发生了"误记美元"这一课，见下）。
+- **价目表数据化**（[models.json](../../src/codelotte/providers/models.json)，随包内置）：**人民币元**峰价表（flash 命中 0.04 / 未命中 2 / 输出 8；v4-pro 0.30 / 9.0 / 27.0，出处：官方定价页 api-docs.deepseek.com/zh-cn/quick_start/pricing，2026-10-16 核对）+ 峰谷窗口 + 节假日表 + `offPeakMultiplier: 0.5`。**谷价不存第二份**：它是"峰价 × 系数"这条规则——数据里存规则，同一个事实只有一个来源。可被 `~/.codelotte/models.json` **整份覆写**（节假日表"可配置"的落实；坏文件以 ConfigError 报出，退出码 2）。账单带货币标识（记录里落 `currency`，导出/审计可追溯——本票刚发生了"误记美元"这一课，见下）。
 - **定价更正（2026-10-16，用户指出）**：首版按早期调研笔记记的是美元换算值；官方定价页实际以人民币元计价。全链路已改：`models.json` 换成官方元价目、账单/状态栏按目录货币渲染（`format_money`，¥）、usage 记录字段 `usd` → `cost` + 新增 `currency`（记录自描述）；docs/tech/deepseek-api.md §2 留更正说明与出处链接。教训：**价目这类会变的事实，写进数据文件不够，还要给事实源留链接与核对日期**。
 - **时区用固定 +8 而非 tzdata 库**：中国无夏令时，固定偏移是精确的；不为一个时区新增依赖。（2026 全年法定节假日 + 调休上班日已按国办发明电〔2025〕7 号核录；调休周末按 DeepSeek 规则仍算空闲价——规则只说"不含法定节假日"，这处口径写进了 `holidaysNote`，对账时若发现不符由此入手。）
 - **判定与计价是纯函数**（[cost.py](../../src/codelotte/cost.py) `Catalog.period_at` / `price_call`）：传时刻即可复算任意一次调用；`period_at` 拒绝 naive datetime（防"按系统时区误解"这一类静默错账）。
@@ -37,3 +37,7 @@
 4. 注意：价目以官方定价页（api-docs.deepseek.com/zh-cn/quick_start/pricing）为准、2026-10-16 核对；若平台改价需同步 `models.json`（这也是数据化的意义）。
 
 **结果（2026-10-16）**：用户真机执行——本地 `codelotte` 记账（含峰谷判定与缓存两档价）与实际 DeepSeek 账单**一致，无偏差**。验收第 5 项通过。
+
+## 后续变更（2026-10-17，配置 v3）
+
+随包目录移到 **`src/codelotte/providers/models.json`**（provider 的数据随 providers 包走），且与用户级文件的"整份覆写/逐字段合入"关系**已取消**：随包文件只用于计费、展示与上限参考（纯函数逻辑），运行参数（端点/密钥/模型清单）只从 `~/.codelotte/models.json` 读，模型 id 必须在随包目录已适配；窗口/输出上限用户可下调不可上调。细节见 [docs/tech/configuration.md](../tech/configuration.md)。本文上行"可被 `~/.codelotte/models.json` 整份覆写"按此理解。

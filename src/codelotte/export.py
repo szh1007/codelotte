@@ -262,7 +262,13 @@ def _render_cost_panel(entries: list[dict[str, Any]], catalog: Catalog) -> str:
 
 
 def _price_notes(usages: list[dict[str, Any]], catalog: Catalog) -> list[str]:
-    """价目脚注（两种格式共用；这里给原文，HTML 侧负责转义）。"""
+    """价目脚注（两种格式共用；这里给原文，HTML 侧负责转义）。
+
+    末尾附随包目录里的 `priceNote` 出处（官方定价页与核对日期）——价目是会变的，
+    导出的账单要能自证"按哪天的表算的"。
+    """
+    if not usages:
+        return []
     notes: list[str] = []
     for model in dict.fromkeys(str(e.get("model", "")) for e in usages):
         info = catalog.models.get(model)
@@ -273,6 +279,8 @@ def _price_notes(usages: list[dict[str, Any]], catalog: Catalog) -> list[str]:
             f"{model}：命中 {info.cache_hit_price} · 未命中 {info.cache_miss_price} · "
             f"输出 {info.output_price}（高峰价；空闲 = 高峰 × {catalog.off_peak_multiplier}）"
         )
+    if catalog.price_note:
+        notes.append(f"价目出处：{catalog.price_note}")
     return notes
 
 

@@ -22,6 +22,7 @@ from tests.support import (
     child_env,
     home_env,
     run_cli,
+    sessions_dir,
     write_user_config,
 )
 
@@ -96,7 +97,6 @@ def _session_env(tmp_path: Path, *, with_key: bool = True) -> dict[str, str]:
     """测试用子进程环境：配置全部写进临时 home 的用户级文件（不再有环境变量来源）。"""
     home = write_user_config(
         tmp_path / "home",
-        session_dir=tmp_path / "sessions",
         api_key="test-key" if with_key else None,
     )
     return home_env(home)
@@ -118,7 +118,7 @@ def test_resume_list_is_readable_and_needs_no_key(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "还没有可恢复的会话" in result.stdout
     assert "Traceback" not in result.stderr
-    assert not (tmp_path / "sessions").exists()
+    assert not sessions_dir(tmp_path / "home").exists()
 
 
 def test_resume_index_out_of_range_fails_readably(tmp_path: Path) -> None:
@@ -204,14 +204,12 @@ def test_resume_list_with_fork_is_rejected(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr
 
 
-def test_resume_list_warns_about_damaged_and_lists_healthy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resume_list_warns_about_damaged_and_lists_healthy(tmp_path: Path) -> None:
     """回归（审查发现）：损坏的会话要被跳过并警告，健康的会话不受牵连。"""
     from codelotte.session.store import SessionStore
 
-    monkeypatch.setenv("CODELOTTE_SESSION_DIR", str(tmp_path / "sessions"))
-    store = SessionStore.start(tmp_path, base_dir=tmp_path / "sessions")
+    home = write_user_config(tmp_path / "home")
+    store = SessionStore.start(tmp_path, base_dir=sessions_dir(home))
     store.append("message", role="user", content="好的会话")
     (store.path.parent / "20990101T000000Z_damaged0.jsonl").write_text(
         '{"id": "x", "parentId": "zzz", "type": "session"}\n', encoding="utf-8"
@@ -231,15 +229,15 @@ def test_build_agent_history_follows_selected_branch(
     from codelotte.session.store import SessionStore, load_branch
 
     monkeypatch.chdir(tmp_path)
-    home = write_user_config(tmp_path / "home", session_dir=tmp_path / "sessions")
+    home = write_user_config(tmp_path / "home")
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("HOME", str(home))
-    store = SessionStore.start(tmp_path, base_dir=tmp_path / "sessions")
+    store = SessionStore.start(tmp_path, base_dir=sessions_dir(home))
     store.append("message", role="user", content="第一问")
     store.append("message", role="assistant", content="第一答", model="m", stopReason="stop")
     store.append("message", role="user", content="第二问")
 
-    loop = _build_agent(fork_from_end=2)  # 在"第一答"处分岔
+    loop, _spec = _build_agent(fork_from_end=2)  # 在"第一答"处分岔
     history = load_branch(loop.session_path, loop.leaf_id)  # _run_tui 的真实取数路径
     contents = [e.get("content") for e in history if e.get("type") == "message"]
     assert contents == ["第一问", "第一答"]  # 老的叶子"第二问"不在新分支的可见记录里
@@ -253,16 +251,16 @@ def test_build_agent_resume_ignores_damaged_neighbour(
     from codelotte.session.store import SessionStore
 
     monkeypatch.chdir(tmp_path)
-    home = write_user_config(tmp_path / "home", session_dir=tmp_path / "sessions")
+    home = write_user_config(tmp_path / "home")
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("HOME", str(home))
-    store = SessionStore.start(tmp_path, base_dir=tmp_path / "sessions")
+    store = SessionStore.start(tmp_path, base_dir=sessions_dir(home))
     store.append("message", role="user", content="好的会话")
     (store.path.parent / "20990101T000000Z_damaged0.jsonl").write_text(
         '{"id": "x", "parentId": "zzz", "type": "session"}\n', encoding="utf-8"
     )
 
-    loop = _build_agent(resume_index=1)
+    loop, _spec = _build_agent(resume_index=1)
     assert loop.session_path == store.path
     assert [m["content"] for m in loop.messages] == ["好的会话"]
 
@@ -286,7 +284,7 @@ def test_console_script_entry_point_works() -> None:
 def test_config_error_leaves_no_session_file(tmp_path: Path) -> None:
     """回归（审查发现）：没密钥的启动不得留下"只有会话头"的空会话文件——
     否则 --continue 按 mtime 会挑中它，真实历史被跳过。"""
-    home = write_user_config(tmp_path / "home", session_dir=tmp_path / "sessions", api_key=None)
+    home = write_user_config(tmp_path / "home", api_key=None)
     env = home_env(home)
     result = subprocess.run(
         [sys.executable, "-m", "codelotte", "-p", "hi"],
@@ -299,7 +297,7 @@ def test_config_error_leaves_no_session_file(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
     assert result.returncode == 2
-    sessions = tmp_path / "sessions"
+    sessions = sessions_dir(home)
     assert not (sessions.exists() and list(sessions.rglob("*.jsonl")))
 
 
@@ -309,7 +307,7 @@ def test_version_matches_pyproject() -> None:
 
 
 def test_missing_api_key_fails_with_readable_error(tmp_path: Path) -> None:
-    """settings.json 配好了模型但没配密钥：报错要指路到 models.json 的 apiKey。"""
+    """provider 配好了端点但没配密钥：报错要指路到 models.json 的 apiKey。"""
     home = write_user_config(tmp_path / "home", api_key=None)
     result = subprocess.run(
         [sys.executable, "-m", "codelotte", "-p", "hi"],
@@ -322,13 +320,14 @@ def test_missing_api_key_fails_with_readable_error(tmp_path: Path) -> None:
         cwd=tmp_path,  # 空目录；codelotte 不读取项目级配置
     )
     assert result.returncode == 2
-    assert "API 密钥" in result.stderr and "models.json" in result.stderr  # 报错指路
+    assert "providers.deepseek 缺少 apiKey" in result.stderr
+    assert "models.json" in result.stderr  # 报错指路
     assert "Traceback" not in result.stderr
 
 
-def test_missing_model_fails_with_readable_error(tmp_path: Path) -> None:
-    """没有默认模型：settings.json 缺 "model" 就报错，并指引去用户级目录配置。"""
-    home = write_user_config(tmp_path / "home", model=None)
+def test_missing_default_model_fails_with_readable_error(tmp_path: Path) -> None:
+    """没有默认模型：settings.json 缺 "defaultModel" 就报错，并列出可选项。"""
+    home = write_user_config(tmp_path / "home", default_model=None)
     result = subprocess.run(
         [sys.executable, "-m", "codelotte", "-p", "hi"],
         capture_output=True,
@@ -340,7 +339,32 @@ def test_missing_model_fails_with_readable_error(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
     assert result.returncode == 2
-    assert "未配置模型" in result.stderr and "settings.json" in result.stderr
+    assert "未配置默认模型" in result.stderr and "defaultModel" in result.stderr
+    assert "deepseek-flash" in result.stderr  # 列出可选值
+    assert "Traceback" not in result.stderr
+
+
+def test_read_only_commands_leave_settings_untouched(tmp_path: Path) -> None:
+    """只读命令（--resume/export/trust）不改用户文件：版本水位只在真正跑一次时写回。"""
+    home = write_user_config(
+        tmp_path / "home", settings_extra={"lastChangelogVersion": "0.0.1"}
+    )
+    result = run_cli("--resume", cwd=tmp_path, env=home_env(home))
+    assert result.returncode == 0
+    data = json.loads((home / ".codelotte" / "settings.json").read_text(encoding="utf-8"))
+    assert data["lastChangelogVersion"] == "0.0.1"  # 原样不动
+    assert data["defaultModel"] == "deepseek-flash"
+    assert "更新内容" not in result.stderr  # 只读命令也不打更新提示
+
+
+def test_broken_settings_fail_readably_without_traceback(tmp_path: Path) -> None:
+    """回归（审查发现）：坏 settings.json（如写回被打断）给可读错误 + 退出码 2，不裸 traceback。"""
+    home = tmp_path / "home"
+    (home / ".codelotte").mkdir(parents=True)
+    (home / ".codelotte" / "settings.json").write_text("{ broken", encoding="utf-8")
+    result = run_cli("--resume", cwd=tmp_path, env=home_env(home))
+    assert result.returncode == 2
+    assert "不是合法 JSON" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -358,9 +382,7 @@ def test_trust_declined_keeps_rules_ignored(tmp_path: Path) -> None:
         '{"deny": ["read"]}', encoding="utf-8"
     )
     home = tmp_path / "home"
-    result = run_cli(
-        "trust", cwd=tmp_path, env=child_env(CODELOTTE_HOME=str(home)), input_text="n\n"
-    )
+    result = run_cli("trust", cwd=tmp_path, env=home_env(home), input_text="n\n")
     assert result.returncode == 1
     assert "未信任——项目级规则继续被忽略" in result.stdout
     assert not (home / ".codelotte" / "trusted").exists()

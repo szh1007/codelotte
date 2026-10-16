@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -187,17 +188,23 @@ class TuiApp(App[None]):
         *,
         agent: AgentLoop,
         model: str,
+        context_window: int | None = None,
+        startup_notices: Sequence[str] = (),
         history: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__()
         self._agent = agent
-        self._model = model
+        self._model = model  # 展示名（随包目录的名字，用户级 models.json 可覆盖）
+        self._context_window = context_window  # 上下文占用百分比的分母（state 栏）
+        self._startup_notices = list(startup_notices)
         self._history = history or []
         self._turn_task: asyncio.Task[None] | None = None
         self._turn_active = False  # 显式状态位：任务自己的 finally 里刷新时，"任务还没正式结束"不算运行中
         self._interrupt_requested = False
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
+        self._reasoning: Static | None = None  # 当前思考块（文本一出现就收尾，下次思考新开一块）
+        self._reasoning_parts: list[str] = []
         self._tool_blocks: dict[str, ToolCallBlock] = {}
         self._ledger = Ledger()  # 账单累计（历史回放 + 实时事件同一本账，票据 07）
         agent.approver = self._approve  # 权限审批走弹层（票据 09）；-p 模式没有此处、fail-closed
@@ -213,6 +220,8 @@ class TuiApp(App[None]):
         )
 
     async def on_mount(self) -> None:
+        for note in self._startup_notices:  # 启动提示（如更新内容）：完整文本挂进对话流
+            await self._mount_notice(note)
         for note in self._agent.permissions.notices:  # 权限层加载提示（如未信任的项目规则被忽略）
             await self._mount_notice(f"⚠ {note}")
         self.query_one(Input).focus()
@@ -293,19 +302,24 @@ class TuiApp(App[None]):
             await self._end_markdown()
             await self._mount_notice(f"⚠ 模型调用失败：{exc}")
         finally:
+            # 回合结束一律收掉思考块：失败/中断路径不收尾的话，下一回合的思考会拼进旧块（审查修正）
+            self._close_reasoning()
             await self._end_markdown()
             self._turn_active = False
             self._refresh_status()
 
     async def _handle(self, event: object) -> None:
         if isinstance(event, TextDelta):
+            self._close_reasoning()  # 正文出现：思考块收尾（下次思考新开一块）
             await self._write_markdown(event.text)
         elif isinstance(event, ReasoningDelta):
-            pass  # v1 不显示思考过程（-r 的语义保留给无头模式；会话文件里有）
+            # 思考事件只在开启时出现（reasoning_effort 为 none 时接口不产生）——来了就展示
+            await self._write_reasoning(event.text)
         elif isinstance(event, CostRecorded):
             self._ledger.record(event.record)  # 计价在 loop 落盘时算好，界面只累计
             self._refresh_status()
         elif isinstance(event, ToolRequested):
+            self._close_reasoning()
             await self._end_markdown()
             block = self._new_tool_block(
                 call_id=event.call_id,
@@ -322,6 +336,7 @@ class TuiApp(App[None]):
                 )
                 self._scroll_end()
         elif isinstance(event, TurnEnded):
+            self._close_reasoning()
             await self._end_markdown()
             if event.hit_iteration_cap:
                 await self._mount_notice(
@@ -354,6 +369,21 @@ class TuiApp(App[None]):
     async def _mount_notice(self, text: str) -> None:
         await self._end_markdown()
         await self._mount(Static(Text(text, style="yellow")))
+
+    async def _write_reasoning(self, text: str) -> None:
+        """思考增量：懒建一块暗色 Static，随到随刷（正文/工具出现时收尾，见 _close_reasoning）。"""
+        if self._reasoning is None:
+            self._reasoning = Static(Text("", style="dim"))
+            self._reasoning_parts = []
+            await self._mount(self._reasoning)
+        self._reasoning_parts.append(text)
+        self._reasoning.update(Text("".join(self._reasoning_parts), style="dim"))
+        self._scroll_end()
+
+    def _close_reasoning(self) -> None:
+        if self._reasoning is not None:
+            self._reasoning = None
+            self._reasoning_parts = []
 
     async def _write_markdown(self, text: str) -> None:
         stream = self._stream
@@ -417,6 +447,13 @@ class TuiApp(App[None]):
         else:
             text.append("● 就绪", style="dim")
         text.append(f"  │  {self._model}")
+        if self._ledger.calls and self._context_window:
+            # 上下文占用：最近一次请求的输入 tokens / 窗口（模型条目给的 contextWindow）；
+            # 超窗（请求本身会失败）时显示 >100%，不显示会让人怀疑 token 计数的怪数字
+            used = self._ledger.calls[-1].input_tokens
+            share = used / self._context_window
+            label = ">100%" if share > 1 else f"{share:.1%}"
+            text.append(f"  │  上下文 {label}")
         if self._ledger.calls:
             text.append(
                 f"  │  tokens in={self._ledger.input_tokens} out={self._ledger.output_tokens}"

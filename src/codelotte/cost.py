@@ -7,16 +7,16 @@ docs/tech/deepseek-api.md §2 同步更正——早前记录的是美元换算�
 其余时段（含周末）为空闲价。pi 式目录只建峰价、谷时会高估 2 倍——本模块刻意按时段建模。
 
 价目、峰谷窗口、节假日表、货币都在随包目录 src/codelotte/providers/models.json（**provider 级**：
-DeepSeek 的专属规则就写在 providers.deepseek 下）；用户级 ~/.codelotte/models.json 逐字段合入
-（最省事的写法 `{"providers": {"deepseek": {"apiKey": "sk-…"}}}`——**密钥只放用户级，随包文件
-带密钥会被测试拦下**）。判定与计价是纯函数（传入时刻即可复算任意一次调用）；Ledger 只做累计
-与渲染，不碰文件。
+DeepSeek 的专属规则就写在 providers.deepseek 下）。随包目录只用于**计费、展示与上限参考**
+（纯函数逻辑）——运行参数（端点/密钥/选用模型）只从用户级 ~/.codelotte/models.json 读
+（models.py），这里不碰凭据。判定与计价是纯函数（传入时刻即可复算任意一次调用）；
+Ledger 只做累计与渲染，不碰文件。
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -47,12 +47,12 @@ PERIOD_LABELS = {PEAK: "峰值", OFFPEAK: "低谷"}
 CURRENCY_LABELS = {"CNY": "人民币元", "USD": "美元"}
 _CURRENCY_SYMBOLS = {"CNY": "¥", "USD": "$"}
 
+# 思考强度档位（DeepSeek thinking_mode 的参数面，2026-10-17 核对）：none 关闭思考；
+# 其余为强度档，接口方按官方映射表自行折算（minimal→low、medium→high、xhigh/ultra→max…）。
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
 _MILLION = 1_000_000
 _BUILTIN_PATH = Path(__file__).parent / "providers" / "models.json"  # 随包目录（providers 域的数据随 providers 走）
-
-
-def _user_catalog_path() -> Path:
-    return Path.home() / ".codelotte" / "models.json"
 
 
 @dataclass(frozen=True)
@@ -68,27 +68,27 @@ class PeakWindow:
 
 @dataclass(frozen=True)
 class ModelInfo:
-    """一个模型的元数据与峰价（货币随 Catalog.currency，官方价目为人民币元 / M tokens）。
+    """随包目录里一个模型的**纯函数用事实**：展示名、窗口/输出上限（默认值兼上限）、
+    思考强度默认档、峰价。
 
-    api_key/base_url 采用 pi 风格：provider 级给默认、模型条目可覆盖；
-    **密钥只应出现在用户级 ~/.codelotte/models.json**——随包文件若带密钥会进仓库（有测试守卫）。
+    只有参与逻辑的字段在这里（vision/schema/priceUnit 等能力标记留在 JSON 里供开发人员阅读，
+    不解析——解析了没人用就是死字段）。货币随 Catalog.currency（官方价目为人民币元 / M tokens）。
+    **凭据（apiKey/baseUrl）不在这里**：运行参数只从用户级 ~/.codelotte/models.json 读
+    （models.py）；随包文件带密钥会进公开仓库（有测试守卫）。
     """
 
-    name: str
-    context_window: int
-    max_output_tokens: int
-    vision: bool
+    name: str  # 展示名（TUI 状态栏；用户级 models.json 没写 name 时用它）
+    context_window: int  # 窗口上限（用户可下调，不可上调；票据 12 的压缩阈值也从这取）
+    max_output_tokens: int  # 单次输出上限（同上）
+    reasoning_effort: str  # 思考强度默认档（用户级没写 reasoning_effort 时用它；none 关闭思考）
     cache_hit_price: float
     cache_miss_price: float
     output_price: float
-    api_key: str | None = None
-    base_url: str | None = None
-    display_name: str = ""
 
 
 @dataclass(frozen=True)
 class Catalog:
-    """模型目录：价目 + 峰谷规则 + 节假日表（全部来自 models.json）。"""
+    """随包模型目录：价目 + 峰谷规则 + 节假日表 + 官方端点（报错指路用）。"""
 
     models: dict[str, ModelInfo]
     utc_offset_hours: int
@@ -96,6 +96,8 @@ class Catalog:
     off_peak_multiplier: float
     holidays: frozenset[date]
     currency: str = "CNY"  # 价目与账单的货币（官方定价页为人民币元）
+    base_urls: dict[str, str] = field(default_factory=dict)  # provider 名 → 官方端点（缺 baseUrl 时报错提示用）
+    price_note: str = ""  # 价目出处备注（导出账单脚注引用）
 
     def period_at(self, when: datetime) -> str:
         """判定一次调用的时段（peak / offpeak）。`when` 必须是带时区的时刻。
@@ -173,9 +175,9 @@ _RULE_KEYS = ("peakWindows", "offPeakMultiplier", "holidays", "currency", "timez
 
 
 def _parse_catalog(raw: dict[str, Any], source: Path) -> Catalog:
-    """解析：计费规则（峰谷/节假日/货币）是 **provider 级**的——DeepSeek 的专属设置就写在
-    providers.deepseek 下（用户级文件同样只能覆盖到 provider 级）。v1 的运行时只有一套规则，
-    检出多个 provider 各自定义规则时直接报错（等第二条协议/第二家 provider 落地再建模）。
+    """解析随包目录：计费规则（峰谷/节假日/货币）是 **provider 级**的——DeepSeek 的专属设置
+    就写在 providers.deepseek 下。v1 的运行时只有一套规则，检出多个 provider 各自定义规则时
+    直接报错（等第二条协议/第二家 provider 落地再建模）。
     """
     providers: dict[str, dict[str, Any]] = raw["providers"]
     declaring = [
@@ -197,25 +199,27 @@ def _parse_catalog(raw: dict[str, Any], source: Path) -> Catalog:
     if not windows:
         raise ConfigError(f"模型目录 {source} 的 peakWindows 不能为空")
     models: dict[str, ModelInfo] = {}
-    for _provider_name, provider in providers.items():
-        provider_url = provider.get("baseUrl")
-        provider_key = provider.get("apiKey")
+    base_urls: dict[str, str] = {}
+    for provider_name, provider in providers.items():
+        if provider.get("baseUrl"):
+            base_urls[provider_name] = str(provider["baseUrl"])  # 报错指路参考（不参与请求）
         for spec in provider["models"]:
             model_id = str(spec["id"])
             prices = spec["peakPricePerMillion"]
-            api_key = spec.get("apiKey") or provider_key
-            base_url = spec.get("baseUrl") or provider_url
+            effort = str(spec["reasoning_effort"])
+            if effort not in REASONING_EFFORTS:
+                raise ConfigError(
+                    f"模型目录 {source}：{model_id} 的 reasoning_effort 要在 "
+                    f"{'/'.join(REASONING_EFFORTS)} 里（给了 {effort!r}）"
+                )
             models[model_id] = ModelInfo(
-                name=model_id,
-                display_name=str(spec.get("name") or model_id),
+                name=str(spec.get("name") or model_id),
                 context_window=int(spec["contextWindow"]),
                 max_output_tokens=int(spec["maxTokens"]),
-                vision=bool(spec.get("vision", False)),
+                reasoning_effort=effort,
                 cache_hit_price=float(prices["inputCacheHit"]),
                 cache_miss_price=float(prices["inputCacheMiss"]),
                 output_price=float(prices["output"]),
-                api_key=str(api_key) if api_key else None,
-                base_url=str(base_url) if base_url else None,
             )
     return Catalog(
         models=models,
@@ -224,32 +228,9 @@ def _parse_catalog(raw: dict[str, Any], source: Path) -> Catalog:
         off_peak_multiplier=float(rules["offPeakMultiplier"]),
         holidays=frozenset(date.fromisoformat(d) for d in rules.get("holidays", [])),
         currency=str(rules.get("currency", "CNY")),
+        base_urls=base_urls,
+        price_note=str(rules.get("priceNote", "")),
     )
-
-
-def _merge_catalogs(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """用户文件**逐字段合入**随包目录（pi 风格 providers 结构）：顶层键覆盖；
-    providers 逐 provider 合并（baseUrl/api/apiKey 等）；provider 的 models 列表按 id 合并
-    （只写想改的字段即可，新增 id 追加）。
-
-    用户只想加把钥匙就不必拷贝整份随包目录（价格随版本更新，抄一份会失同步）——
-    最省事的写法就是 `{"providers": {"deepseek": {"apiKey": "sk-…"}}}`。
-    """
-    merged = {key: value for key, value in base.items() if key != "providers"}
-    merged.update({key: value for key, value in override.items() if key != "providers"})
-    providers = {name: dict(spec) for name, spec in base.get("providers", {}).items()}
-    for name, spec in override.get("providers", {}).items():
-        existing = providers.get(name, {})
-        combined = {**existing, **{k: v for k, v in spec.items() if k != "models"}}
-        by_id: dict[str, dict[str, Any]] = {
-            str(m["id"]): dict(m) for m in existing.get("models", [])
-        }
-        for model in spec.get("models", []):
-            by_id[str(model["id"])] = {**by_id.get(str(model["id"]), {}), **model}
-        combined["models"] = list(by_id.values())
-        providers[name] = combined
-    merged["providers"] = providers
-    return merged
 
 
 def _read_catalog_file(path: Path) -> dict[str, Any]:
@@ -262,16 +243,9 @@ def _read_catalog_file(path: Path) -> dict[str, Any]:
 
 
 def load_catalog(path: Path | None = None) -> Catalog:
-    """加载模型目录：显式 path = 只读该文件；默认 = 随包内置 ⊕ 用户级 ~/.codelotte/models.json。"""
-    if path is None:
-        raw = _read_catalog_file(_BUILTIN_PATH)
-        user = _user_catalog_path()
-        if user.is_file():
-            raw = _merge_catalogs(raw, _read_catalog_file(user))
-        source = _BUILTIN_PATH
-    else:
-        raw = _read_catalog_file(path)
-        source = path
+    """加载随包模型目录（计费事实 + 展示/上限默认值）。显式 path = 只读该文件（测试用）。"""
+    source = path if path is not None else _BUILTIN_PATH
+    raw = _read_catalog_file(source)
     try:
         return _parse_catalog(raw, source)
     except (KeyError, TypeError, ValueError) as exc:

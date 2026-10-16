@@ -21,7 +21,7 @@ from textual.widgets import Input, Markdown, Static
 from codelotte.cost import Catalog
 from codelotte.loop import AgentLoop
 from codelotte.permissions import PermissionLayer, allow_builtin_tools, build_permission_layer
-from codelotte.providers.base import TextDelta
+from codelotte.providers.base import ProviderError, ReasoningDelta, TextDelta
 from codelotte.sandbox import LocalExecutor
 from codelotte.session.context import messages_from_entries
 from codelotte.session.store import SessionStore, load_entries
@@ -42,6 +42,8 @@ def _make(
     model: str = "fake-model",
     catalog: Catalog | None = None,
     permissions: PermissionLayer | None = None,
+    context_window: int | None = None,
+    startup_notices: Sequence[str] = (),
 ) -> tuple[TuiApp, ScriptedClient, SessionStore]:
     path = tmp_path / SESSION_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +59,17 @@ def _make(
         permissions=permissions if permissions is not None else allow_builtin_tools(),
         messages=messages,
     )
-    return TuiApp(agent=loop, model=model, history=history or []), client, store
+    return (
+        TuiApp(
+            agent=loop,
+            model=model,
+            context_window=context_window,
+            startup_notices=startup_notices,
+            history=history or [],
+        ),
+        client,
+        store,
+    )
 
 
 def _as_tui(pilot: Pilot) -> TuiApp:
@@ -529,5 +541,97 @@ def test_permission_notices_are_shown_in_transcript(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(0.05)
             assert any("未被信任" in t for t in _texts(app))
+
+    asyncio.run(scenario())
+
+
+def test_status_bar_shows_name_and_context_percentage(tmp_path: Path) -> None:
+    """状态栏：展示名 + 上下文占用（最近一次请求的输入 token / 窗口）。"""
+
+    async def scenario() -> None:
+        app, _client, _store = _make(
+            tmp_path, [text_turn("答")], model="DeepSeek Flash", context_window=100
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(0.05)
+            before = str(app.query_one("#status", Static).content)
+            assert "DeepSeek Flash" in before  # 展示名（不是裸 id）
+            assert "上下文" not in before  # 还没有调用：没有占用可言
+
+            await _submit(pilot, "问")
+            await _wait_idle(pilot)
+            status = str(app.query_one("#status", Static).content)
+            # text_turn 用量 (10, 5, 0, 0)：最近一次请求输入 10 tokens / 窗口 100
+            assert "上下文 10.0%" in status
+
+    asyncio.run(scenario())
+
+
+def test_status_bar_clamps_context_percentage(tmp_path: Path) -> None:
+    """超窗显示 >100%（回归：审查发现原来会渲染 500.0% 这种怪数字）。"""
+
+    async def scenario() -> None:
+        app, _client, _store = _make(
+            tmp_path, [text_turn("答", usage=(500, 5, 0, 0))], context_window=100
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "问")
+            await _wait_idle(pilot)
+            status = str(app.query_one("#status", Static).content)
+            assert "上下文 >100%" in status
+
+    asyncio.run(scenario())
+
+
+def test_reasoning_deltas_are_rendered_when_they_arrive(tmp_path: Path) -> None:
+    """思考事件来了就展示（暗色块进对话流）：展示跟随开关，没有单独的展示配置——
+    reasoning_effort 为 none 时接口根本不产生思考事件，TUI 也就没有可显示的内容。"""
+    turn = [ReasoningDelta("先想一步"), *text_turn("答案")]
+
+    async def scenario() -> None:
+        app, _client, _store = _make(tmp_path, [turn])
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "问")
+            await _wait_idle(pilot)
+            assert any("先想一步" in t for t in _texts(app))
+            assert any("答案" in md.source for md in app.query(Markdown))
+
+    asyncio.run(scenario())
+
+
+def test_reasoning_blocks_do_not_merge_across_failed_turns(tmp_path: Path) -> None:
+    """回归（审查发现）：失败回合的思考块必须收尾——下一回合的思考不能被拼进旧块。"""
+    turns = [
+        [ReasoningDelta("第一回合想一点"), ProviderError("boom")],
+        [ReasoningDelta("第二回合才想的"), *text_turn("答案")],
+    ]
+
+    async def scenario() -> None:
+        app, _client, _store = _make(tmp_path, turns)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "第一问")
+            await _wait_idle(pilot)
+            assert any("第一回合想一点" in t for t in _texts(app))
+            await _submit(pilot, "第二问")
+            await _wait_idle(pilot)
+            joined = "".join(_texts(app))
+            assert "第二回合才想的" in joined
+            assert "第一回合想一点第二回合才想的" not in joined  # 两块分开，不合并
+
+    asyncio.run(scenario())
+
+
+def test_startup_notices_are_mounted(tmp_path: Path) -> None:
+    """启动提示（如更新内容）：完整文本挂进对话流。"""
+
+    async def scenario() -> None:
+        app, _client, _store = _make(
+            tmp_path,
+            [text_turn("x")],
+            startup_notices=["更新内容（0.0.1 → 0.1.0）：\n【0.1.0】\n- 首个版本"],
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(0.05)
+            assert any("更新内容" in t and "首个版本" in t for t in _texts(app))
 
     asyncio.run(scenario())

@@ -82,6 +82,7 @@ def test_happy_path_parses_text_usage_and_end() -> None:
         assert body["stream"] is True
         assert body["stream_options"]["include_usage"] is True
         assert body["max_tokens"] > 0
+        assert body["reasoning_effort"] == "high"  # 思考开关与强度：默认档随官方（high）
         return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=SSE_OK)
 
     events = _collect(_make_client(handler))
@@ -90,6 +91,18 @@ def test_happy_path_parses_text_usage_and_end() -> None:
         UsageEvent(StreamUsage(input_tokens=9, output_tokens=3, cache_hit_tokens=4, cache_miss_tokens=5))
     ]
     assert events[-1] == StreamEnd(reason="stop")
+
+
+def test_reasoning_effort_is_sent_as_configured() -> None:
+    """配置的档位原样进请求体（含 none=关闭思考；实测由真机验证，见客户端注释）。"""
+    seen: list[dict] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(json.loads(request.content))
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=SSE_OK)
+
+    _collect(_make_client(handler, reasoning_effort="none"))
+    assert seen[0]["reasoning_effort"] == "none"
 
 
 def test_retryable_429_then_success_keeps_body_identical() -> None:

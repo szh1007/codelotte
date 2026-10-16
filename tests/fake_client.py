@@ -26,14 +26,14 @@ from codelotte.providers.base import (
 
 
 def fake_catalog(model: str = "fake-model", *, off_peak_multiplier: float = 1.0) -> Catalog:
-    """测试用模型目录（票据 07）：全天高峰 + 谷价不打折——计价断言与"测试跑在哪天几点"无关。"""
+    """测试用随包目录（票据 07）：全天高峰 + 谷价不打折——计价断言与"测试跑在哪天几点"无关。"""
     return Catalog(
         models={
             model: ModelInfo(
                 name=model,
                 context_window=1000,
                 max_output_tokens=100,
-                vision=False,
+                reasoning_effort="high",
                 cache_hit_price=0.04,
                 cache_miss_price=2.0,
                 output_price=8.0,

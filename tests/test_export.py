@@ -7,7 +7,7 @@ from pathlib import Path
 
 from codelotte.cost import Ledger, call_record_from_entry, format_money, load_catalog
 from codelotte.export import render_session_html, render_session_markdown
-from tests.support import home_env, run_cli, write_user_config
+from tests.support import home_env, run_cli, sessions_dir, write_user_config
 
 
 def _entries() -> list[dict]:
@@ -140,6 +140,7 @@ def test_legacy_usage_without_cost_shows_dashes() -> None:
     assert "<td>—</td>" in html  # 费用列
     assert "合计 1 次调用（人民币元）" in html
     assert "没有它的价目" not in html  # 模型在目录里：脚注照常给价目，只是这条记录没有估价
+    assert "价目出处" in html  # 随包目录的 priceNote 进了脚注（账单能自证按哪天的表算）
 
 
 def test_orphan_tool_result_is_shown_not_hidden() -> None:
@@ -153,19 +154,19 @@ def test_unknown_entry_types_are_annotated() -> None:
     assert "记录：compaction" in html
 
 
-def _run_cli(*args: str, cwd: Path, sessions: Path | None = None) -> subprocess.CompletedProcess[str]:
+def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     """export 冒烟（不需要密钥）：配置写进临时 home 的用户级文件，环境走共享助手。"""
-    home = write_user_config(cwd / "home", session_dir=sessions, api_key=None)
+    home = write_user_config(cwd / "home", api_key=None)
     return run_cli(*args, cwd=cwd, env=home_env(home))
 
 
-def _make_session(tmp_path: Path, *, fork: bool = False) -> tuple[Path, Path]:
-    """在临时项目目录里造一份会话；返回 (项目目录, 会话目录)。"""
+def _make_session(tmp_path: Path, *, fork: bool = False) -> Path:
+    """在临时项目目录里造一份会话（会话目录固定为 home 下的 .codelotte/sessions）；返回项目目录。"""
     from codelotte.session.store import SessionStore, load_entries
 
     project = tmp_path / "proj"
     project.mkdir()
-    sessions = tmp_path / "sessions"
+    sessions = sessions_dir(project / "home")
     store = SessionStore.start(project, base_dir=sessions)
     store.append("message", role="user", content="主线的问题")
     store.append("message", role="assistant", content="主线的回答", model="m", stopReason="stop")
@@ -173,12 +174,12 @@ def _make_session(tmp_path: Path, *, fork: bool = False) -> tuple[Path, Path]:
         store.fork(load_entries(store.path)[1]["id"])
         store.append("message", role="user", content="分支的问题")
         store.append("message", role="assistant", content="分支的回答", model="m", stopReason="stop")
-    return project, sessions
+    return project
 
 
 def test_cli_export_writes_selfcontained_file_without_key(tmp_path: Path) -> None:
-    project, sessions = _make_session(tmp_path)
-    result = _run_cli("export", "--html", cwd=project, sessions=sessions)
+    project = _make_session(tmp_path)
+    result = _run_cli("export", "--html", cwd=project)
     assert result.returncode == 0, result.stderr
     assert "已导出：" in result.stdout
     output = project / result.stdout.split("已导出：", 1)[1].split("（", 1)[0]
@@ -189,14 +190,14 @@ def test_cli_export_writes_selfcontained_file_without_key(tmp_path: Path) -> Non
 
 
 def test_cli_export_selected_branch_and_purity(tmp_path: Path) -> None:
-    project, sessions = _make_session(tmp_path, fork=True)
+    project = _make_session(tmp_path, fork=True)
     # 列表：1 = 分支叶子（活动更新），2 = 主线叶子
-    first = _run_cli("export", "--html", "2", "-o", "main.html", cwd=project, sessions=sessions)
+    first = _run_cli("export", "--html", "2", "-o", "main.html", cwd=project)
     assert first.returncode == 0, first.stderr
     text = (project / "main.html").read_text(encoding="utf-8")
     assert "主线的问题" in text and "分支的问题" not in text
 
-    again = _run_cli("export", "--html", "2", "-o", "main2.html", cwd=project, sessions=sessions)
+    again = _run_cli("export", "--html", "2", "-o", "main2.html", cwd=project)
     assert again.returncode == 0, again.stderr
     assert (project / "main.html").read_bytes() == (project / "main2.html").read_bytes()
 
@@ -205,31 +206,31 @@ def test_cli_export_error_paths_are_readable(tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
     # 两条选择路径的"查无此物"同码（审查修正）：无序号与越界序号都是 2
-    missing = _run_cli("export", "--html", cwd=project, sessions=tmp_path / "sessions")
+    missing = _run_cli("export", "--html", cwd=project)
     assert missing.returncode == 2
     assert "没有可导出的会话" in missing.stderr
     assert "Traceback" not in missing.stderr
 
-    without = _run_cli("export", cwd=project, sessions=tmp_path / "sessions")
+    without = _run_cli("export", cwd=project)
     assert without.returncode == 2
     assert "需要 --html 或 --md" in without.stderr
 
-    both = _run_cli("export", "--html", "--md", cwd=project, sessions=tmp_path / "sessions")
+    both = _run_cli("export", "--html", "--md", cwd=project)
     assert both.returncode == 2  # 两种格式互斥（argparse 组）
 
-    bad_index = _run_cli("export", "--html", "3", cwd=project, sessions=tmp_path / "sessions")
+    bad_index = _run_cli("export", "--html", "3", cwd=project)
     assert bad_index.returncode == 2
     assert "没有第 3 个可恢复的会话" in bad_index.stderr
 
 
 def test_cli_export_corrupt_latest_file_fails_readably(tmp_path: Path) -> None:
     """回归（审查发现）：无序号路径上最新文件损坏时给可读错误，不裸 traceback。"""
-    project, sessions = _make_session(tmp_path)
-    corrupt = sessions.rglob("*.jsonl")
+    project = _make_session(tmp_path)
+    corrupt = sessions_dir(project / "home").rglob("*.jsonl")
     target = next(iter(corrupt))
     target.write_text("{ 这不是 JSON\n", encoding="utf-8")
 
-    result = _run_cli("export", "--html", cwd=project, sessions=sessions)
+    result = _run_cli("export", "--html", cwd=project)
     assert result.returncode == 1
     assert "坏行" in result.stderr
     assert "Traceback" not in result.stderr
@@ -304,6 +305,7 @@ def test_markdown_renders_timeline_and_cost_panel() -> None:
     assert "| 1 | 2026-10-16 01:00 UTC | deepseek-flash | 峰值 | 80 / 20 | 10 | 80% | ¥0.000200 |" in text
     assert "**合计**" in text and "1 次调用（人民币元）" in text
     assert "命中 0.04 · 未命中 2.0 · 输出 8.0" in text  # 价目脚注
+    assert "价目出处" in text  # 随包目录的 priceNote 出处
 
 
 def test_markdown_is_pure() -> None:
@@ -329,8 +331,8 @@ def test_markdown_table_escapes_pipes() -> None:
 
 
 def test_cli_md_writes_markdown_by_default_and_selects_branch(tmp_path: Path) -> None:
-    project, sessions = _make_session(tmp_path, fork=True)
-    result = _run_cli("export", "--md", "2", cwd=project, sessions=sessions)
+    project = _make_session(tmp_path, fork=True)
+    result = _run_cli("export", "--md", "2", cwd=project)
     assert result.returncode == 0, result.stderr
     output = project / result.stdout.split("已导出：", 1)[1].split("（", 1)[0]
     assert output.suffix == ".md"
@@ -338,7 +340,7 @@ def test_cli_md_writes_markdown_by_default_and_selects_branch(tmp_path: Path) ->
     assert "主线的问题" in text and "分支的问题" not in text
     assert "<html" not in text.lower()
 
-    again = _run_cli("export", "--md", "2", "-o", "again.md", cwd=project, sessions=sessions)
+    again = _run_cli("export", "--md", "2", "-o", "again.md", cwd=project)
     assert again.returncode == 0, again.stderr
     assert (project / "again.md").read_bytes() == output.read_bytes()
 

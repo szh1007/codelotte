@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 DEFAULT_MAX_TOKENS = 8192
+DEFAULT_REASONING_EFFORT = "high"  # 官方默认档（thinking_mode 文档：默认开启、effort 默认 high）
 DEFAULT_MAX_ATTEMPTS = 4
 DEFAULT_BACKOFF_BASE = 0.5
 DEFAULT_BACKOFF_CAP = 8.0
@@ -81,6 +82,8 @@ class OpenAICompletionsClient:
         base_url: str,
         api_key: str,
         model: str,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         transport: httpx2.AsyncBaseTransport | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
@@ -91,6 +94,10 @@ class OpenAICompletionsClient:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
+        self._max_tokens = max_tokens  # 单次输出上限（cli 从模型参数带入；票据 M）
+        # 思考开关与强度一个字段（cli 从模型条目带入）：none 关闭思考。实测（2026-10-17 真机）：
+        # reasoning_effort="none" → 200 且无 reasoning_content；"high" → 有（41 vs 1 输出 token）。
+        self._reasoning_effort = reasoning_effort
         self._transport = transport
         self._max_attempts = max_attempts
         self._backoff_base = backoff_base
@@ -117,7 +124,6 @@ class OpenAICompletionsClient:
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> AsyncIterator[
         TextDelta | ReasoningDelta | ToolCallsEvent | UsageEvent | StreamEnd
     ]:
@@ -126,7 +132,8 @@ class OpenAICompletionsClient:
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
-            "max_tokens": max_tokens,
+            "max_tokens": self._max_tokens,
+            "reasoning_effort": self._reasoning_effort,
         }
         if tools:
             # tool_choice 不显式设置（默认 auto）：思考模式不支持 required/指定工具

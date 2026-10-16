@@ -42,10 +42,11 @@ def _preview(text: str, limit: int = _PREVIEW_LIMIT) -> str:
 class _Presenter:
     """事件流 → 终端输出。行为自票据 02/03 冻结，改动等于改验收，须连带改 e2e 测试。"""
 
-    def __init__(self, *, show_reasoning: bool) -> None:
+    def __init__(self) -> None:
         self.live = sys.stdout.isatty()
-        self._show_reasoning = show_reasoning  # 打印与否看开关；颜色才看是不是真终端
-        dim = _ANSI_DIM if (show_reasoning and sys.stderr.isatty()) else ""
+        # 思考事件只在思考开启（reasoning_effort 非 none）时才会出现——来了就展示，没有展示开关；
+        # 颜色才看是不是真终端
+        dim = _ANSI_DIM if sys.stderr.isatty() else ""
         self._dim = dim
         self._reset = _ANSI_RESET if dim else ""
         self._reasoning_open = False
@@ -61,8 +62,6 @@ class _Presenter:
             sys.stdout.flush()
 
     def on_reasoning(self, text: str) -> None:
-        if not self._show_reasoning:
-            return  # 未开启 -r：思考过程只落盘不打印
         if not self._reasoning_open:
             sys.stderr.write(self._dim)
             self._reasoning_open = True
@@ -126,11 +125,9 @@ class _Presenter:
         target.flush()
 
 
-async def run_once(
-    loop: AgentLoop, prompt: str, *, show_reasoning: bool = False
-) -> int:
+async def run_once(loop: AgentLoop, prompt: str) -> int:
     """跑一个回合并按终端约定呈现。loop 由调用方装配（cli._build_agent）。"""
-    presenter = _Presenter(show_reasoning=show_reasoning)
+    presenter = _Presenter()
     ledger = Ledger()
     stop_reason: str | None = None
     hit_cap = False

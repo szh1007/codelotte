@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,6 +26,7 @@ from codelotte.cost import (
     price_call,
 )
 from codelotte.providers.base import StreamUsage
+from tests.support import PROJECT_ROOT
 
 UTC = timezone.utc
 BEIJING = timezone(timedelta(hours=8))
@@ -40,7 +40,7 @@ def _catalog(**overrides: object) -> Catalog:
                 name="m",
                 context_window=1000,
                 max_output_tokens=100,
-                vision=False,
+                reasoning_effort="high",
                 cache_hit_price=0.04,
                 cache_miss_price=2.0,
                 output_price=8.0,
@@ -139,67 +139,29 @@ def test_unsplit_usage_charges_remainder_as_miss() -> None:
 def test_load_builtin_catalog() -> None:
     catalog = load_catalog()
     assert set(catalog.models) >= {"deepseek-flash", "deepseek-v4-pro"}
-    assert catalog.models["deepseek-flash"].cache_miss_price == 2.0
+    flash = catalog.models["deepseek-flash"]
+    assert flash.cache_miss_price == 2.0
+    assert flash.context_window == 1_048_576  # 展示/上限默认值（官方上限，用户只能下调）
+    assert flash.max_output_tokens == 393_216
+    assert flash.reasoning_effort == "high"  # 思考强度默认档（用户级没写时用它；none 关闭）
     assert catalog.off_peak_multiplier == 0.5
+    assert catalog.base_urls["deepseek"] == "https://api.deepseek.com"  # 报错指路参考值
+    assert "官方定价页" in catalog.price_note  # 出处备注（导出脚注引用）
     assert catalog.period_at(_utc(1, 0)) == PEAK  # 2026-10-15 周四 09:00 北京
     assert catalog.period_at(_utc(2, 0, day=1)) == OFFPEAK  # 国庆假期
 
 
-def test_user_catalog_merges_field_by_field_over_builtin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """用户级 models.json 逐字段合入随包目录：只想加 apiKey 就不必抄整份价格表。"""
-    home = tmp_path / "home"
-    (home / ".codelotte").mkdir(parents=True)
-    (home / ".codelotte" / "models.json").write_text(
-        json.dumps(
-            {
-                "providers": {
-                    "deepseek": {
-                        "apiKey": "sk-provider-level",  # provider 级：一把钥匙管全部模型
-                        "offPeakMultiplier": 0.25,  # 计费规则也是 provider 级
-                        "models": [
-                            {"id": "deepseek-flash", "baseUrl": "https://proxy.example"},
-                            {
-                                "id": "only-model",
-                                "name": "Only Model",
-                                "contextWindow": 1000,
-                                "maxTokens": 100,
-                                "peakPricePerMillion": {
-                                    "inputCacheHit": 0.1, "inputCacheMiss": 0.2, "output": 0.3,
-                                },
-                            },
-                        ],
-                    }
-                },
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+def test_builtin_catalog_carries_no_secrets() -> None:
+    """守卫：随包 models.json 绝不能带密钥（会进公开仓库）——密钥只在用户级 models.json。"""
+    text = (PROJECT_ROOT / "src" / "codelotte" / "providers" / "models.json").read_text(
+        encoding="utf-8"
     )
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("HOME", str(home))
-    catalog = load_catalog()
-    assert set(catalog.models) >= {"deepseek-flash", "deepseek-v4-pro", "only-model"}
-    flash = catalog.models["deepseek-flash"]
-    assert flash.api_key == "sk-provider-level"  # provider 级 key 落到模型
-    assert flash.base_url == "https://proxy.example"  # 模型条目覆盖 provider
-    assert flash.cache_miss_price == 2.0  # 未写的字段保留随包值（不是整份替换）
-    assert catalog.models["deepseek-v4-pro"].api_key == "sk-provider-level"
-    assert catalog.models["only-model"].display_name == "Only Model"
-    assert catalog.off_peak_multiplier == 0.25  # provider 级规则覆盖
-
-
-def test_builtin_catalog_carries_no_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """守卫：随包 models.json 绝不能带密钥（会进公开仓库）——用户级才有 apiKey。"""
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # 无用户文件 → 纯随包
-    monkeypatch.setenv("HOME", str(tmp_path))
-    for info in load_catalog().models.values():
-        assert info.api_key is None
+    assert "apiKey" not in text
+    assert all(not hasattr(info, "api_key") for info in load_catalog().models.values())
 
 
 def test_explicit_catalog_path_is_read_alone(tmp_path: Path) -> None:
-    """显式传路径（测试/实验用）= 只读该文件，不与随包合并。"""
+    """显式传路径（测试用）= 只读该文件，不读随包目录。"""
     import json as _json
 
     other = tmp_path / "catalog.json"
@@ -217,6 +179,7 @@ def test_explicit_catalog_path_is_read_alone(tmp_path: Path) -> None:
                                 "id": "m",
                                 "contextWindow": 1,
                                 "maxTokens": 1,
+                                "reasoning_effort": "high",
                                 "peakPricePerMillion": {
                                     "inputCacheHit": 0.1, "inputCacheMiss": 0.2, "output": 0.3,
                                 },
@@ -321,7 +284,7 @@ def test_invoice_class_split_scales_to_recorded_cost() -> None:
                 name="m",
                 context_window=1,
                 max_output_tokens=1,
-                vision=False,
+                reasoning_effort="high",
                 cache_hit_price=0.08,  # 平台改价翻倍
                 cache_miss_price=4.0,
                 output_price=16.0,

@@ -1,4 +1,4 @@
-"""配置读取的单元测试：settings.json 直读、必填项报错指路（无默认、无环境变量来源）。"""
+"""settings.json 的读取与写回：键与 Settings 字段一一对应、坏配置报错、版本号写回。"""
 
 from __future__ import annotations
 
@@ -10,10 +10,8 @@ import pytest
 from codelotte.config import (
     ConfigError,
     Settings,
-    get_api_key,
-    get_base_url,
-    get_model,
     load_settings,
+    record_changelog_version,
 )
 
 
@@ -26,7 +24,9 @@ def _write_settings(home: Path, payload: object) -> None:
 
 def test_load_settings_defaults_when_missing(tmp_path: Path) -> None:
     settings = load_settings(tmp_path / "empty")
-    assert settings.model is None and settings.session_dir is None and settings.notices == []
+    assert settings.last_changelog_version is None
+    assert settings.default_provider is None and settings.default_model is None
+    assert settings.command_timeout is None and settings.notices == []
 
 
 def test_load_settings_reads_all_known_keys(tmp_path: Path) -> None:
@@ -34,23 +34,19 @@ def test_load_settings_reads_all_known_keys(tmp_path: Path) -> None:
     _write_settings(
         home,
         {
-            "model": "deepseek-v4-pro",
-            "baseUrl": "https://proxy.example",
-            "sessionDir": "D:/sessions",
-            "showReasoning": True,
+            "lastChangelogVersion": "0.1.0",
+            "defaultProvider": "deepseek",
+            "defaultModel": "deepseek-v4-pro",
             "commandTimeoutSeconds": 30,
-            "env": {"HTTPS_PROXY": "http://local-proxy"},  # 旧包层字段：未知键 → 提示忽略
-            "unknownKey": 1,
+            "unknownKey": 1,  # 未知键：忽略并提示（不静默）
         },
     )
     settings = load_settings(home)
-    assert settings.model == "deepseek-v4-pro"
-    assert settings.base_url == "https://proxy.example"
-    assert settings.session_dir == Path("D:/sessions")
-    assert settings.show_reasoning is True
+    assert settings.last_changelog_version == "0.1.0"
+    assert settings.default_provider == "deepseek"
+    assert settings.default_model == "deepseek-v4-pro"
     assert settings.command_timeout == 30
-    assert any("unknownKey" in note for note in settings.notices)  # 未知键不静默
-    assert any("env" in note for note in settings.notices)
+    assert any("unknownKey" in note for note in settings.notices)
 
 
 def test_load_settings_fails_loud_on_bad_json_and_bad_types(tmp_path: Path) -> None:
@@ -60,25 +56,92 @@ def test_load_settings_fails_loud_on_bad_json_and_bad_types(tmp_path: Path) -> N
     with pytest.raises(ConfigError, match="不是合法 JSON"):
         load_settings(home)
 
-    _write_settings(home, {"model": 5})
-    with pytest.raises(ConfigError, match="model"):
+    _write_settings(home, {"defaultModel": 5})
+    with pytest.raises(ConfigError, match="defaultModel"):
         load_settings(home)
-    _write_settings(home, {"showReasoning": "yes"})
-    with pytest.raises(ConfigError, match="showReasoning"):
+    _write_settings(home, {"commandTimeoutSeconds": "120"})
+    with pytest.raises(ConfigError, match="commandTimeoutSeconds"):
         load_settings(home)
 
 
-def test_getters_require_explicit_configuration() -> None:
-    """没有内置默认：模型/端点/密钥缺了就报错，并指引配到哪个文件的哪个字段。"""
-    with pytest.raises(ConfigError, match="未配置模型.*settings.json"):
-        get_model(Settings())
-    assert get_model(Settings(model="m")) == "m"
+def test_record_changelog_version_updates_existing_file_only(tmp_path: Path) -> None:
+    """写回是读-改-写：保留其他键；没有 settings.json 就不凭空创建。"""
+    home = tmp_path / "home"
+    assert record_changelog_version("0.1.0", home) is None  # 无文件：不创建
+    assert not (home / ".codelotte" / "settings.json").exists()
 
-    with pytest.raises(ConfigError, match="端点.*baseUrl"):
-        get_base_url(Settings())
-    assert get_base_url(Settings(base_url="http://x")) == "http://x"
-    assert get_base_url(Settings(), fallback="http://file") == "http://file"  # provider 条目兜底
+    _write_settings(home, {"defaultModel": "deepseek-flash", "futureKey": True})
+    path = record_changelog_version("0.1.0", home)
+    assert path is not None
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["lastChangelogVersion"] == "0.1.0"
+    assert written["defaultModel"] == "deepseek-flash"  # 其他键原样保留
+    assert written["futureKey"] is True
+    assert not (path.parent / "settings.json.tmp").exists()  # 原子写：临时文件不残留
+    assert record_changelog_version("0.1.0", home) is None  # 一致就不重写
 
-    with pytest.raises(ConfigError, match="API 密钥.*models.json.*apiKey"):
-        get_api_key()
-    assert get_api_key(fallback="sk-x") == "sk-x"
+
+def test_record_changelog_version_survives_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归（审查发现）：写回失败（只读盘/磁盘满）不能拖垮启动，也不能留半截文件。"""
+    home = tmp_path / "home"
+    _write_settings(home, {"defaultModel": "deepseek-flash"})
+    path = home / ".codelotte" / "settings.json"
+
+    def _boom(src: object, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("codelotte.config.os.replace", _boom)
+    assert record_changelog_version("0.1.0", home) is None
+    assert not (path.parent / "settings.json.tmp").exists()  # 临时文件被清掉
+    assert "lastChangelogVersion" not in path.read_text(encoding="utf-8")  # 原文件不动
+
+
+def test_record_changelog_version_does_not_lower_the_watermark(tmp_path: Path) -> None:
+    """回归（评审发现）：跑过更新版本再回到旧版，水位不能被拉低——否则再升级会重放整段更新。"""
+    home = tmp_path / "home"
+    _write_settings(home, {"lastChangelogVersion": "9.9.9"})
+    assert record_changelog_version("0.1.0", home) is None
+    data = json.loads((home / ".codelotte" / "settings.json").read_text(encoding="utf-8"))
+    assert data["lastChangelogVersion"] == "9.9.9"  # 原样不动
+
+    _write_settings(home, {"lastChangelogVersion": "abc"})  # 认不出的值：修正为当前版本（自愈）
+    assert record_changelog_version("0.1.0", home) is not None
+    data = json.loads((home / ".codelotte" / "settings.json").read_text(encoding="utf-8"))
+    assert data["lastChangelogVersion"] == "0.1.0"
+
+
+def test_command_timeout_range_is_enforced(tmp_path: Path) -> None:
+    """回归（评审发现）：commandTimeoutSeconds 有 1–600 的范围校验（文档早就这么写了）。"""
+    home = tmp_path / "home"
+    for bad in (0, -5, 601):
+        _write_settings(home, {"commandTimeoutSeconds": bad})
+        with pytest.raises(ConfigError, match="commandTimeoutSeconds.*1–600"):
+            load_settings(home)
+    for ok in (1, 600):
+        _write_settings(home, {"commandTimeoutSeconds": ok})
+        assert load_settings(home).command_timeout == ok
+
+
+def test_command_timeout_max_matches_bash_tool() -> None:
+    """守卫：settings 的上限与 bash 工具的上限是同一个数（防两处漂移）。"""
+    from codelotte.config import COMMAND_TIMEOUT_MAX
+    from codelotte.tools.bash import MAX_TIMEOUT
+
+    assert COMMAND_TIMEOUT_MAX == MAX_TIMEOUT
+
+
+def test_record_changelog_version_leaves_broken_file_alone(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".codelotte").mkdir(parents=True)
+    (home / ".codelotte" / "settings.json").write_text("{ not json", encoding="utf-8")
+    assert record_changelog_version("0.1.0", home) is None
+    assert (home / ".codelotte" / "settings.json").read_text(encoding="utf-8") == "{ not json"
+
+
+def test_settings_fields_cover_every_known_key() -> None:
+    """守卫：文件键与 Settings 字段一一对应（加键就要加字段，反之亦然）。"""
+    from codelotte.config import _KNOWN_SETTINGS
+
+    assert len(Settings.__dataclass_fields__) - 1 == len(_KNOWN_SETTINGS)  # 减去 notices（非文件字段）

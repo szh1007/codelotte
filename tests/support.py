@@ -40,40 +40,68 @@ def run_cli(
     )
 
 
+_SAME = object()  # "跟 provider/model 一致"哨兵；显式传 None = 不写这个键
+
+
 def write_user_config(
     home: Path,
     *,
-    model: str | None = "deepseek-flash",
-    base_url: str | None = None,
-    session_dir: Path | None = None,
+    provider: str = "deepseek",
+    default_provider: object = _SAME,
+    model: str = "deepseek-flash",
+    default_model: object = _SAME,
+    name: str | None = None,
+    context_window: int | None = None,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
+    base_url: str | None = "https://api.deepseek.com",
     api_key: str | None = "test-key",
-    show_reasoning: bool | None = None,
-    extra_settings: dict[str, object] | None = None,
+    settings_extra: dict[str, object] | None = None,
 ) -> Path:
-    """把"用户级配置"落成一个临时 home 里的真实文件（没有了环境变量来源，测试也走文件）。"""
+    """把"用户级配置"落成一个临时 home 里的真实文件（没有了环境变量来源，测试也走文件）。
+
+    - default_provider / default_model 缺省 = 与 provider / model 一致；显式 None = 不写这个键
+    - api_key=None 写"没有 apiKey 的 provider"（测报错指路）；base_url 同理
+    """
     import json
 
     directory = home / ".codelotte"
     directory.mkdir(parents=True, exist_ok=True)
     settings: dict[str, object] = {}
-    if model is not None:
-        settings["model"] = model
-    if base_url is not None:
-        settings["baseUrl"] = base_url
-    if session_dir is not None:
-        settings["sessionDir"] = str(session_dir)
-    if show_reasoning is not None:
-        settings["showReasoning"] = show_reasoning
-    if extra_settings:
-        settings.update(extra_settings)
+    chosen_provider = provider if default_provider is _SAME else default_provider
+    chosen_model = model if default_model is _SAME else default_model
+    if chosen_provider is not None:
+        settings["defaultProvider"] = chosen_provider
+    if chosen_model is not None:
+        settings["defaultModel"] = chosen_model
+    if settings_extra:
+        settings.update(settings_extra)
     (directory / "settings.json").write_text(
         json.dumps(settings, ensure_ascii=False), encoding="utf-8"
     )
+    entry: dict[str, object] = {"id": model}
+    if name is not None:
+        entry["name"] = name
+    if context_window is not None:
+        entry["contextWindow"] = context_window
+    if max_tokens is not None:
+        entry["maxTokens"] = max_tokens
+    if reasoning_effort is not None:
+        entry["reasoning_effort"] = reasoning_effort
+    spec: dict[str, object] = {"models": [entry]}
+    if base_url is not None:
+        spec["baseUrl"] = base_url
     if api_key is not None:
-        (directory / "models.json").write_text(
-            json.dumps({"providers": {"deepseek": {"apiKey": api_key}}}), encoding="utf-8"
-        )
+        spec["apiKey"] = api_key
+    (directory / "models.json").write_text(
+        json.dumps({"providers": {provider: spec}}, ensure_ascii=False), encoding="utf-8"
+    )
     return home
+
+
+def sessions_dir(home: Path) -> Path:
+    """会话目录在用户级目录下固定（settings.json 不再有 sessionDir）。"""
+    return home / ".codelotte" / "sessions"
 
 
 def home_env(home: Path, **extra: str) -> dict[str, str]:

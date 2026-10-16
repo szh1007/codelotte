@@ -15,16 +15,16 @@ from datetime import datetime
 from pathlib import Path
 
 from codelotte import __version__
+from codelotte.changelog import changelog_notice
 from codelotte.config import (
     ConfigError,
     Settings,
-    get_api_key,
-    get_base_url,
-    get_model,
     load_settings,
+    record_changelog_version,
 )
 from codelotte.cost import load_catalog
 from codelotte.export import render_session_html, render_session_markdown
+from codelotte.models import ModelSpec, resolve
 from codelotte.permissions import (
     ALLOW,
     ASK,
@@ -86,12 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PROMPT",
         help='非交互模式：执行一次提示词，流式打印回答后退出（提示词以 "-" 开头时用 `--prompt=...` 形式）',
     )
-    parser.add_argument(
-        "-r",
-        "--reasoning",
-        action="store_true",
-        help="把思考过程（reasoning_content）以暗色实时输出到 stderr；默认只写入会话文件",
-    )
+
     recovery = parser.add_mutually_exclusive_group()
     recovery.add_argument(
         "-c",
@@ -114,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="从会话活动分支的倒数第 N 条消息处创建新分支（N=1 即最后一条），后续对话写在新分支上；"
         "默认对最近会话，可与 --resume <序号> 组合指定别的分支",
     )
+
     permission_group = parser.add_argument_group("权限规则（票据 09）")
     permission_group.add_argument(
         "--allow",
@@ -127,9 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
     permission_group.add_argument(
         "--deny", action="append", metavar="规则", help="拒绝的规则（可重复）"
     )
+
     subcommands = parser.add_subparsers(dest="command", metavar="命令")
     trust_parser = subcommands.add_parser(
-        "trust", help="信任本项目目录的权限规则（.codelotte/permissions.json，一次确认）"
+        "trust",
+        help="信任本项目目录的权限规则（.codelotte/permissions.json，一次确认）",
     )
     trust_parser.set_defaults(command="trust")
     for verb, verdict, help_text in (
@@ -147,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
             help="写进本项目的 .codelotte/permissions.json（需 codelotte trust 确认后生效）",
         )
         writer.set_defaults(command=verb, verdict=verdict)
+
     export_parser = subcommands.add_parser(
         "export", help="把一次会话导出为自包含 HTML 或 Markdown（票据 08）"
     )
@@ -202,9 +201,9 @@ def _fail(exc: Exception) -> int:
     return 2 if isinstance(exc, (ConfigError, SessionError)) else 1
 
 
-def _list_sessions(settings: Settings) -> int:
+def _list_sessions() -> int:
     """--resume（无序号）：列出本项目可恢复的会话/分支。只读查询，不需要密钥。"""
-    items, skipped = list_resumable(Path.cwd(), base_dir=settings.session_dir)
+    items, skipped = list_resumable(Path.cwd())
     _warn_skipped(skipped)
     if not items:
         print("本项目还没有可恢复的会话。")
@@ -224,7 +223,7 @@ def _list_sessions(settings: Settings) -> int:
     return 0
 
 
-def _run_export(args: argparse.Namespace, settings: Settings) -> int:
+def _run_export(args: argparse.Namespace) -> int:
     """export 子命令：会话记录 → 单文件 HTML / Markdown。只读查询，不需要密钥。"""
     if args.html is None and args.md is None:
         print(
@@ -237,10 +236,10 @@ def _run_export(args: argparse.Namespace, settings: Settings) -> int:
     assert selector is not None  # 上一段已拦"两个都没给"，这里只为类型收窄
     suffix = "html" if to_html else "md"
     flag = "--html" if to_html else "--md"
-    cwd, base = Path.cwd(), settings.session_dir
+    cwd = Path.cwd()
     try:
         if selector == "":
-            path = latest_session_path(cwd, base_dir=base)
+            path = latest_session_path(cwd)
             if path is None:
                 print(
                     f"错误：没有可导出的会话：{cwd} 下没有历史会话记录", file=sys.stderr
@@ -251,18 +250,27 @@ def _run_export(args: argparse.Namespace, settings: Settings) -> int:
             try:
                 index = int(selector)
             except ValueError:
-                print(f"错误：{flag} 的序号要是一个数字（给了 {selector!r}）", file=sys.stderr)
+                print(
+                    f"错误：{flag} 的序号要是一个数字（给了 {selector!r}）",
+                    file=sys.stderr,
+                )
                 return 2
-            items, skipped = list_resumable(cwd, base_dir=base)
+            items, skipped = list_resumable(cwd)
             _warn_skipped(skipped)
             if not 1 <= index <= len(items):
-                raise SessionError(f"没有第 {index} 个可恢复的会话（共 {len(items)} 个）")
+                raise SessionError(
+                    f"没有第 {index} 个可恢复的会话（共 {len(items)} 个）"
+                )
             item = items[index - 1]
             path, leaf_id = item.path, item.leaf_id
         try:
             entries = load_branch(path, leaf_id)
-        except json.JSONDecodeError as exc:  # 坏文件给可读错误，不裸 traceback（审查修正）
-            print(f"错误：会话文件有坏行，读不动（{path.name}）：{exc}", file=sys.stderr)
+        except (
+            json.JSONDecodeError
+        ) as exc:  # 坏文件给可读错误，不裸 traceback（审查修正）
+            print(
+                f"错误：会话文件有坏行，读不动（{path.name}）：{exc}", file=sys.stderr
+            )
             return 1
         renderer = render_session_html if to_html else render_session_markdown
         rendered = renderer(entries, load_catalog(), session_name=path.name)
@@ -275,7 +283,9 @@ def _run_export(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
-def _parse_cli_rules(allow: Sequence[str], ask: Sequence[str], deny: Sequence[str]) -> list[Rule]:
+def _parse_cli_rules(
+    allow: Sequence[str], ask: Sequence[str], deny: Sequence[str]
+) -> list[Rule]:
     """--allow/--ask/--deny 的规则文本 → Rule（畸形即用法错，由 main 统一转成退出码 2）。"""
     rules: list[Rule] = []
     for verdict, flag, texts in (
@@ -298,38 +308,40 @@ def _build_agent(
     fork_from_end: int | None = None,
     rules: Sequence[Rule] = (),
     settings: Settings | None = None,
-) -> AgentLoop:
+) -> tuple[AgentLoop, ModelSpec]:
     """装配一次真实运行的循环——无头与 TUI 共用这一处（票据 10 在这里换 Docker 执行器）。
 
     先读配置、后建会话文件：配置缺失（如没密钥）不得留下"只有会话头的空文件"，
     否则 --continue 按 mtime 会挑中它，把真实历史跳过。
 
+    运行参数（端点/密钥/模型）只从用户级 models.json 读（models.resolve）；
+    随包目录只出计费事实与展示/上限默认值。返回循环与最终采用的模型参数（TUI 用展示名/窗口）。
+
     resume_index 给出时恢复指定分支；fork_from_end 可与其组合（在选中的分支上再分岔）。
     """
-    resolved = settings if settings is not None else load_settings()  # 未传入时读真实用户级配置
-    model = get_model(resolved)
+    resolved = (
+        settings if settings is not None else load_settings()
+    )  # 未传入时读真实用户级配置
     catalog = (
         load_catalog()
-    )  # 价目/峰谷/节假日（票据 07）；坏目录在这里就以 ConfigError 报出
-    info = catalog.models.get(model)  # provider 级可带 apiKey/baseUrl（用户级 models.json）
-    if info is None:
-        raise ConfigError(
-            f"未知模型 {model!r}：可用的是 {sorted(catalog.models)}；"
-            "自定义模型请写进 ~/.codelotte/models.json 的 providers"
-        )
+    )  # 价目/峰谷/节假日 + 展示名/上限默认值；坏目录在这里以 ConfigError 报出
+    spec = resolve(
+        resolved, catalog
+    )  # 用户级 models.json 的唯一来源 + 随包默认值/上限校验
     permissions = build_permission_layer(
         Path.cwd(), cli_rules=rules
     )  # 票据 09：CLI 规则 + 项目/用户规则文件（未信任的项目规则被忽略，notices 里有说明）
     client = OpenAICompletionsClient(
-        # 环境变量优先；没设就落到模型条目的 apiKey/baseUrl
-        base_url=get_base_url(resolved, fallback=info.base_url),
-        api_key=get_api_key(fallback=info.api_key),
-        model=model,
+        base_url=spec.base_url,
+        api_key=spec.api_key,
+        model=spec.id,
+        max_tokens=spec.max_output_tokens,  # 单次输出上限（用户可下调，随包默认封顶）
+        reasoning_effort=spec.reasoning_effort,  # 思考开关与强度（none 关闭；展示总是跟随）
     )
     executor = LocalExecutor()
-    cwd, base = Path.cwd(), resolved.session_dir
+    cwd = Path.cwd()
     if resume_index is not None:
-        items, skipped = list_resumable(cwd, base_dir=base)
+        items, skipped = list_resumable(cwd)
         _warn_skipped(skipped)
         if not 1 <= resume_index <= len(items):
             raise SessionError(
@@ -343,42 +355,48 @@ def _build_agent(
         else:
             store, messages = open_at(item.path, leaf_id=item.leaf_id)
     elif fork_from_end is not None:
-        store, messages = fork_session(cwd, base_dir=base, from_end=fork_from_end)
+        store, messages = fork_session(cwd, from_end=fork_from_end)
     else:
-        store, messages = open_session(cwd, base_dir=base, resume=resume)
-    return AgentLoop(
-        client=client,
-        tools=default_tools(executor, command_timeout=resolved.command_timeout),
-        store=store,
-        model=model,
-        env=executor.env,
-        messages=messages,
-        catalog=catalog,
-        permissions=permissions,
+        store, messages = open_session(cwd, resume=resume)
+    return (
+        AgentLoop(
+            client=client,
+            tools=default_tools(executor, command_timeout=resolved.command_timeout),
+            store=store,
+            model=spec.id,
+            env=executor.env,
+            messages=messages,
+            catalog=catalog,
+            permissions=permissions,
+        ),
+        spec,
     )
 
 
 def _run_prompt(
     prompt: str,
     *,
-    show_reasoning: bool,
     resume: bool = False,
     resume_index: int | None = None,
     fork_from_end: int | None = None,
     rules: Sequence[Rule] = (),
     settings: Settings | None = None,
 ) -> int:
+    """一次性执行。思考由模型条目的 reasoning_effort 决定：none 关闭（无思考内容、无展示），
+    其余档位开启——开启时思考内容总是既落盘又展示（走 stderr），没有单独的展示开关。"""
     try:
-        loop = _build_agent(
+        loop, spec = _build_agent(
             resume=resume,
             resume_index=resume_index,
             fork_from_end=fork_from_end,
             rules=rules,
             settings=settings,
         )
-        for note in loop.permissions.notices:  # 权限层加载提示（含未信任项目规则被忽略）
+        for (
+            note
+        ) in loop.permissions.notices:  # 权限层加载提示（含未信任项目规则被忽略）
             print(f"提示：{note}", file=sys.stderr)
-        return asyncio.run(run_once(loop, prompt, show_reasoning=show_reasoning))
+        return asyncio.run(run_once(loop, prompt))
     except KeyboardInterrupt:
         print("已中断（会话已保存，可 --continue 恢复）", file=sys.stderr)
         return 130
@@ -393,6 +411,7 @@ def _run_tui(
     resume_index: int | None = None,
     fork_from_end: int | None = None,
     rules: Sequence[Rule] = (),
+    notices: Sequence[str] = (),
     settings: Settings | None = None,
 ) -> int:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -405,7 +424,7 @@ def _run_tui(
     try:
         from codelotte.tui import TuiApp  # 延迟导入：无头模式不必加载 Textual
 
-        loop = _build_agent(
+        loop, spec = _build_agent(
             resume=resume,
             resume_index=resume_index,
             fork_from_end=fork_from_end,
@@ -413,7 +432,13 @@ def _run_tui(
             settings=settings,
         )
         history = load_branch(loop.session_path, loop.leaf_id)  # 只回放活动分支
-        TuiApp(agent=loop, model=loop.model, history=history).run()
+        TuiApp(
+            agent=loop,
+            model=spec.name,  # 展示名（随包目录给的名字，用户级可覆盖）
+            context_window=spec.context_window,  # 状态栏上下文占用百分比的分母
+            startup_notices=notices,  # 启动提示（如更新内容）
+            history=history,
+        ).run()
         print_session_invoice(loop)  # 会话结束汇总：与 -p 同一口径（票据 07）
         return 0
     except (ConfigError, SessionError, OSError) as exc:
@@ -481,14 +506,19 @@ def _run_trust() -> int:
 def main(argv: list[str] | None = None) -> int:
     _reconfigure(sys.stdout)
     _reconfigure(sys.stderr)
-    settings = load_settings()  # 用户级 ~/.codelotte/settings.json（顶层字段直读）
+    try:
+        settings = (
+            load_settings()
+        )  # 用户级 ~/.codelotte/settings.json（文件键与字段一一对应）
+    except ConfigError as exc:
+        return _fail(exc)  # 坏配置给可读错误 + 退出码 2（不裸 traceback）
     for note in settings.notices:
         print(f"提示：{note}", file=sys.stderr)
 
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "export":
-        return _run_export(args, settings)
+        return _run_export(args)
     if args.command == "trust":
         return _run_trust()
     if args.command in ("allow", "ask", "deny"):
@@ -503,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 "--resume 不带序号只是列出会话；--fork 要和 --resume <序号> 一起用"
             )
-        return _list_sessions(settings)
+        return _list_sessions()
     if args.continue_ and args.fork is not None:
         parser.error(
             "-c/--continue 与 --fork 不能同用：--fork 不带 --resume 就是从最近会话分岔"
@@ -523,10 +553,15 @@ def main(argv: list[str] | None = None) -> int:
     except SessionError as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
+    # 更新提示只在"真的开始一次运行"时处理（-p / TUI）：只读命令（export/--resume/trust…）
+    # 不改用户文件、不打扰。写回是读-改-写 + 原子替换，见 config.record_changelog_version。
+    notice = changelog_notice(settings.last_changelog_version, __version__)
+    record_changelog_version(__version__)  # 已在位就不写（幂等）
     if args.prompt is not None:
+        if notice:
+            print(notice, file=sys.stderr)  # 更新提示：-p 打 stderr（TUI 里进对话流）
         return _run_prompt(
             args.prompt,
-            show_reasoning=args.reasoning or bool(settings.show_reasoning),
             resume=args.continue_,
             resume_index=resume_index,
             fork_from_end=args.fork,
@@ -539,5 +574,6 @@ def main(argv: list[str] | None = None) -> int:
         resume_index=resume_index,
         fork_from_end=args.fork,
         rules=rules,
+        notices=[notice] if notice else [],
         settings=settings,
     )
