@@ -51,8 +51,15 @@ ToolCallBlock.tool-failed CollapsibleTitle { color: $error; }
 ToolCallBlock.tool-interrupted CollapsibleTitle { color: $warning; }
 #approval-box { width: 90%; max-width: 100; background: $surface; border: round $warning; padding: 1 2; }
 #approval-box .approval-line { margin: 0 0 1 0; }
-#approval-buttons { height: 3; }
-#approval-buttons Button { margin-right: 2; }
+#approval-buttons { height: auto; }
+/* 单行色块按钮（compact：无边框）：默认档的 ▔/▁ 字形边条在部分终端里会错位/缺字，
+   这里一律不依赖特殊字形——底色即按钮，等宽平分一行，悬停/焦点只换文字样式 */
+#approval-buttons Button { width: 1fr; min-width: 0; height: 1; margin-right: 1; }
+#approval-buttons .approval-plain { background: $surface-lighten-1; }
+#approval-buttons .approval-plain:hover { background: $surface-lighten-2; }
+#approval-buttons .approval-strong { background: white; color: black; }
+#approval-buttons .approval-strong:focus { text-style: bold; }  /* 白底上不用反色焦点，反色会盖掉白底 */
+#approval-buttons Button:focus { text-style: bold reverse; }
 """
 
 _ARG_PREVIEW_MAX = 60
@@ -161,10 +168,13 @@ class ApprovalScreen(ModalScreen[str | None]):
             )
             yield Static(Text(matched, style="dim"), classes="approval-line")
             with Horizontal(id="approval-buttons"):
-                yield Button("本次允许 (y)", id=DECISION_ONCE)
-                yield Button("本会话允许 (s)", id=DECISION_SESSION)
-                yield Button("始终允许 (a)", id=DECISION_ALWAYS, variant="warning")
-                yield Button("拒绝 (n)", id=DECISION_DENY, variant="error")
+                # compact：无边框单行色块（不用 ▔/▁ 边条——部分终端字体下会错位，见 CSS 注释）；
+                # approval-strong：本次允许 = 最常用的默认档，白底黑字最显眼
+                yield Button("本次允许 (y)", id=DECISION_ONCE, compact=True, classes="approval-strong")
+                # approval-plain：default 档没有自己的底色，给个可见的（见 CSS）
+                yield Button("本会话允许 (s)", id=DECISION_SESSION, compact=True, classes="approval-plain")
+                yield Button("始终允许 (a)", id=DECISION_ALWAYS, variant="warning", compact=True)
+                yield Button("拒绝 (n)", id=DECISION_DENY, variant="error", compact=True)
 
     @on(Button.Pressed)
     def _pressed(self, event: Button.Pressed) -> None:
@@ -448,8 +458,8 @@ class TuiApp(App[None]):
             text.append("● 就绪", style="dim")
         text.append(f"  │  {self._model}")
         if self._ledger.calls and self._context_window:
-            # 上下文占用：最近一次请求的输入 tokens / 窗口（模型条目给的 contextWindow）；
-            # 超窗（请求本身会失败）时显示 >100%，不显示会让人怀疑 token 计数的怪数字
+            # 上下文占用：最近一次请求的输入 tokens / 窗口（用户级生效的 contextWindow，没写用随包默认）；
+            # >100% 是超用户预算（请求本身不会失败——真实上限是官方值），不显示会让人怀疑 token 计数的怪数字
             used = self._ledger.calls[-1].input_tokens
             share = used / self._context_window
             label = ">100%" if share > 1 else f"{share:.1%}"

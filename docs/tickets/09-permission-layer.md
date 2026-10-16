@@ -6,7 +6,7 @@
 
 **Blocked by:** 04（write / edit / bash 工具 + 本地执行器）
 
-**Status:** done（2026-10-16；自动化全绿；真机 TUI 审批交互待做）
+**Status:** done（2026-10-16；自动化全绿；真机 TUI 审批交互 2026-10-17 已验，见文末）
 
 - [x] 规则匹配单元测试完整：三档优先级、通配与精确规则、破坏性动词不被通配放行
 - [x] TUI 审批四档交互可用；「始终允许」写入用户级规则文件（有测试证明不写项目文件）
@@ -44,4 +44,11 @@
 
 ## 真机验证记录
 
-待做（TUI 里跑一次真实任务体验四档审批手感；与票据 10 的 Docker 沙箱联训时再复核）。
+**2026-10-17 用户真机通过（TUI 四档审批手感）**：两个真实会话（`~/.codelotte/sessions/--D--__WorkSpace__-codelotte--/20261016T2210…、2211…`，审计可查）覆盖了闸门四条路径——
+
+- **命中规则自动放行**：`ls -la …` / `ls -R | head -100` 由用户级 `bash(ls*)` 放行，`permission` 记录带命中规则与来源；用户规则里的裸 `read` 同样直通（PLAN.md / CHANGELOG.md）。
+- **ask 弹层「始终允许」**：`pwd; ls -la` 审批后落 `decision=always, allowed=true`，且用户级 `permissions.json` **精确新增** `bash(pwd; ls -la)`——审批写文件与 `codelotte allow` 子命令同源（`append_rules`）在真机对齐，不动项目文件。
+- **ask 弹层「拒绝」**：`read CONTEXT.md` 被拒（`decision=deny, allowed=false`），以工具错误回传模型、回合继续，审计无断链。
+- 两个会话的 `permission` 记录数 = `tool_call` 记录数（3/3、4/4）：**记录先于执行**在真机无遗漏。
+
+与票据 10 的 Docker 沙箱联训时再复核。

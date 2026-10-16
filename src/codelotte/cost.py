@@ -78,7 +78,7 @@ class ModelInfo:
     """
 
     name: str  # 展示名（TUI 状态栏；用户级 models.json 没写 name 时用它）
-    context_window: int  # 窗口上限（用户可下调，不可上调；票据 12 的压缩阈值也从这取）
+    context_window: int  # 窗口默认值兼上限（用户可下调不可上调）；压缩阈值取用户级生效值（models.ModelSpec），不取这里
     max_output_tokens: int  # 单次输出上限（同上）
     reasoning_effort: str  # 思考强度默认档（用户级没写 reasoning_effort 时用它；none 关闭思考）
     cache_hit_price: float

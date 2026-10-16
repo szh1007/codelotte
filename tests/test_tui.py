@@ -20,7 +20,13 @@ from textual.widgets import Input, Markdown, Static
 
 from codelotte.cost import Catalog
 from codelotte.loop import AgentLoop
-from codelotte.permissions import PermissionLayer, allow_builtin_tools, build_permission_layer
+from codelotte.permissions import (
+    PermissionLayer,
+    PermissionRequest,
+    Rule,
+    allow_builtin_tools,
+    build_permission_layer,
+)
 from codelotte.providers.base import ProviderError, ReasoningDelta, TextDelta
 from codelotte.sandbox import LocalExecutor
 from codelotte.session.context import messages_from_entries
@@ -365,6 +371,36 @@ def test_snapshot_interrupted_turn(snap_compare: Any, tmp_path: Path) -> None:
             if not _as_tui(pilot).turn_running:
                 break
             await pilot.pause(0.02)
+
+    assert snap_compare(app, terminal_size=(92, 24), run_before=before)
+
+
+def test_snapshot_approval_modal(snap_compare: Any, tmp_path: Path) -> None:
+    """审批弹层（票据 09）：四个单行色块按钮的行状观感锁在这里。
+
+    真机曾报按钮色块错位——根因是默认按钮靠 ▔/▁ 字形边条显形（部分终端字体下错位/缺字），
+    现改为 compact 单行色块（无边框、等宽平分）。快照防回归。
+    """
+    app, _client, _store = _make(tmp_path, [text_turn("不会用到")])
+
+    async def before(pilot: Pilot) -> None:
+        app.push_screen(
+            ApprovalScreen(
+                PermissionRequest(
+                    tool="bash",
+                    subject="pwd && ls -la",
+                    arguments={"command": "pwd && ls -la"},
+                    rule=Rule(
+                        tool="bash",
+                        pattern="git push*",
+                        verdict="ask",
+                        source="user",
+                        text="bash(git push*)",
+                    ),
+                )
+            )
+        )
+        await pilot.pause()
 
     assert snap_compare(app, terminal_size=(92, 24), run_before=before)
 
