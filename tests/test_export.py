@@ -7,7 +7,7 @@ from pathlib import Path
 
 from codelotte.cost import Ledger, call_record_from_entry, format_money, load_catalog
 from codelotte.export import render_session_html, render_session_markdown
-from tests.support import child_env, run_cli
+from tests.support import home_env, run_cli, write_user_config
 
 
 def _entries() -> list[dict]:
@@ -154,10 +154,9 @@ def test_unknown_entry_types_are_annotated() -> None:
 
 
 def _run_cli(*args: str, cwd: Path, sessions: Path | None = None) -> subprocess.CompletedProcess[str]:
-    """export 冒烟（不需要密钥）：会话目录隔离，环境走共享助手。"""
-    extra = {"CODELOTTE_SESSION_DIR": str(sessions)} if sessions is not None else {}
-    env = {k: v for k, v in child_env(**extra).items() if k != "DEEPSEEK_API_KEY"}
-    return run_cli(*args, cwd=cwd, env=env)
+    """export 冒烟（不需要密钥）：配置写进临时 home 的用户级文件，环境走共享助手。"""
+    home = write_user_config(cwd / "home", session_dir=sessions, api_key=None)
+    return run_cli(*args, cwd=cwd, env=home_env(home))
 
 
 def _make_session(tmp_path: Path, *, fork: bool = False) -> tuple[Path, Path]:
@@ -241,6 +240,7 @@ def test_export_matches_tui_visible_content_and_ledger_numbers(tmp_path: Path) -
     import asyncio
 
     from codelotte.loop import AgentLoop
+    from codelotte.permissions import allow_builtin_tools
     from codelotte.sandbox import LocalExecutor
     from codelotte.session.store import SessionStore, load_entries
     from codelotte.tools import default_tools
@@ -257,6 +257,7 @@ def test_export_matches_tui_visible_content_and_ledger_numbers(tmp_path: Path) -
         store=SessionStore.resume(path),
         model="fake-model",
         catalog=fake_catalog(),
+        permissions=allow_builtin_tools(),
     )
 
     async def drain() -> None:
@@ -340,3 +341,38 @@ def test_cli_md_writes_markdown_by_default_and_selects_branch(tmp_path: Path) ->
     again = _run_cli("export", "--md", "2", "-o", "again.md", cwd=project, sessions=sessions)
     assert again.returncode == 0, again.stderr
     assert (project / "again.md").read_bytes() == output.read_bytes()
+
+
+def test_permission_entries_render_as_markers() -> None:
+    """票据 09 验收：判定落会话后，导出的 HTML 里可见（允许与拒绝都画出来）。"""
+    denied = {
+        "type": "permission",
+        "toolCallId": "c1",
+        "tool": "bash",
+        "subject": "rm -rf ./build",
+        "verdict": "ask",
+        "rule": None,
+        "source": None,
+        "decision": "deny",
+        "allowed": False,
+        "reason": "无头模式未授权（fail-closed）",
+    }
+    allowed = {
+        "type": "permission",
+        "toolCallId": "c1",
+        "tool": "bash",
+        "subject": "git status",
+        "verdict": "allow",
+        "rule": "bash(git *)",
+        "source": "user",
+        "decision": None,
+        "allowed": True,
+        "reason": "规则放行（bash(git *)）",
+    }
+    entries = [denied, allowed]
+    html = _render(entries)
+    assert "⛔ 权限拒绝" in html and "fail-closed" in html
+    assert "🔓 权限放行" in html and "bash(git *)" in html
+    md = render_session_markdown(entries, load_catalog(), session_name="s.jsonl")
+    assert "> ⛔ 权限拒绝：bash(rm -rf ./build)" in md
+    assert "> 🔓 权限放行：bash(git status)" in md

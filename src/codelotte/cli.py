@@ -10,21 +10,34 @@ import argparse
 import asyncio
 import json
 import sys
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
 from codelotte import __version__
 from codelotte.config import (
     ConfigError,
+    Settings,
     get_api_key,
     get_base_url,
-    get_home_dir,
     get_model,
-    get_session_dir,
-    load_env_files,
+    load_settings,
 )
 from codelotte.cost import load_catalog
 from codelotte.export import render_session_html, render_session_markdown
+from codelotte.permissions import (
+    ALLOW,
+    ASK,
+    DENY,
+    RULES_FILE,
+    TRUST_FILE,
+    Rule,
+    append_rules,
+    build_permission_layer,
+    is_trusted,
+    parse_rule,
+    trust_project,
+)
 from codelotte.loop import AgentLoop
 from codelotte.providers.base import ProviderError
 from codelotte.providers.openai_completions import OpenAICompletionsClient
@@ -101,7 +114,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="从会话活动分支的倒数第 N 条消息处创建新分支（N=1 即最后一条），后续对话写在新分支上；"
         "默认对最近会话，可与 --resume <序号> 组合指定别的分支",
     )
+    permission_group = parser.add_argument_group("权限规则（票据 09）")
+    permission_group.add_argument(
+        "--allow",
+        action="append",
+        metavar="规则",
+        help="放行规则（可重复）：`bash(git diff *)` 或裸 `read`；通配规则不会自动放行破坏性命令",
+    )
+    permission_group.add_argument(
+        "--ask", action="append", metavar="规则", help="必须审批的规则（可重复）"
+    )
+    permission_group.add_argument(
+        "--deny", action="append", metavar="规则", help="拒绝的规则（可重复）"
+    )
     subcommands = parser.add_subparsers(dest="command", metavar="命令")
+    trust_parser = subcommands.add_parser(
+        "trust", help="信任本项目目录的权限规则（.codelotte/permissions.json，一次确认）"
+    )
+    trust_parser.set_defaults(command="trust")
+    for verb, verdict, help_text in (
+        ("allow", ALLOW, "永久放行一组规则（写入用户级权限文件）"),
+        ("ask", ASK, "永久改为每次询问"),
+        ("deny", DENY, "永久拒绝"),
+    ):
+        writer = subcommands.add_parser(verb, help=help_text)
+        writer.add_argument(
+            "rules", nargs="+", metavar="规则", help="如 `bash(git diff*)` 或裸 `read`"
+        )
+        writer.add_argument(
+            "--project",
+            action="store_true",
+            help="写进本项目的 .codelotte/permissions.json（需 codelotte trust 确认后生效）",
+        )
+        writer.set_defaults(command=verb, verdict=verdict)
     export_parser = subcommands.add_parser(
         "export", help="把一次会话导出为自包含 HTML 或 Markdown（票据 08）"
     )
@@ -157,9 +202,9 @@ def _fail(exc: Exception) -> int:
     return 2 if isinstance(exc, (ConfigError, SessionError)) else 1
 
 
-def _list_sessions() -> int:
+def _list_sessions(settings: Settings) -> int:
     """--resume（无序号）：列出本项目可恢复的会话/分支。只读查询，不需要密钥。"""
-    items, skipped = list_resumable(Path.cwd(), base_dir=get_session_dir())
+    items, skipped = list_resumable(Path.cwd(), base_dir=settings.session_dir)
     _warn_skipped(skipped)
     if not items:
         print("本项目还没有可恢复的会话。")
@@ -179,7 +224,7 @@ def _list_sessions() -> int:
     return 0
 
 
-def _run_export(args: argparse.Namespace) -> int:
+def _run_export(args: argparse.Namespace, settings: Settings) -> int:
     """export 子命令：会话记录 → 单文件 HTML / Markdown。只读查询，不需要密钥。"""
     if args.html is None and args.md is None:
         print(
@@ -192,7 +237,7 @@ def _run_export(args: argparse.Namespace) -> int:
     assert selector is not None  # 上一段已拦"两个都没给"，这里只为类型收窄
     suffix = "html" if to_html else "md"
     flag = "--html" if to_html else "--md"
-    cwd, base = Path.cwd(), get_session_dir()
+    cwd, base = Path.cwd(), settings.session_dir
     try:
         if selector == "":
             path = latest_session_path(cwd, base_dir=base)
@@ -230,11 +275,29 @@ def _run_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_cli_rules(allow: Sequence[str], ask: Sequence[str], deny: Sequence[str]) -> list[Rule]:
+    """--allow/--ask/--deny 的规则文本 → Rule（畸形即用法错，由 main 统一转成退出码 2）。"""
+    rules: list[Rule] = []
+    for verdict, flag, texts in (
+        (ALLOW, "--allow", allow),
+        (ASK, "--ask", ask),
+        (DENY, "--deny", deny),
+    ):
+        for text in texts:
+            try:
+                rules.append(parse_rule(text, verdict, "cli"))
+            except ValueError as exc:
+                raise SessionError(f"{flag} 的参数不对：{exc}") from exc
+    return rules
+
+
 def _build_agent(
     *,
     resume: bool = False,
     resume_index: int | None = None,
     fork_from_end: int | None = None,
+    rules: Sequence[Rule] = (),
+    settings: Settings | None = None,
 ) -> AgentLoop:
     """装配一次真实运行的循环——无头与 TUI 共用这一处（票据 10 在这里换 Docker 执行器）。
 
@@ -243,15 +306,28 @@ def _build_agent(
 
     resume_index 给出时恢复指定分支；fork_from_end 可与其组合（在选中的分支上再分岔）。
     """
-    model = get_model()
+    resolved = settings if settings is not None else load_settings()  # 未传入时读真实用户级配置
+    model = get_model(resolved)
     catalog = (
         load_catalog()
     )  # 价目/峰谷/节假日（票据 07）；坏目录在这里就以 ConfigError 报出
+    info = catalog.models.get(model)  # provider 级可带 apiKey/baseUrl（用户级 models.json）
+    if info is None:
+        raise ConfigError(
+            f"未知模型 {model!r}：可用的是 {sorted(catalog.models)}；"
+            "自定义模型请写进 ~/.codelotte/models.json 的 providers"
+        )
+    permissions = build_permission_layer(
+        Path.cwd(), cli_rules=rules
+    )  # 票据 09：CLI 规则 + 项目/用户规则文件（未信任的项目规则被忽略，notices 里有说明）
     client = OpenAICompletionsClient(
-        base_url=get_base_url(), api_key=get_api_key(), model=model
+        # 环境变量优先；没设就落到模型条目的 apiKey/baseUrl
+        base_url=get_base_url(resolved, fallback=info.base_url),
+        api_key=get_api_key(fallback=info.api_key),
+        model=model,
     )
     executor = LocalExecutor()
-    cwd, base = Path.cwd(), get_session_dir()
+    cwd, base = Path.cwd(), resolved.session_dir
     if resume_index is not None:
         items, skipped = list_resumable(cwd, base_dir=base)
         _warn_skipped(skipped)
@@ -272,12 +348,13 @@ def _build_agent(
         store, messages = open_session(cwd, base_dir=base, resume=resume)
     return AgentLoop(
         client=client,
-        tools=default_tools(executor),
+        tools=default_tools(executor, command_timeout=resolved.command_timeout),
         store=store,
         model=model,
         env=executor.env,
         messages=messages,
         catalog=catalog,
+        permissions=permissions,
     )
 
 
@@ -288,11 +365,19 @@ def _run_prompt(
     resume: bool = False,
     resume_index: int | None = None,
     fork_from_end: int | None = None,
+    rules: Sequence[Rule] = (),
+    settings: Settings | None = None,
 ) -> int:
     try:
         loop = _build_agent(
-            resume=resume, resume_index=resume_index, fork_from_end=fork_from_end
+            resume=resume,
+            resume_index=resume_index,
+            fork_from_end=fork_from_end,
+            rules=rules,
+            settings=settings,
         )
+        for note in loop.permissions.notices:  # 权限层加载提示（含未信任项目规则被忽略）
+            print(f"提示：{note}", file=sys.stderr)
         return asyncio.run(run_once(loop, prompt, show_reasoning=show_reasoning))
     except KeyboardInterrupt:
         print("已中断（会话已保存，可 --continue 恢复）", file=sys.stderr)
@@ -307,6 +392,8 @@ def _run_tui(
     resume: bool,
     resume_index: int | None = None,
     fork_from_end: int | None = None,
+    rules: Sequence[Rule] = (),
+    settings: Settings | None = None,
 ) -> int:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(
@@ -319,25 +406,93 @@ def _run_tui(
         from codelotte.tui import TuiApp  # 延迟导入：无头模式不必加载 Textual
 
         loop = _build_agent(
-            resume=resume, resume_index=resume_index, fork_from_end=fork_from_end
+            resume=resume,
+            resume_index=resume_index,
+            fork_from_end=fork_from_end,
+            rules=rules,
+            settings=settings,
         )
         history = load_branch(loop.session_path, loop.leaf_id)  # 只回放活动分支
-        TuiApp(agent=loop, model=get_model(), history=history).run()
+        TuiApp(agent=loop, model=loop.model, history=history).run()
         print_session_invoice(loop)  # 会话结束汇总：与 -p 同一口径（票据 07）
         return 0
     except (ConfigError, SessionError, OSError) as exc:
         return _fail(exc)
 
 
+def _run_perm_write(args: argparse.Namespace) -> int:
+    """allow/ask/deny 子命令：把规则永久写进权限文件（默认用户级；--project 写项目级）。
+
+    写的是 JSON 文件（`{"allow": [...], "ask": [...], "deny": [...]}`）：读-改-写、
+    不重复追加、保留文件里已有的其他键；文件损坏时报错退出，绝不覆盖毁掉手写内容。
+    """
+    cwd = Path.cwd()
+    home = Path.home()
+    path = (cwd / RULES_FILE) if args.project else (home / RULES_FILE)
+    verdict: str = args.verdict
+    try:
+        for text in args.rules:
+            parse_rule(text, verdict, "cli")  # 先全部校验：坏规则一条都不写
+    except ValueError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+    for text in args.rules:
+        print(f"将向 {path} 追加：{verdict} {text}")
+    try:
+        added, existing = append_rules(path, verdict, args.rules)
+    except (OSError, ValueError) as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 1
+    for text in existing:
+        print(f"已存在，跳过：{verdict} {text}")
+    print(f"完成：新增 {len(added)} 条（{path}）")
+    if args.project and added and not is_trusted(cwd, home / TRUST_FILE):
+        print("提示：项目级规则需要 `codelotte trust` 确认一次后才生效。")
+    return 0
+
+
+def _run_trust() -> int:
+    """trust 子命令：显示本项目的权限规则并做一次信任确认（写用户级信任表）。"""
+    cwd = Path.cwd()
+    home = Path.home()
+    trust_file = home / TRUST_FILE
+    project_path = cwd / RULES_FILE
+    if not project_path.is_file():
+        print(f"本项目没有权限规则文件（{project_path}），无需信任。")
+        return 0
+    if is_trusted(cwd, trust_file):
+        print(f"已信任过：{cwd}（信任表：{trust_file}）")
+        return 0
+    print(f"将信任 {cwd} 的项目级权限规则（{project_path}）：\n")
+    print(project_path.read_text(encoding="utf-8").rstrip())
+    print()
+    try:
+        answer = input("信任并让它生效？[y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        trust_project(cwd, trust_file)
+        print(f"已信任（记录在 {trust_file}）；项目级规则下次启动生效。")
+        return 0
+    print("未信任——项目级规则继续被忽略。")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     _reconfigure(sys.stdout)
     _reconfigure(sys.stderr)
-    load_env_files(home=get_home_dir())  # 自动加载 ~/.codelotte/.env 与 ./.env
+    settings = load_settings()  # 用户级 ~/.codelotte/settings.json（顶层字段直读）
+    for note in settings.notices:
+        print(f"提示：{note}", file=sys.stderr)
 
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "export":
-        return _run_export(args)
+        return _run_export(args, settings)
+    if args.command == "trust":
+        return _run_trust()
+    if args.command in ("allow", "ask", "deny"):
+        return _run_perm_write(args)
     if args.resume == "":
         if args.prompt is not None:
             parser.error(
@@ -348,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 "--resume 不带序号只是列出会话；--fork 要和 --resume <序号> 一起用"
             )
-        return _list_sessions()
+        return _list_sessions(settings)
     if args.continue_ and args.fork is not None:
         parser.error(
             "-c/--continue 与 --fork 不能同用：--fork 不带 --resume 就是从最近会话分岔"
@@ -363,15 +518,26 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+    try:  # 规则只解析一次（main），三个入口共用（审查修正：三参数结块）
+        rules = _parse_cli_rules(args.allow or (), args.ask or (), args.deny or ())
+    except SessionError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
     if args.prompt is not None:
         return _run_prompt(
             args.prompt,
-            show_reasoning=args.reasoning,
+            show_reasoning=args.reasoning or bool(settings.show_reasoning),
             resume=args.continue_,
             resume_index=resume_index,
             fork_from_end=args.fork,
+            rules=rules,
+            settings=settings,
         )
 
     return _run_tui(
-        resume=args.continue_, resume_index=resume_index, fork_from_end=args.fork
+        resume=args.continue_,
+        resume_index=resume_index,
+        fork_from_end=args.fork,
+        rules=rules,
+        settings=settings,
     )

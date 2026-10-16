@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,14 @@ from pathlib import Path
 import pytest
 
 import codelotte
-from tests.support import PROJECT_ROOT, TIMEOUT_SECONDS, child_env, run_cli
+from tests.support import (
+    PROJECT_ROOT,
+    TIMEOUT_SECONDS,
+    child_env,
+    home_env,
+    run_cli,
+    write_user_config,
+)
 
 
 def test_version_flag_prints_version_and_exits_zero() -> None:
@@ -26,12 +34,7 @@ def test_version_flag_prints_version_and_exits_zero() -> None:
 
 def test_no_args_without_a_real_terminal_fails_readably(tmp_path: Path) -> None:
     """无参数 = 进 TUI（票据 05）：管道/CI 里没有真实终端时给可读错误，不往 stdout 喷转义码。"""
-    env = {
-        **child_env(),
-        "DEEPSEEK_API_KEY": "test-key",
-        "CODELOTTE_HOME": str(tmp_path / "home"),
-        "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
-    }
+    env = _session_env(tmp_path)
     result = subprocess.run(
         [sys.executable, "-m", "codelotte"],
         capture_output=True,
@@ -50,12 +53,7 @@ def test_no_args_without_a_real_terminal_fails_readably(tmp_path: Path) -> None:
 
 
 def test_continue_without_any_session_fails_readably(tmp_path: Path) -> None:
-    env = {
-        **child_env(),
-        "DEEPSEEK_API_KEY": "test-key",
-        "CODELOTTE_HOME": str(tmp_path / "home"),
-        "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
-    }
+    env = _session_env(tmp_path)
     result = subprocess.run(
         [sys.executable, "-m", "codelotte", "-p", "hi", "--continue"],
         capture_output=True,
@@ -95,16 +93,13 @@ def test_resume_and_fork_flags_parse() -> None:
 
 
 def _session_env(tmp_path: Path, *, with_key: bool = True) -> dict[str, str]:
-    env = {
-        **child_env(),
-        "CODELOTTE_HOME": str(tmp_path / "home"),
-        "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
-    }
-    if with_key:
-        env["DEEPSEEK_API_KEY"] = "test-key"
-    else:
-        env = {k: v for k, v in env.items() if k != "DEEPSEEK_API_KEY"}
-    return env
+    """测试用子进程环境：配置全部写进临时 home 的用户级文件（不再有环境变量来源）。"""
+    home = write_user_config(
+        tmp_path / "home",
+        session_dir=tmp_path / "sessions",
+        api_key="test-key" if with_key else None,
+    )
+    return home_env(home)
 
 
 def test_resume_list_is_readable_and_needs_no_key(tmp_path: Path) -> None:
@@ -235,9 +230,10 @@ def test_build_agent_history_follows_selected_branch(
     from codelotte.cli import _build_agent
     from codelotte.session.store import SessionStore, load_branch
 
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    monkeypatch.setenv("CODELOTTE_SESSION_DIR", str(tmp_path / "sessions"))
     monkeypatch.chdir(tmp_path)
+    home = write_user_config(tmp_path / "home", session_dir=tmp_path / "sessions")
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
     store = SessionStore.start(tmp_path, base_dir=tmp_path / "sessions")
     store.append("message", role="user", content="第一问")
     store.append("message", role="assistant", content="第一答", model="m", stopReason="stop")
@@ -256,9 +252,10 @@ def test_build_agent_resume_ignores_damaged_neighbour(
     from codelotte.cli import _build_agent
     from codelotte.session.store import SessionStore
 
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    monkeypatch.setenv("CODELOTTE_SESSION_DIR", str(tmp_path / "sessions"))
     monkeypatch.chdir(tmp_path)
+    home = write_user_config(tmp_path / "home", session_dir=tmp_path / "sessions")
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
     store = SessionStore.start(tmp_path, base_dir=tmp_path / "sessions")
     store.append("message", role="user", content="好的会话")
     (store.path.parent / "20990101T000000Z_damaged0.jsonl").write_text(
@@ -289,9 +286,8 @@ def test_console_script_entry_point_works() -> None:
 def test_config_error_leaves_no_session_file(tmp_path: Path) -> None:
     """回归（审查发现）：没密钥的启动不得留下"只有会话头"的空会话文件——
     否则 --continue 按 mtime 会挑中它，真实历史被跳过。"""
-    env = {k: v for k, v in child_env().items() if k != "DEEPSEEK_API_KEY"}
-    env["CODELOTTE_HOME"] = str(tmp_path / "home")
-    env["CODELOTTE_SESSION_DIR"] = str(tmp_path / "sessions")
+    home = write_user_config(tmp_path / "home", session_dir=tmp_path / "sessions", api_key=None)
+    env = home_env(home)
     result = subprocess.run(
         [sys.executable, "-m", "codelotte", "-p", "hi"],
         capture_output=True,
@@ -313,8 +309,8 @@ def test_version_matches_pyproject() -> None:
 
 
 def test_missing_api_key_fails_with_readable_error(tmp_path: Path) -> None:
-    env = {k: v for k, v in child_env().items() if k != "DEEPSEEK_API_KEY"}
-    env["CODELOTTE_HOME"] = str(tmp_path / "home")  # 隔离用户级 .env
+    """settings.json 配好了模型但没配密钥：报错要指路到 models.json 的 apiKey。"""
+    home = write_user_config(tmp_path / "home", api_key=None)
     result = subprocess.run(
         [sys.executable, "-m", "codelotte", "-p", "hi"],
         capture_output=True,
@@ -322,9 +318,111 @@ def test_missing_api_key_fails_with_readable_error(tmp_path: Path) -> None:
         text=True,
         encoding="utf-8",
         timeout=TIMEOUT_SECONDS,
-        env=env,
-        cwd=tmp_path,  # 空目录：不加载项目级 .env
+        env=home_env(home),
+        cwd=tmp_path,  # 空目录；codelotte 不读取项目级配置
     )
     assert result.returncode == 2
-    assert "DEEPSEEK_API_KEY" in result.stderr
+    assert "API 密钥" in result.stderr and "models.json" in result.stderr  # 报错指路
     assert "Traceback" not in result.stderr
+
+
+def test_missing_model_fails_with_readable_error(tmp_path: Path) -> None:
+    """没有默认模型：settings.json 缺 "model" 就报错，并指引去用户级目录配置。"""
+    home = write_user_config(tmp_path / "home", model=None)
+    result = subprocess.run(
+        [sys.executable, "-m", "codelotte", "-p", "hi"],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        timeout=TIMEOUT_SECONDS,
+        env=home_env(home),
+        cwd=tmp_path,
+    )
+    assert result.returncode == 2
+    assert "未配置模型" in result.stderr and "settings.json" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_trust_without_rules_file_says_no_need(tmp_path: Path) -> None:
+    result = run_cli(
+        "trust", cwd=tmp_path, env=home_env(tmp_path / "home")
+    )
+    assert result.returncode == 0
+    assert "无需信任" in result.stdout
+
+
+def test_trust_declined_keeps_rules_ignored(tmp_path: Path) -> None:
+    (tmp_path / ".codelotte").mkdir()
+    (tmp_path / ".codelotte" / "permissions.json").write_text(
+        '{"deny": ["read"]}', encoding="utf-8"
+    )
+    home = tmp_path / "home"
+    result = run_cli(
+        "trust", cwd=tmp_path, env=child_env(CODELOTTE_HOME=str(home)), input_text="n\n"
+    )
+    assert result.returncode == 1
+    assert "未信任——项目级规则继续被忽略" in result.stdout
+    assert not (home / ".codelotte" / "trusted").exists()
+
+
+def _rules_file(home: Path) -> Path:
+    return home / ".codelotte" / "permissions.json"
+
+
+def test_allow_subcommand_writes_user_rules_json(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    env = home_env(home)
+    result = run_cli("allow", "read", "bash(git diff*)", cwd=tmp_path, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "追加" in result.stdout and "新增 2 条" in result.stdout
+    data = json.loads(_rules_file(home).read_text(encoding="utf-8"))
+    assert data == {"allow": ["read", "bash(git diff*)"], "ask": [], "deny": []}
+
+    again = run_cli("allow", "read", cwd=tmp_path, env=env)  # 重复追加：跳过
+    assert again.returncode == 0
+    assert "已存在，跳过" in again.stdout
+    data2 = json.loads(_rules_file(home).read_text(encoding="utf-8"))
+    assert data2["allow"] == ["read", "bash(git diff*)"]
+
+
+def test_ask_and_deny_subcommands_write_their_buckets(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    env = home_env(home)
+    assert run_cli("ask", "bash(git push*)", cwd=tmp_path, env=env).returncode == 0
+    assert run_cli("deny", "bash(curl*)", cwd=tmp_path, env=env).returncode == 0
+    data = json.loads(_rules_file(home).read_text(encoding="utf-8"))
+    assert data == {"allow": [], "ask": ["bash(git push*)"], "deny": ["bash(curl*)"]}
+
+
+def test_permission_writer_rejects_bad_rule_without_writing(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    env = home_env(home)
+    result = run_cli("allow", "bash git diff", cwd=tmp_path, env=env)  # 缺括号
+    assert result.returncode == 2
+    assert "格式不对" in result.stderr
+    assert not _rules_file(home).exists()  # 坏规则一条都不写
+
+
+def test_permission_writer_project_flag_and_trust_hint(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    home = tmp_path / "home"
+    env = home_env(home)
+    result = run_cli("allow", "read", "--project", cwd=project, env=env)
+    assert result.returncode == 0, result.stderr
+    data = json.loads((project / ".codelotte" / "permissions.json").read_text(encoding="utf-8"))
+    assert data["allow"] == ["read"]
+    assert "codelotte trust" in result.stdout  # 提示先去信任
+    assert not _rules_file(home).exists()  # 没写用户级
+
+
+def test_permission_writer_refuses_to_clobber_broken_file(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _rules_file(home).parent.mkdir(parents=True)
+    _rules_file(home).write_text("[1, 2]", encoding="utf-8")  # 损坏（顶层不是对象）
+    env = home_env(home)
+    result = run_cli("allow", "read", cwd=tmp_path, env=env)
+    assert result.returncode == 1
+    assert "先手动修好" in result.stderr
+    assert _rules_file(home).read_text(encoding="utf-8") == "[1, 2]"  # 原文件不动

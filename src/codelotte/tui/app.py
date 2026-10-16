@@ -15,18 +15,26 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
-from textual.widgets import Collapsible, Input, Markdown, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
+from textual.widgets import Button, Collapsible, Input, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
 from codelotte.cost import Ledger, call_record_from_entry, format_money
-from codelotte.display import args_preview, duration_text, tool_title
+from codelotte.display import args_preview, duration_text, preview_text, tool_title
 from codelotte.loop import (
     AgentLoop,
     CostRecorded,
     ToolFinished,
     ToolRequested,
     TurnEnded,
+)
+from codelotte.permissions import (
+    DECISION_ALWAYS,
+    DECISION_DENY,
+    DECISION_ONCE,
+    DECISION_SESSION,
+    PermissionRequest,
 )
 from codelotte.providers.base import ProviderError, ReasoningDelta, TextDelta
 from codelotte.session.context import INTERRUPTED_TOOL_NOTE
@@ -40,6 +48,10 @@ ToolCallBlock > .tool-args { color: $text-muted; }
 ToolCallBlock > .tool-result { padding: 0 0 1 0; }
 ToolCallBlock.tool-failed CollapsibleTitle { color: $error; }
 ToolCallBlock.tool-interrupted CollapsibleTitle { color: $warning; }
+#approval-box { width: 90%; max-width: 100; background: $surface; border: round $warning; padding: 1 2; }
+#approval-box .approval-line { margin: 0 0 1 0; }
+#approval-buttons { height: 3; }
+#approval-buttons Button { margin-right: 2; }
 """
 
 _ARG_PREVIEW_MAX = 60
@@ -104,6 +116,63 @@ class ToolCallBlock(Collapsible):
         )
 
 
+class ApprovalScreen(ModalScreen[str | None]):
+    """权限审批弹层（票据 09）：四档 = 本次 / 本会话 / 始终（写用户级）/ 拒绝。
+
+    返回值即决策常量；Esc / 关闭弹层视为拒绝。键位：y / s / a / n。
+    """
+
+    # 注意：Textual 的 Binding action 必须是字面量，无法内插 DECISION_* 常量——
+    # 改常量名时这里要连带改（按钮用常量 id，见 compose）
+    BINDINGS = [
+        Binding("y", "decide('once')", "本次允许"),
+        Binding("s", "decide('session')", "本会话允许"),
+        Binding("a", "decide('always')", "始终允许"),
+        Binding("n", "decide('deny')", "拒绝"),
+        Binding("escape", "decide('deny')", "拒绝"),
+    ]
+
+    def __init__(self, request: PermissionRequest) -> None:
+        super().__init__()
+        self._request = request
+
+    def compose(self) -> ComposeResult:
+        request = self._request
+        what = request.subject if request.subject is not None else json.dumps(
+            request.arguments, ensure_ascii=False
+        )
+        matched = (
+            f"匹配规则：{request.rule.text}（{request.rule.source}，ask）"
+            if request.rule is not None
+            else "匹配规则：无（默认询问）"
+        )
+        with Vertical(id="approval-box"):
+            yield Static(Text("🔒 权限请求：模型想执行一个操作", style="bold"))
+            yield Static(
+                Text.assemble(
+                    ("工具  ", "dim"), (request.tool, "bold"),
+                ),
+                classes="approval-line",
+            )
+            yield Static(
+                Text.assemble(("内容  ", "dim"), (preview_text(what, 400), "")),
+                classes="approval-line",
+            )
+            yield Static(Text(matched, style="dim"), classes="approval-line")
+            with Horizontal(id="approval-buttons"):
+                yield Button("本次允许 (y)", id=DECISION_ONCE)
+                yield Button("本会话允许 (s)", id=DECISION_SESSION)
+                yield Button("始终允许 (a)", id=DECISION_ALWAYS, variant="warning")
+                yield Button("拒绝 (n)", id=DECISION_DENY, variant="error")
+
+    @on(Button.Pressed)
+    def _pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id)
+
+    def action_decide(self, decision: str) -> None:
+        self.dismiss(decision)
+
+
 class TuiApp(App[None]):
     """交互式界面：上方对话流（流式 Markdown + 折叠工具块），底部状态栏与输入框。"""
 
@@ -131,6 +200,7 @@ class TuiApp(App[None]):
         self._stream: MarkdownStream | None = None
         self._tool_blocks: dict[str, ToolCallBlock] = {}
         self._ledger = Ledger()  # 账单累计（历史回放 + 实时事件同一本账，票据 07）
+        agent.approver = self._approve  # 权限审批走弹层（票据 09）；-p 模式没有此处、fail-closed
 
     # ---- 组装与启动 ----
 
@@ -143,9 +213,22 @@ class TuiApp(App[None]):
         )
 
     async def on_mount(self) -> None:
+        for note in self._agent.permissions.notices:  # 权限层加载提示（如未信任的项目规则被忽略）
+            await self._mount_notice(f"⚠ {note}")
         self.query_one(Input).focus()
         if self._history:
             await self._render_history()
+
+    async def _approve(self, request: PermissionRequest) -> str:
+        """审批者（注入 AgentLoop）：弹层拿决策；弹层被异常关闭时按拒绝处理。"""
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+        def _done(value: str | None) -> None:
+            if not future.done():
+                future.set_result(value or DECISION_DENY)
+
+        self.push_screen(ApprovalScreen(request), _done)
+        return await future
 
     @property
     def turn_running(self) -> bool:
@@ -166,7 +249,13 @@ class TuiApp(App[None]):
         self._turn_active = True
         self._turn_task = asyncio.create_task(self._run_turn(prompt))
 
+    def _close_approval(self) -> None:
+        """关掉还开着的审批弹层（None → 拒绝）；取消/中断路径收尾共用。"""
+        if isinstance(self.screen, ApprovalScreen):
+            self.screen.dismiss(None)
+
     async def action_interrupt_or_quit(self) -> None:
+        self._close_approval()  # 审批弹层里按 Ctrl+C：该调用按拒绝处理
         if self.turn_running:
             self._interrupt_requested = True
             assert self._turn_task is not None
@@ -192,6 +281,7 @@ class TuiApp(App[None]):
             async for event in self._agent.run_turn(prompt):
                 await self._handle(event)
         except asyncio.CancelledError:
+            self._close_approval()  # 取消时弹层还开着：关掉（按拒绝）
             await self._end_markdown()
             self._mark_unfinished_tools()  # 停在"运行中…"的块要给明确收尾，别骗人
             if self._interrupt_requested:

@@ -145,36 +145,90 @@ def test_load_builtin_catalog() -> None:
     assert catalog.period_at(_utc(2, 0, day=1)) == OFFPEAK  # 国庆假期
 
 
-def test_user_override_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_user_catalog_merges_field_by_field_over_builtin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用户级 models.json 逐字段合入随包目录：只想加 apiKey 就不必抄整份价格表。"""
     home = tmp_path / "home"
     (home / ".codelotte").mkdir(parents=True)
     (home / ".codelotte" / "models.json").write_text(
         json.dumps(
             {
-                "peakDays": "weekdays",
-                "peakWindows": [{"start": "00:00", "end": "23:59"}],
-                "offPeakMultiplier": 1.0,
-                "holidays": [],
-                "models": {
-                    "only-model": {
-                        "contextWindow": 1,
-                        "maxOutputTokens": 1,
-                        "vision": False,
-                        "peakPricePerMillion": {
-                            "inputCacheHit": 0.1,
-                            "inputCacheMiss": 0.2,
-                            "output": 0.3,
-                        },
+                "providers": {
+                    "deepseek": {
+                        "apiKey": "sk-provider-level",  # provider 级：一把钥匙管全部模型
+                        "offPeakMultiplier": 0.25,  # 计费规则也是 provider 级
+                        "models": [
+                            {"id": "deepseek-flash", "baseUrl": "https://proxy.example"},
+                            {
+                                "id": "only-model",
+                                "name": "Only Model",
+                                "contextWindow": 1000,
+                                "maxTokens": 100,
+                                "peakPricePerMillion": {
+                                    "inputCacheHit": 0.1, "inputCacheMiss": 0.2, "output": 0.3,
+                                },
+                            },
+                        ],
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    catalog = load_catalog()
+    assert set(catalog.models) >= {"deepseek-flash", "deepseek-v4-pro", "only-model"}
+    flash = catalog.models["deepseek-flash"]
+    assert flash.api_key == "sk-provider-level"  # provider 级 key 落到模型
+    assert flash.base_url == "https://proxy.example"  # 模型条目覆盖 provider
+    assert flash.cache_miss_price == 2.0  # 未写的字段保留随包值（不是整份替换）
+    assert catalog.models["deepseek-v4-pro"].api_key == "sk-provider-level"
+    assert catalog.models["only-model"].display_name == "Only Model"
+    assert catalog.off_peak_multiplier == 0.25  # provider 级规则覆盖
+
+
+def test_builtin_catalog_carries_no_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """守卫：随包 models.json 绝不能带密钥（会进公开仓库）——用户级才有 apiKey。"""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # 无用户文件 → 纯随包
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for info in load_catalog().models.values():
+        assert info.api_key is None
+
+
+def test_explicit_catalog_path_is_read_alone(tmp_path: Path) -> None:
+    """显式传路径（测试/实验用）= 只读该文件，不与随包合并。"""
+    import json as _json
+
+    other = tmp_path / "catalog.json"
+    other.write_text(
+        _json.dumps(
+            {
+                "providers": {
+                    "p": {
+                        "peakDays": "weekdays",
+                        "peakWindows": [{"start": "09:00", "end": "12:00"}],
+                        "offPeakMultiplier": 0.5,
+                        "holidays": [],
+                        "models": [
+                            {
+                                "id": "m",
+                                "contextWindow": 1,
+                                "maxTokens": 1,
+                                "peakPricePerMillion": {
+                                    "inputCacheHit": 0.1, "inputCacheMiss": 0.2, "output": 0.3,
+                                },
+                            }
+                        ],
                     }
                 },
             }
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("CODELOTTE_HOME", str(home))
-    catalog = load_catalog()
-    assert set(catalog.models) == {"only-model"}
-    assert catalog.models["only-model"].output_price == 0.3
+    assert set(load_catalog(other).models) == {"m"}
 
 
 def test_broken_catalog_reports_readably(tmp_path: Path) -> None:
@@ -189,7 +243,11 @@ def test_broken_catalog_reports_readably(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="字段不完整"):
         load_catalog(incomplete)
     wrong_days = tmp_path / "days.json"
-    wrong_days.write_text('{"peakDays": "weekends"}', encoding="utf-8")
+    wrong_days.write_text(
+        '{"providers": {"p": {"peakDays": "weekends", "peakWindows": [{"start": "09:00", "end": "10:00"}],'
+        ' "offPeakMultiplier": 1.0, "models": []}}}',
+        encoding="utf-8",
+    )
     with pytest.raises(ConfigError, match="peakDays"):
         load_catalog(wrong_days)
 

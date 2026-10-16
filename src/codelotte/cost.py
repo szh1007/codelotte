@@ -6,8 +6,11 @@ docs/tech/deepseek-api.md §2 同步更正——早前记录的是美元换算�
 空闲价 = 峰价 × 0.5；高峰 = 北京时间工作日 09:00–12:00、14:00–18:00（法定节假日除外），
 其余时段（含周末）为空闲价。pi 式目录只建峰价、谷时会高估 2 倍——本模块刻意按时段建模。
 
-价目、峰谷窗口、节假日表都在 models.json：随包内置，可被 ~/.codelotte/models.json 整份覆写。
-判定与计价是纯函数（传入时刻即可复算任意一次调用）；Ledger 只做累计与渲染，不碰文件。
+价目、峰谷窗口、节假日表、货币都在随包目录 src/codelotte/providers/models.json（**provider 级**：
+DeepSeek 的专属规则就写在 providers.deepseek 下）；用户级 ~/.codelotte/models.json 逐字段合入
+（最省事的写法 `{"providers": {"deepseek": {"apiKey": "sk-…"}}}`——**密钥只放用户级，随包文件
+带密钥会被测试拦下**）。判定与计价是纯函数（传入时刻即可复算任意一次调用）；Ledger 只做累计
+与渲染，不碰文件。
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from codelotte.config import ConfigError, get_home_dir
+from codelotte.config import ConfigError
 from codelotte.providers.base import StreamUsage
 
 __all__ = [
@@ -45,12 +48,11 @@ CURRENCY_LABELS = {"CNY": "人民币元", "USD": "美元"}
 _CURRENCY_SYMBOLS = {"CNY": "¥", "USD": "$"}
 
 _MILLION = 1_000_000
-_BUILTIN_PATH = Path(__file__).with_name("models.json")
+_BUILTIN_PATH = Path(__file__).parent / "providers" / "models.json"  # 随包目录（providers 域的数据随 providers 走）
 
 
 def _user_catalog_path() -> Path:
-    home = get_home_dir() or Path.home()
-    return home / ".codelotte" / "models.json"
+    return Path.home() / ".codelotte" / "models.json"
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,11 @@ class PeakWindow:
 
 @dataclass(frozen=True)
 class ModelInfo:
-    """一个模型的元数据与峰价（货币随 Catalog.currency，官方价目为人民币元 / M tokens）。"""
+    """一个模型的元数据与峰价（货币随 Catalog.currency，官方价目为人民币元 / M tokens）。
+
+    api_key/base_url 采用 pi 风格：provider 级给默认、模型条目可覆盖；
+    **密钥只应出现在用户级 ~/.codelotte/models.json**——随包文件若带密钥会进仓库（有测试守卫）。
+    """
 
     name: str
     context_window: int
@@ -75,6 +81,9 @@ class ModelInfo:
     cache_hit_price: float
     cache_miss_price: float
     output_price: float
+    api_key: str | None = None
+    base_url: str | None = None
+    display_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -160,54 +169,113 @@ def _minutes(text: str) -> int:
     return int(hours) * 60 + int(minutes)
 
 
+_RULE_KEYS = ("peakWindows", "offPeakMultiplier", "holidays", "currency", "timezone", "peakDays")
+
+
 def _parse_catalog(raw: dict[str, Any], source: Path) -> Catalog:
-    if raw.get("peakDays", "weekdays") != "weekdays":
+    """解析：计费规则（峰谷/节假日/货币）是 **provider 级**的——DeepSeek 的专属设置就写在
+    providers.deepseek 下（用户级文件同样只能覆盖到 provider 级）。v1 的运行时只有一套规则，
+    检出多个 provider 各自定义规则时直接报错（等第二条协议/第二家 provider 落地再建模）。
+    """
+    providers: dict[str, dict[str, Any]] = raw["providers"]
+    declaring = [
+        name for name, spec in providers.items() if any(key in spec for key in _RULE_KEYS)
+    ]
+    if len(declaring) > 1:
         raise ConfigError(
-            f"模型目录 {source} 的 peakDays 只支持 weekdays（给了 {raw.get('peakDays')!r}）"
+            f"模型目录 {source}：多个 provider 各自定义了计费规则（{declaring}），v1 只支持一套"
+        )
+    rules: dict[str, Any] = providers[declaring[0]] if declaring else {}
+    if rules.get("peakDays", "weekdays") != "weekdays":
+        raise ConfigError(
+            f"模型目录 {source} 的 peakDays 只支持 weekdays（给了 {rules.get('peakDays')!r}）"
         )
     windows = tuple(
         PeakWindow(start_minute=_minutes(w["start"]), end_minute=_minutes(w["end"]))
-        for w in raw["peakWindows"]
+        for w in rules["peakWindows"]
     )
     if not windows:
         raise ConfigError(f"模型目录 {source} 的 peakWindows 不能为空")
     models: dict[str, ModelInfo] = {}
-    for name, spec in raw["models"].items():
-        prices = spec["peakPricePerMillion"]
-        models[name] = ModelInfo(
-            name=name,
-            context_window=int(spec["contextWindow"]),
-            max_output_tokens=int(spec["maxOutputTokens"]),
-            vision=bool(spec.get("vision", False)),
-            cache_hit_price=float(prices["inputCacheHit"]),
-            cache_miss_price=float(prices["inputCacheMiss"]),
-            output_price=float(prices["output"]),
-        )
+    for _provider_name, provider in providers.items():
+        provider_url = provider.get("baseUrl")
+        provider_key = provider.get("apiKey")
+        for spec in provider["models"]:
+            model_id = str(spec["id"])
+            prices = spec["peakPricePerMillion"]
+            api_key = spec.get("apiKey") or provider_key
+            base_url = spec.get("baseUrl") or provider_url
+            models[model_id] = ModelInfo(
+                name=model_id,
+                display_name=str(spec.get("name") or model_id),
+                context_window=int(spec["contextWindow"]),
+                max_output_tokens=int(spec["maxTokens"]),
+                vision=bool(spec.get("vision", False)),
+                cache_hit_price=float(prices["inputCacheHit"]),
+                cache_miss_price=float(prices["inputCacheMiss"]),
+                output_price=float(prices["output"]),
+                api_key=str(api_key) if api_key else None,
+                base_url=str(base_url) if base_url else None,
+            )
     return Catalog(
         models=models,
-        utc_offset_hours=int(raw.get("timezone", {}).get("utcOffsetHours", 8)),
+        utc_offset_hours=int(rules.get("timezone", {}).get("utcOffsetHours", 8)),
         peak_windows=windows,
-        off_peak_multiplier=float(raw["offPeakMultiplier"]),
-        holidays=frozenset(date.fromisoformat(d) for d in raw.get("holidays", [])),
-        currency=str(raw.get("currency", "CNY")),
+        off_peak_multiplier=float(rules["offPeakMultiplier"]),
+        holidays=frozenset(date.fromisoformat(d) for d in rules.get("holidays", [])),
+        currency=str(rules.get("currency", "CNY")),
     )
 
 
-def load_catalog(path: Path | None = None) -> Catalog:
-    """加载模型目录：显式 path > 用户覆写 ~/.codelotte/models.json > 随包内置。"""
-    if path is None:
-        user = _user_catalog_path()
-        path = user if user.is_file() else _BUILTIN_PATH
+def _merge_catalogs(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """用户文件**逐字段合入**随包目录（pi 风格 providers 结构）：顶层键覆盖；
+    providers 逐 provider 合并（baseUrl/api/apiKey 等）；provider 的 models 列表按 id 合并
+    （只写想改的字段即可，新增 id 追加）。
+
+    用户只想加把钥匙就不必拷贝整份随包目录（价格随版本更新，抄一份会失同步）——
+    最省事的写法就是 `{"providers": {"deepseek": {"apiKey": "sk-…"}}}`。
+    """
+    merged = {key: value for key, value in base.items() if key != "providers"}
+    merged.update({key: value for key, value in override.items() if key != "providers"})
+    providers = {name: dict(spec) for name, spec in base.get("providers", {}).items()}
+    for name, spec in override.get("providers", {}).items():
+        existing = providers.get(name, {})
+        combined = {**existing, **{k: v for k, v in spec.items() if k != "models"}}
+        by_id: dict[str, dict[str, Any]] = {
+            str(m["id"]): dict(m) for m in existing.get("models", [])
+        }
+        for model in spec.get("models", []):
+            by_id[str(model["id"])] = {**by_id.get(str(model["id"]), {}), **model}
+        combined["models"] = list(by_id.values())
+        providers[name] = combined
+    merged["providers"] = providers
+    return merged
+
+
+def _read_catalog_file(path: Path) -> dict[str, Any]:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ConfigError(f"模型目录读不动：{path}（{exc}）") from exc
     except ValueError as exc:
         raise ConfigError(f"模型目录不是合法 JSON：{path}（{exc}）") from exc
+
+
+def load_catalog(path: Path | None = None) -> Catalog:
+    """加载模型目录：显式 path = 只读该文件；默认 = 随包内置 ⊕ 用户级 ~/.codelotte/models.json。"""
+    if path is None:
+        raw = _read_catalog_file(_BUILTIN_PATH)
+        user = _user_catalog_path()
+        if user.is_file():
+            raw = _merge_catalogs(raw, _read_catalog_file(user))
+        source = _BUILTIN_PATH
+    else:
+        raw = _read_catalog_file(path)
+        source = path
     try:
-        return _parse_catalog(raw, path)
+        return _parse_catalog(raw, source)
     except (KeyError, TypeError, ValueError) as exc:
-        raise ConfigError(f"模型目录字段不完整或类型不对：{path}（{exc!r}）") from exc
+        raise ConfigError(f"模型目录字段不完整或类型不对：{source}（{exc!r}）") from exc
 
 
 def format_money(value: float, currency: str = "CNY") -> str:

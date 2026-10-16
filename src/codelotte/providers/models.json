@@ -1,0 +1,56 @@
+{
+  "schema": "models/v2",
+  "providers": {
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com",
+      "currency": "CNY",
+      "timezone": {"utcOffsetHours": 8, "note": "Asia/Shanghai——中国无夏令时，固定 +8"},
+      "peakDays": "weekdays",
+      "peakWindows": [
+        {"start": "09:00", "end": "12:00"},
+        {"start": "14:00", "end": "18:00"}
+      ],
+      "offPeakMultiplier": 0.5,
+      "holidays": [
+        "2026-01-01", "2026-01-02", "2026-01-03",
+        "2026-02-15", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19",
+        "2026-02-20", "2026-02-21", "2026-02-22", "2026-02-23",
+        "2026-04-04", "2026-04-05", "2026-04-06",
+        "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05",
+        "2026-06-19", "2026-06-20", "2026-06-21",
+        "2026-09-25", "2026-09-26", "2026-09-27",
+        "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05",
+        "2026-10-06", "2026-10-07"
+      ],
+      "holidaysNote": "国办发明电〔2025〕7 号《关于 2026 年部分节假日安排的通知》（2025-11-04 发布）；调休上班的周末（1/4、2/14、2/28、5/9、9/20、10/10）按 DeepSeek 规则仍算空闲价（规则只说「不含法定节假日」）；2027 年起需补录",
+      "priceUnit": "perMillionTokens",
+      "priceNote": "官方定价页 api-docs.deepseek.com/zh-cn/quick_start/pricing（2026-10-16 核对），人民币元；表内为高峰价，空闲价 = 高峰价 × offPeakMultiplier",
+      "models": [
+        {
+          "id": "deepseek-flash",
+          "name": "DeepSeek Flash",
+          "contextWindow": 1048576,
+          "maxTokens": 393216,
+          "vision": true,
+          "peakPricePerMillion": {
+            "inputCacheHit": 0.04,
+            "inputCacheMiss": 2,
+            "output": 8
+          }
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro",
+          "contextWindow": 1048576,
+          "maxTokens": 393216,
+          "vision": false,
+          "peakPricePerMillion": {
+            "inputCacheHit": 0.30,
+            "inputCacheMiss": 9.0,
+            "output": 27.0
+          }
+        }
+      ]
+    }
+  }
+}

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from codelotte.cost import Catalog
+from codelotte.permissions import allow_builtin_tools
 from codelotte.loop import (
     MAX_ITERATIONS,
     AgentLoop,
@@ -47,6 +48,7 @@ def _loop(
         store=_store(tmp_path),
         model="fake-model",
         catalog=catalog if catalog is not None else fake_catalog(),
+        permissions=allow_builtin_tools(),
         messages=messages,
     )
 
@@ -98,7 +100,9 @@ def test_tool_call_runs_real_tool_and_loops_back(tmp_path: Path) -> None:
 
     entries = load_entries(loop.session_path)
     kinds = [e["type"] for e in entries]
-    assert kinds == ["message", "message", "usage", "tool_call", "tool_result", "message", "usage"]
+    assert kinds == [
+        "message", "message", "usage", "tool_call", "permission", "tool_result", "message", "usage",
+    ]  # permission：判定即记录（票据 09，规则命中也要落审计）
     assert entries[3]["env"] == "local"  # 执行环境可审计（SPEC §E）
     assistant_with_call = entries[1]
     assert assistant_with_call["stopReason"] == "tool_calls"

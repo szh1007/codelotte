@@ -24,9 +24,13 @@ from codelotte.tools.write import WRITE_TOOL
 logger = logging.getLogger(__name__)
 
 
-def default_tools(executor: Executor) -> tuple[Tool, ...]:
-    """四个内置工具（SPEC §D）。执行器由调用方注入——票据 10 在此换 Docker 实现。"""
-    return (READ_TOOL, WRITE_TOOL, EDIT_TOOL, bash_tool(executor))
+def default_tools(executor: Executor, *, command_timeout: int | None = None) -> tuple[Tool, ...]:
+    """四个内置工具（SPEC §D）。执行器由调用方注入——票据 10 在此换 Docker 实现。
+
+    command_timeout：bash 的默认超时（秒，来自 settings.json）；None = 工具自带默认。
+    """
+    kwargs = {} if command_timeout is None else {"default_timeout": command_timeout}
+    return (READ_TOOL, WRITE_TOOL, EDIT_TOOL, bash_tool(executor, **kwargs))
 
 
 @dataclass(frozen=True)

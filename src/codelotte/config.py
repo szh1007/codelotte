@@ -1,104 +1,116 @@
-"""环境与配置读取：密钥只从环境变量或 .env 文件；启动时自动加载 .env 文件层。"""
+"""用户级配置文件读取（SPEC §M）：settings.json 与 models.json 就是配置的全部来源。
+
+配置级联：命令行参数（如 `-r`）> `~/.codelotte/settings.json` > `~/.codelotte/models.json`
+的 provider 条目。**没有任何内置默认**——模型、密钥、端点都必须显式配置，缺了就直接报错并
+指出该去哪个文件的哪个字段补，不替用户猜。
+
+没有任何配置会从项目目录或进程环境加载（.env 文件层、settings 的 env 包层、CODELOTTE_*
+环境变量均已移除，2026-10-17）；用户级目录固定为系统用户根目录下的 `.codelotte/`。
+"""
 
 from __future__ import annotations
 
-import os
-from collections.abc import Mapping, MutableMapping
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-flash"
-API_KEY_ENV = "DEEPSEEK_API_KEY"
-HOME_ENV = "CODELOTTE_HOME"
-ENV_FILE_NAME = ".env"
 USER_ENV_DIR = ".codelotte"
+SETTINGS_FILE_NAME = "settings.json"
 
 
 class ConfigError(Exception):
     """配置缺失或无效。"""
 
 
-def _env(source: Mapping[str, str] | None) -> Mapping[str, str]:
-    return source if source is not None else os.environ
+@dataclass
+class Settings:
+    """~/.codelotte/settings.json 的内容（每个设置一个顶层字段，直接读取）。
 
-
-def get_api_key(env: Mapping[str, str] | None = None) -> str:
-    key = _env(env).get(API_KEY_ENV, "").strip()
-    if not key:
-        raise ConfigError(
-            f"未找到环境变量 {API_KEY_ENV}（密钥只从环境变量或 .env 读取）。"
-            "启动时会自动加载 ~/.codelotte/.env 与当前目录 .env（模板见 .env.example），"
-            "也可在 shell 中 export。"
-        )
-    return key
-
-
-def get_base_url(env: Mapping[str, str] | None = None) -> str:
-    return _env(env).get("CODELOTTE_BASE_URL", "").strip() or DEFAULT_BASE_URL
-
-
-def get_model(env: Mapping[str, str] | None = None) -> str:
-    return _env(env).get("CODELOTTE_MODEL", "").strip() or DEFAULT_MODEL
-
-
-def get_session_dir(env: Mapping[str, str] | None = None) -> Path | None:
-    raw = _env(env).get("CODELOTTE_SESSION_DIR", "").strip()
-    return Path(raw) if raw else None
-
-
-def get_home_dir(env: Mapping[str, str] | None = None) -> Path | None:
-    """CODELOTTE_HOME 覆盖用户级目录的位置（测试隔离用；只从真实环境读取）。"""
-    raw = _env(env).get(HOME_ENV, "").strip()
-    return Path(raw) if raw else None
-
-
-def parse_env_text(text: str) -> dict[str, str]:
-    """最小 .env 解析：KEY=VALUE、# 注释、可选单双引号、可选 export 前缀；不做变量插值。"""
-    result: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        result[key] = value
-    return result
-
-
-def load_env_files(
-    *,
-    cwd: Path | None = None,
-    home: Path | None = None,
-    env: MutableMapping[str, str] | None = None,
-) -> list[Path]:
-    """自动加载 .env 文件层：用户级 ~/.codelotte/.env → 项目级 ./.env（后者覆盖前者）。
-
-    已存在的环境变量永不覆盖（命令行/CI 的显式设置为准）。返回实际读取的文件路径。
+    权限规则不在此（单独 permissions.json）；密钥也不在此（models.json 的 provider 条目）。
     """
-    target = env if env is not None else os.environ
-    base = cwd if cwd is not None else Path.cwd()
+
+    model: str | None = None
+    base_url: str | None = None
+    session_dir: Path | None = None
+    show_reasoning: bool | None = None
+    command_timeout: int | None = None
+    notices: list[str] = field(default_factory=list)
+
+
+_KNOWN_SETTINGS = {
+    "model": str,
+    "baseUrl": str,
+    "sessionDir": str,
+    "showReasoning": bool,
+    "commandTimeoutSeconds": int,
+}
+
+
+def load_settings(home: Path | None = None) -> Settings:
+    """读用户级 settings.json：缺失 = 全空（缺什么由取值方报错指路）。
+
+    坏文件/坏类型直接报错（配置错误要响）；未知键忽略并记入 notices（不静默吞）。
+    """
     home_dir = home if home is not None else Path.home()
-    candidates = [home_dir / USER_ENV_DIR / ENV_FILE_NAME, base / ENV_FILE_NAME]
-    loaded: list[Path] = []
-    merged: dict[str, str] = {}
-    for path in candidates:
-        if not path.is_file():
+    path = home_dir / USER_ENV_DIR / SETTINGS_FILE_NAME
+    if not path.is_file():
+        return Settings()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"设置文件读不动或不是合法 JSON：{path}（{exc}）") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError(f"设置文件顶层应是 JSON 对象：{path}")
+    settings = Settings()
+    for key, value in raw.items():
+        if key not in _KNOWN_SETTINGS:
+            settings.notices.append(f"settings.json 有未知键 {key!r}（已忽略）")
             continue
-        try:
-            merged.update(parse_env_text(path.read_text(encoding="utf-8")))
-        except OSError:
-            continue
-        loaded.append(path)
-    for key, value in merged.items():
-        if key not in target:
-            target[key] = value
-    return loaded
+        if key == "model" and isinstance(value, str):
+            settings.model = value or None
+        elif key == "baseUrl" and isinstance(value, str):
+            settings.base_url = value or None
+        elif key == "sessionDir" and isinstance(value, str):
+            settings.session_dir = Path(value) if value else None
+        elif key == "showReasoning" and isinstance(value, bool):
+            settings.show_reasoning = value
+        elif key == "commandTimeoutSeconds" and isinstance(value, int) and not isinstance(value, bool):
+            settings.command_timeout = value
+        else:
+            expected = _KNOWN_SETTINGS[key].__name__
+            raise ConfigError(
+                f"settings.json 的 {key!r} 类型不对（应为 {expected}）：{value!r}"
+            )
+    return settings
+
+
+def get_model(settings: Settings) -> str:
+    """模型必填：settings.json 的 "model"——没配置就报错指路（不替用户挑默认模型）。"""
+    if not settings.model:
+        raise ConfigError(
+            '未配置模型：请在 ~/.codelotte/settings.json 中设置 "model" 字段'
+            '（可选值见 ~/.codelotte/models.json 的 providers）'
+        )
+    return settings.model
+
+
+def get_base_url(settings: Settings, *, fallback: str | None = None) -> str:
+    """端点：settings.baseUrl 优先，其次 provider 条目的 baseUrl（fallback）；都没有则报错。"""
+    if settings.base_url:
+        return settings.base_url
+    if fallback:
+        return fallback
+    raise ConfigError(
+        '未找到 API 端点：请在 ~/.codelotte/settings.json 设置 "baseUrl"，'
+        '或在 ~/.codelotte/models.json 的对应 provider 下配置 "baseUrl"'
+    )
+
+
+def get_api_key(*, fallback: str | None = None) -> str:
+    """密钥：models.json 的 provider 条目（fallback）；没有则报错指路。"""
+    if fallback:
+        return fallback
+    raise ConfigError(
+        '未找到 API 密钥：请在 ~/.codelotte/models.json 的 provider 条目里配置 "apiKey"'
+        '（例如 {"providers": {"deepseek": {"apiKey": "sk-…"}}}）'
+    )

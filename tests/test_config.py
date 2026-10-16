@@ -1,57 +1,84 @@
-"""`.env` 自动加载的单元测试（用户级 → 项目级，不覆盖已有环境变量）。"""
+"""配置读取的单元测试：settings.json 直读、必填项报错指路（无默认、无环境变量来源）。"""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from codelotte.config import load_env_files, parse_env_text
+import pytest
+
+from codelotte.config import (
+    ConfigError,
+    Settings,
+    get_api_key,
+    get_base_url,
+    get_model,
+    load_settings,
+)
 
 
-def test_parse_basic_key_values() -> None:
-    parsed = parse_env_text("A=1\nB=hello world\n")
-    assert parsed == {"A": "1", "B": "hello world"}
+def _write_settings(home: Path, payload: object) -> None:
+    (home / ".codelotte").mkdir(parents=True, exist_ok=True)
+    (home / ".codelotte" / "settings.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
 
 
-def test_parse_ignores_comments_and_blank_lines() -> None:
-    parsed = parse_env_text("# comment\n\n   \nA=1\n")
-    assert parsed == {"A": "1"}
+def test_load_settings_defaults_when_missing(tmp_path: Path) -> None:
+    settings = load_settings(tmp_path / "empty")
+    assert settings.model is None and settings.session_dir is None and settings.notices == []
 
 
-def test_parse_strips_quotes_and_export_prefix() -> None:
-    parsed = parse_env_text('export A="quoted"\nB=\'single\'\n')
-    assert parsed == {"A": "quoted", "B": "single"}
+def test_load_settings_reads_all_known_keys(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_settings(
+        home,
+        {
+            "model": "deepseek-v4-pro",
+            "baseUrl": "https://proxy.example",
+            "sessionDir": "D:/sessions",
+            "showReasoning": True,
+            "commandTimeoutSeconds": 30,
+            "env": {"HTTPS_PROXY": "http://local-proxy"},  # 旧包层字段：未知键 → 提示忽略
+            "unknownKey": 1,
+        },
+    )
+    settings = load_settings(home)
+    assert settings.model == "deepseek-v4-pro"
+    assert settings.base_url == "https://proxy.example"
+    assert settings.session_dir == Path("D:/sessions")
+    assert settings.show_reasoning is True
+    assert settings.command_timeout == 30
+    assert any("unknownKey" in note for note in settings.notices)  # 未知键不静默
+    assert any("env" in note for note in settings.notices)
 
 
-def test_parse_skips_lines_without_key() -> None:
-    parsed = parse_env_text("=nokey\nJUSTTEXT\nA=1\n")
-    assert parsed == {"A": "1"}
-
-
-def test_load_project_env_overrides_user_env(tmp_path: Path) -> None:
+def test_load_settings_fails_loud_on_bad_json_and_bad_types(tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / ".codelotte").mkdir(parents=True)
-    (home / ".codelotte" / ".env").write_text("KEY=user\nONLY_USER=u\n", encoding="utf-8")
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / ".env").write_text("KEY=project\n", encoding="utf-8")
-    env: dict[str, str] = {}
-    loaded = load_env_files(cwd=project, home=home, env=env)
-    assert env["KEY"] == "project"
-    assert env["ONLY_USER"] == "u"
-    assert loaded == [home / ".codelotte" / ".env", project / ".env"]
+    (home / ".codelotte" / "settings.json").write_text("{ not json", encoding="utf-8")
+    with pytest.raises(ConfigError, match="不是合法 JSON"):
+        load_settings(home)
+
+    _write_settings(home, {"model": 5})
+    with pytest.raises(ConfigError, match="model"):
+        load_settings(home)
+    _write_settings(home, {"showReasoning": "yes"})
+    with pytest.raises(ConfigError, match="showReasoning"):
+        load_settings(home)
 
 
-def test_existing_environment_wins(tmp_path: Path) -> None:
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / ".env").write_text("KEY=fromfile\n", encoding="utf-8")
-    env = {"KEY": "fromenv"}
-    load_env_files(cwd=project, home=tmp_path / "nohome", env=env)
-    assert env["KEY"] == "fromenv"
+def test_getters_require_explicit_configuration() -> None:
+    """没有内置默认：模型/端点/密钥缺了就报错，并指引配到哪个文件的哪个字段。"""
+    with pytest.raises(ConfigError, match="未配置模型.*settings.json"):
+        get_model(Settings())
+    assert get_model(Settings(model="m")) == "m"
 
+    with pytest.raises(ConfigError, match="端点.*baseUrl"):
+        get_base_url(Settings())
+    assert get_base_url(Settings(base_url="http://x")) == "http://x"
+    assert get_base_url(Settings(), fallback="http://file") == "http://file"  # provider 条目兜底
 
-def test_missing_files_are_ignored(tmp_path: Path) -> None:
-    env: dict[str, str] = {}
-    loaded = load_env_files(cwd=tmp_path, home=tmp_path, env=env)
-    assert loaded == []
-    assert env == {}
+    with pytest.raises(ConfigError, match="API 密钥.*models.json.*apiKey"):
+        get_api_key()
+    assert get_api_key(fallback="sk-x") == "sk-x"

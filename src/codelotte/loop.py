@@ -26,6 +26,18 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from codelotte.cost import CallRecord, Catalog, price_call
+from codelotte.permissions import (
+    ALLOW,
+    ASK,
+    DENY,
+    DECISION_ALWAYS,
+    DECISION_DENY,
+    DECISION_ONCE,
+    DECISION_SESSION,
+    Approver,
+    PermissionLayer,
+    PermissionRequest,
+)
 from codelotte.providers.base import (
     ProviderError,
     ProviderEvent,
@@ -111,6 +123,14 @@ def _request_fingerprint(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+@dataclass(frozen=True)
+class _Authorization:
+    """一次工具调用的权限结论（reason 进审计记录，拒绝时也回传模型）。"""
+
+    allowed: bool
+    reason: str
+
+
 @dataclass
 class _Turn:
     """一轮模型回复的收集结果（失败时 failure 非空，其余字段为已收集到的部分）。"""
@@ -165,8 +185,10 @@ class AgentLoop:
         store: SessionStore,
         model: str,
         catalog: Catalog,
+        permissions: PermissionLayer,
         env: str = "local",
         messages: list[dict[str, Any]] | None = None,
+        approver: Approver | None = None,
     ) -> None:
         self._client = client
         self._tools = tools
@@ -174,6 +196,9 @@ class AgentLoop:
         self._model = model
         self._env = env
         self._catalog = catalog
+        self._permissions = permissions
+        # 审批者只在有交互面时注入（TUI）；无头上为 None——ask 一律 fail-closed（SPEC §G）
+        self.approver = approver
         self._tool_schemas = wire_tools(tools)
         self.messages: list[dict[str, Any]] = (
             list(messages) if messages is not None else []
@@ -192,6 +217,16 @@ class AgentLoop:
     def catalog(self) -> Catalog:
         """本次运行的模型目录（账单/展示按它折算）。"""
         return self._catalog
+
+    @property
+    def model(self) -> str:
+        """本次运行使用的模型 id（展示层用）。"""
+        return self._model
+
+    @property
+    def permissions(self) -> PermissionLayer:
+        """本次运行的权限层（notices 供展示层提示，票据 09）。"""
+        return self._permissions
 
     async def run_turn(self, prompt: str) -> AsyncIterator[LoopEvent]:
         """跑一个完整回合并广播事件。工具失败不中断（错误文本回传模型自纠）。
@@ -362,7 +397,20 @@ class AgentLoop:
                 duration_ms=0,
             )
         else:
-            result = await execute_tool(call.name, arguments, tools=self._tools)
+            authorization = await self._authorize(call, arguments)
+            if authorization.allowed:
+                result = await execute_tool(call.name, arguments, tools=self._tools)
+            else:
+                # 拒绝不是异常：原因回传模型让它换做法（SPEC §D），同时已落 permission 记录（§G）
+                result = ToolResult(
+                    content=(
+                        f"错误：权限层未放行这次调用（{authorization.reason}）。"
+                        "请换一种被允许的做法；如需放宽，请用户调整权限规则"
+                        "（--allow / ~/.codelotte/permissions.json）。"
+                    ),
+                    ok=False,
+                    duration_ms=0,
+                )
         reply["content"] = result.content  # 原地回填（同一条消息，取消也不会缺项）
         self._store.append(
             "tool_result",
@@ -380,3 +428,64 @@ class AgentLoop:
             content=result.content,
             duration_ms=result.duration_ms,
         )
+
+    async def _authorize(self, call: ToolCall, arguments: dict[str, Any]) -> _Authorization:
+        """权限判定 →（ask 时）审批 → 落 permission 记录（审计，SPEC §G）。
+
+        记录先于执行：判定与决策先写进会话，再决定放行/拒绝——记录是事实源。
+        """
+        check = self._permissions.evaluate(call.name, arguments)
+        decision: str | None = None
+        if check.verdict == ALLOW:
+            reason = f"规则放行（{check.rule.text}）" if check.rule else "放行"
+        elif check.verdict == DENY:
+            reason = f"被规则拒绝（{check.rule.text}）" if check.rule else "被规则拒绝"
+        elif self.approver is None:
+            decision = DECISION_DENY  # 无头模式：ask 一律 fail-closed（SPEC §G）
+            reason = "无头模式未授权（fail-closed）；用 --allow 或规则文件授权"
+        else:
+            request = PermissionRequest(
+                tool=call.name,
+                subject=check.subject,
+                arguments=arguments,
+                rule=check.rule,
+            )
+            try:
+                decision = await self.approver(request)
+            except asyncio.CancelledError:
+                # 审批中被取消（Ctrl+C）：判定已发生就要留痕（审查修正：审计断链）
+                self._store.append(
+                    "permission",
+                    toolCallId=call.id,
+                    tool=call.name,
+                    subject=check.subject,
+                    verdict=check.verdict,
+                    rule=check.rule.text if check.rule is not None else None,
+                    source=check.rule.source if check.rule is not None else None,
+                    decision=None,
+                    allowed=False,
+                    reason="审批未完成（回合被取消）",
+                )
+                raise
+            self._permissions.apply_decision(call.name, arguments, decision)
+            reason = {
+                DECISION_ONCE: "用户审批：本次允许",
+                DECISION_SESSION: "用户审批：本会话允许",
+                DECISION_ALWAYS: "用户审批：始终允许（已写入用户级规则）",
+            }.get(decision, "用户在审批中拒绝")
+        allowed = check.verdict == ALLOW or (
+            check.verdict == ASK and decision in (DECISION_ONCE, DECISION_SESSION, DECISION_ALWAYS)
+        )
+        self._store.append(
+            "permission",
+            toolCallId=call.id,
+            tool=call.name,
+            subject=check.subject,
+            verdict=check.verdict,
+            rule=check.rule.text if check.rule is not None else None,
+            source=check.rule.source if check.rule is not None else None,
+            decision=decision,
+            allowed=allowed,
+            reason=reason,  # 一句话说明（审计/导出直接可读，与回传模型的错误文本同源）
+        )
+        return _Authorization(allowed=allowed, reason=reason)

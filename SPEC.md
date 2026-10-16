@@ -269,7 +269,7 @@
 - **规则语法**：`tool(pattern)`，如 `bash(git diff *)`、`bash(pytest *)`、`read(src/**)`、`write`。匹配的是**工具调用参数**；不带 pattern 则匹配该工具全部调用。
 - **判定为三档**：`allow`（直接执行）/ `ask`（弹审批）/ `deny`（拒绝并把原因回传模型）。冲突时 **deny > ask > allow**（任一来源的 deny 不可被更低层级放行）。
 - **破坏性命令硬编码保护**：`rm -rf`、`git push --force`、`git reset --hard`、`chmod -R`、`git clean -fd` 等模式**不允许被通配规则（如 `bash(*)`）自动放行**——必须精确规则或逐次审批。这直接回应 Claude Code 生态中 `Bash(git *)` 类规则放行破坏性命令的已知教训。
-- **规则来源分层**：命令行参数 > 项目级规则文件（仓库内，如 `.codelotte/permissions`）> 用户级规则文件（家目录）。项目级规则首次生效前需要**信任确认**（确认记录写入用户级 trust 文件；未信任仓库的项目规则被忽略并提示）——防止"clone 一个恶意仓库，打开即被其规则劫持"。
+- **规则来源分层**：命令行参数 > 项目级规则文件（仓库内，如 `.codelotte/permissions.json`）> 用户级规则文件（家目录）。项目级规则首次生效前需要**信任确认**（确认记录写入用户级 trust 文件；未信任仓库的项目规则被忽略并提示）——防止"clone 一个恶意仓库，打开即被其规则劫持"。
 - **审批四档交互**：本次允许 / 本会话允许 / 始终允许（写入**用户级**规则文件，绝不写进项目文件）/ 拒绝。headless 模式无交互，未命中 allow 的调用一律拒绝（fail-closed）。
 - **审计**：每次判定（规则命中 or 人工审批）作为 `permission` entry 落会话；导出的 HTML 中可见。
 
@@ -337,9 +337,11 @@
 
 ### M. 配置系统
 
-- 配置级联：命令行 > 项目级 > 用户级。
-- 模型目录（模型元数据）与权限规则是两类独立配置（前者是"能力与价格表"，后者是"安全策略"），都支持分层覆盖。
-- 密钥一律环境变量；仓库提供 `.env.example` 模板（占位符），真实 `.env` 被 `.gitignore` 排除。
+- 配置级联：**命令行参数（如 `-r`）> 用户级 `~/.codelotte/settings.json` 顶层字段 > 用户级 `~/.codelotte/models.json` 的 provider 条目（apiKey/baseUrl）> 必填报错指路**。**没有内置默认，也没有任何环境变量来源**（`.env`、`env` 包层、`CODELOTTE_*` 变量均已移除）；用户级目录固定为系统家目录；不存在任何项目级配置文件。模型/密钥/端点缺哪个就报错并指出去哪补。
+- 模型目录（模型元数据）与权限规则是两类独立配置（前者是"能力与价格表"，后者是"安全策略"）：models.json 采用 **pi 风格 `providers` 结构**（provider 级 baseUrl/apiKey/计费规则——峰谷/节假日/货币都是 provider 的事实——+ models 列表），随包目录在 `src/codelotte/providers/models.json`，用户文件**逐字段、按模型 id 合入**；权限规则走 `permissions.json` + 项目级信任门槛。
+- **配置一律只从用户级目录读取**（固定的系统家目录下的 `~/.codelotte/`）：settings/models 能决定请求去向与所用密钥，放进项目目录等于让陌生仓库遥控你的请求；且没有任何开关（如从前的 `CODELOTTE_HOME`）能把这个目录重定位。
+- 密钥来源：用户级 models.json 的 provider 条目 `apiKey`（必填）；不进仓库——随包 models.json 带密钥会被测试拦下。
+- 完整键表与示例见 [docs/tech/configuration.md](docs/tech/configuration.md)。
 
 ### N. 可靠性与错误处理
 

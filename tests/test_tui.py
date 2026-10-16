@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,13 +20,14 @@ from textual.widgets import Input, Markdown, Static
 
 from codelotte.cost import Catalog
 from codelotte.loop import AgentLoop
+from codelotte.permissions import PermissionLayer, allow_builtin_tools, build_permission_layer
 from codelotte.providers.base import TextDelta
 from codelotte.sandbox import LocalExecutor
 from codelotte.session.context import messages_from_entries
 from codelotte.session.store import SessionStore, load_entries
 from codelotte.tools import default_tools
 from codelotte.tui import TuiApp
-from codelotte.tui.app import ToolCallBlock
+from codelotte.tui.app import ApprovalScreen, ToolCallBlock
 from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn, tool_turn
 
 SESSION_NAME = "20260101T000000Z_testtest.jsonl"
@@ -39,6 +41,7 @@ def _make(
     messages: list[dict[str, Any]] | None = None,
     model: str = "fake-model",
     catalog: Catalog | None = None,
+    permissions: PermissionLayer | None = None,
 ) -> tuple[TuiApp, ScriptedClient, SessionStore]:
     path = tmp_path / SESSION_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +54,7 @@ def _make(
         store=store,
         model=model,
         catalog=catalog if catalog is not None else fake_catalog(model),
+        permissions=permissions if permissions is not None else allow_builtin_tools(),
         messages=messages,
     )
     return TuiApp(agent=loop, model=model, history=history or []), client, store
@@ -271,6 +275,7 @@ def test_continue_renders_history_and_appends(tmp_path: Path) -> None:
             store=store,
             model="fake-model",
             catalog=fake_catalog(),
+            permissions=allow_builtin_tools(),
         )
 
         async def drain() -> None:
@@ -350,3 +355,179 @@ def test_snapshot_interrupted_turn(snap_compare: Any, tmp_path: Path) -> None:
             await pilot.pause(0.02)
 
     assert snap_compare(app, terminal_size=(92, 24), run_before=before)
+
+
+# ---- 权限审批弹层（票据 09）----
+
+
+
+async def _wait_for_approval(pilot: Pilot) -> None:
+    app = _as_tui(pilot)
+    for _ in range(300):
+        if isinstance(app.screen, ApprovalScreen):
+            return
+        await pilot.pause(0.02)
+    raise AssertionError("审批弹层没有出现")
+
+
+def test_approval_modal_allows_once(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        target = tmp_path / "f.txt"
+        target.write_text("hello\n", encoding="utf-8")
+        app, _client, store = _make(
+            tmp_path,
+            [tool_turn("read", {"path": str(target)}), text_turn("读到了")],
+            permissions=PermissionLayer(),  # 没有规则 → 默认询问
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "读文件")
+            await _wait_for_approval(pilot)
+            await pilot.press("y")  # 本次允许
+            await _wait_idle(pilot)
+        entries = load_entries(store.path)
+        permission = next(e for e in entries if e["type"] == "permission")
+        assert permission["allowed"] is True and permission["decision"] == "once"
+        tool_result = next(e for e in entries if e["type"] == "tool_result")
+        assert tool_result["ok"] is True and "hello" in tool_result["content"]
+
+    asyncio.run(scenario())
+
+
+def test_approval_always_writes_user_file_never_project(tmp_path: Path) -> None:
+    """验收：『始终允许』写用户级规则文件——有测试证明不写项目文件。"""
+
+    async def scenario() -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        home = tmp_path / "home"
+        target = tmp_path / "f.txt"
+        target.write_text("x\n", encoding="utf-8")
+        layer = build_permission_layer(project, home=home)  # user_rules_path = home 下
+        app, _client, _store = _make(
+            tmp_path,
+            [tool_turn("read", {"path": str(target)}), text_turn("好")],
+            permissions=layer,
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "读")
+            await _wait_for_approval(pilot)
+            await pilot.press("a")  # 始终允许
+            await _wait_idle(pilot)
+
+        user_file = home / ".codelotte" / "permissions.json"
+        assert json.loads(user_file.read_text(encoding="utf-8")) == {
+            "allow": [f"read({target})"],
+            "ask": [],
+            "deny": [],
+        }
+        assert not (project / ".codelotte" / "permissions.json").exists()  # 绝不写项目文件
+
+    asyncio.run(scenario())
+
+
+def test_approval_deny_feeds_error_back_and_turn_continues(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        target = tmp_path / "f.txt"
+        target.write_text("x\n", encoding="utf-8")
+        app, client, store = _make(
+            tmp_path,
+            [tool_turn("read", {"path": str(target)}), text_turn("好的，不读")],
+            permissions=PermissionLayer(),
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "读文件")
+            await _wait_for_approval(pilot)
+            await pilot.press("n")  # 拒绝
+            await _wait_idle(pilot)
+            block = app.query_one(ToolCallBlock)
+            assert block.title.endswith("✗")
+
+        entries = load_entries(store.path)
+        permission = next(e for e in entries if e["type"] == "permission")
+        assert permission["allowed"] is False
+        tool_result = next(e for e in entries if e["type"] == "tool_result")
+        assert tool_result["ok"] is False and "权限层未放行" in tool_result["content"]
+        # 拒绝回传模型后循环继续：第二次请求里能看到错误文本
+        assert "权限层未放行" in client.requests[1][-1]["content"]
+
+    asyncio.run(scenario())
+
+
+def test_approval_session_decision_stays_in_memory(tmp_path: Path) -> None:
+    """『本会话允许』只加内存规则：不写任何文件，同命令再次调用不再询问。"""
+
+    async def scenario() -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        home = tmp_path / "home"
+        target = tmp_path / "f.txt"
+        target.write_text("hello\n", encoding="utf-8")
+        layer = build_permission_layer(project, home=home)
+        app, _client, store = _make(
+            tmp_path,
+            [
+                tool_turn("read", {"path": str(target)}, call_id="c1"),
+                tool_turn("read", {"path": str(target)}, call_id="c2"),
+                text_turn("两次都读了"),
+            ],
+            permissions=layer,
+        )
+        approvals = 0
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "读两次")
+            await _wait_for_approval(pilot)
+            approvals += 1
+            await pilot.press("s")  # 本会话允许
+            await _wait_idle(pilot)
+        assert approvals == 1  # 第二次同命令直接放行，没有再弹
+        assert not (home / ".codelotte" / "permissions.json").exists()  # 本会话不落盘
+        assert not (project / ".codelotte" / "permissions.json").exists()
+
+        entries = load_entries(store.path)
+        perms = [e for e in entries if e["type"] == "permission"]
+        assert [p["decision"] for p in perms] == ["session", None]
+        assert [p["allowed"] for p in perms] == [True, True]
+
+    asyncio.run(scenario())
+
+
+def test_ctrl_c_during_approval_cancels_cleanly(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        target = tmp_path / "f.txt"
+        target.write_text("x\n", encoding="utf-8")
+        app, _client, store = _make(
+            tmp_path,
+            [tool_turn("read", {"path": str(target)}), text_turn("不该走到这里")],
+            permissions=PermissionLayer(),
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "读文件")
+            await _wait_for_approval(pilot)
+            await pilot.press("ctrl+c")  # 弹层里 Ctrl+C：该调用按拒绝，回合取消
+            for _ in range(300):
+                if not app.turn_running:
+                    break
+                await pilot.pause(0.02)
+            assert app.is_running  # 界面还在
+            assert not isinstance(app.screen, ApprovalScreen)  # 弹层已关
+            assert any("已中断" in t for t in _texts(app))
+
+        entries = load_entries(store.path)
+        assert not [e for e in entries if e["type"] == "tool_result"]  # 没执行
+        # 审查修正：取消也不能留审计断链——判定已发生，permission 记录要有
+        permission = next(e for e in entries if e["type"] == "permission")
+        assert permission["allowed"] is False
+        assert "取消" in permission["reason"]
+
+    asyncio.run(scenario())
+
+
+def test_permission_notices_are_shown_in_transcript(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        layer = PermissionLayer(notices=["检测到项目级权限规则但此仓库未被信任，已忽略；运行 `codelotte trust` 确认"])
+        app, _client, _store = _make(tmp_path, [text_turn("x")], permissions=layer)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(0.05)
+            assert any("未被信任" in t for t in _texts(app))
+
+    asyncio.run(scenario())

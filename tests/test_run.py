@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from codelotte.loop import AgentLoop
+from codelotte.permissions import allow_builtin_tools
 from codelotte.providers.base import ProviderError, StreamUsage, TextDelta, UsageEvent
 from codelotte.run import print_session_invoice, run_once
 from codelotte.sandbox import LocalExecutor
@@ -27,6 +28,7 @@ def _loop(tmp_path: Path, client: ScriptedClient) -> AgentLoop:
         store=SessionStore.resume(path),
         model="fake-model",
         catalog=fake_catalog(),
+        permissions=allow_builtin_tools(),
     )
 
 

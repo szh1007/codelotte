@@ -23,13 +23,13 @@ DEFAULT_TIMEOUT = 120  # 秒
 MAX_TIMEOUT = 600  # 秒
 
 
-def bash_tool(executor: Executor) -> Tool:
+def bash_tool(executor: Executor, *, default_timeout: int = DEFAULT_TIMEOUT) -> Tool:
     """构造 bash 工具。执行器由调用方注入——票据 10 换 Docker 实现，工具代码不变。"""
 
     async def handler(args: dict[str, Any]) -> ToolOutcome:
         command = str_arg(args, "command")
         timeout = int_arg(
-            args, "timeout", DEFAULT_TIMEOUT, minimum=1, maximum=MAX_TIMEOUT
+            args, "timeout", default_timeout, minimum=1, maximum=MAX_TIMEOUT
         )
         try:
             result = await executor.run(command, cwd=Path.cwd(), timeout=float(timeout))
@@ -60,7 +60,7 @@ def bash_tool(executor: Executor) -> Tool:
                     "type": "integer",
                     "description": (
                         f"Seconds before the command is killed (1-{MAX_TIMEOUT}). "
-                        f"Defaults to {DEFAULT_TIMEOUT}."
+                        f"Defaults to {default_timeout}."
                     ),
                 },
             },

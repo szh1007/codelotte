@@ -156,6 +156,22 @@ def _render_tool_call(entry: dict[str, Any], result: dict[str, Any] | None) -> s
     )
 
 
+def _permission_line(entry: dict[str, Any]) -> str:
+    """权限判定的一句话（HTML 与 Markdown 共用；票据 09 的标记层）。"""
+    icon = "🔓 权限放行" if entry.get("allowed") else "⛔ 权限拒绝"
+    subject = _one_line(str(entry.get("subject") or ""))
+    tool = str(entry.get("tool", "?"))
+    what = f"{tool}({subject})" if subject else tool
+    reason = str(entry.get("reason") or "")
+    verdict = str(entry.get("verdict") or "")
+    return f"{icon}：{what} → {reason}（判定 {verdict}）"
+
+
+def _render_permission(entry: dict[str, Any]) -> str:
+    cls = "marker" if entry.get("allowed") else "marker warn"
+    return f'<div class="{cls}">{_esc(_permission_line(entry))}</div>'
+
+
 def _render_marker(entry: dict[str, Any]) -> str:
     kind = entry.get("kind")
     if entry.get("type") == "event" and kind == "fork":
@@ -191,6 +207,8 @@ def _render_timeline(entries: list[dict[str, Any]]) -> str:
                 )
         elif kind == "event":
             blocks.append(_render_marker(entry))
+        elif kind == "permission":
+            blocks.append(_render_permission(entry))
         # session / usage 在页头与成本面板呈现；未知类型如实标注（前向兼容）
         elif kind not in ("session", "usage"):
             blocks.append(_render_marker(entry))
@@ -402,6 +420,8 @@ def _md_timeline(entries: list[dict[str, Any]]) -> str:
                 blocks.append(f"> ⚙ 工具结果（无对应调用）{ok}：{_md_cell(clipped)}")
         elif kind == "event":
             blocks.append(_md_marker(entry))
+        elif kind == "permission":
+            blocks.append(f"> {_md_heading(_permission_line(entry))}")
         # session / usage 在页头与成本面板呈现；未知类型如实标注（前向兼容）
         elif kind not in ("session", "usage"):
             blocks.append(_md_marker(entry))

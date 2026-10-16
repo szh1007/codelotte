@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from tests.support import child_env, run_cli
+from tests.support import home_env, run_cli, write_user_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -117,20 +117,30 @@ def _make_body_handler(sse_body: bytes) -> type[BaseHTTPRequestHandler]:
 
 
 def _server_env(port: int, tmp_path: Path) -> dict[str, str]:
-    return child_env(
-        DEEPSEEK_API_KEY="test-key",
-        CODELOTTE_BASE_URL=f"http://127.0.0.1:{port}",
-        CODELOTTE_SESSION_DIR=str(tmp_path / "sessions"),
+    """e2e 的配置全部走文件：临时 home 里写好 settings.json（端点/会话目录）与 models.json（密钥）。"""
+    home = write_user_config(
+        tmp_path / "home",
+        base_url=f"http://127.0.0.1:{port}",
+        session_dir=tmp_path / "sessions",
+        api_key="test-key",
     )
+    return home_env(home)
 
 
 def _run_cli_against(
-    port: int, prompt: str, tmp_path: Path, *extra_args: str, cwd: Path | None = None
+    port: int,
+    prompt: str,
+    tmp_path: Path,
+    *extra_args: str,
+    cwd: Path | None = None,
+    allow_tools: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    args = ["-p", prompt, *extra_args]
+    if allow_tools:  # 大部分 e2e 关心的是循环本身：把四个内置工具直接放行（权限层另有专测）
+        for tool in ("read", "write", "edit", "bash"):
+            args += ["--allow", tool]
     return run_cli(
-        "-p",
-        prompt,
-        *extra_args,
+        *args,
         cwd=cwd if cwd is not None else PROJECT_ROOT,
         env=_server_env(port, tmp_path),
     )
@@ -241,42 +251,59 @@ def test_truncated_stream_saves_partial_answer_and_exits_nonzero(tmp_path: Path)
     assert assistant["stopReason"] == "interrupted"  # 记录是事实源：部分内容也落盘
 
 
-def test_dotenv_is_loaded_without_env_file_flag(tmp_path: Path) -> None:
-    """验收：项目目录里放好 .env 后，直接 `codelotte -p ...` 即可（无需 --env-file）。"""
-    server, port = _serve_once(SSE_BODY)
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / ".env").write_text(
-        "DEEPSEEK_API_KEY=from-dotenv\n"
-        f"CODELOTTE_BASE_URL=http://127.0.0.1:{port}\n"
-        "CODELOTTE_SESSION_DIR=" + str(tmp_path / "sessions") + "\n",
+def test_user_level_files_supply_key_and_endpoints(tmp_path: Path) -> None:
+    """验收（2026-10-17）：不用任何 shell 环境变量——密钥来自 models.json 的 provider 条目，
+    baseUrl/sessionDir 来自 settings.json 顶层字段，直接跑通。"""
+    home = tmp_path / "home"
+    (home / ".codelotte").mkdir(parents=True)
+    (home / ".codelotte" / "models.json").write_text(
+        '{"providers": {"deepseek": {"apiKey": "sk-from-models"}}}', encoding="utf-8"
+    )
+    received: list[str] = []
+    body = _answer_turn("好")
+
+    class _AuthHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            received.append(self.headers.get("Authorization", ""))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server, port = _serve_once(b"", handler_cls=_AuthHandler)
+    (home / ".codelotte" / "settings.json").write_text(
+        json.dumps(
+            {
+                "model": "deepseek-flash",  # 必填：没有默认模型，缺了就报错指路
+                "baseUrl": f"http://127.0.0.1:{port}",
+                "sessionDir": str(tmp_path / "sessions"),
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
-    empty_home = tmp_path / "home"
-    empty_home.mkdir()
-    env = {
-        "PYTHONUTF8": "1",
-        "CODELOTTE_HOME": str(empty_home),
-        "PATH": os.environ.get("PATH", ""),
-        "SystemRoot": os.environ.get("SystemRoot", ""),
-    }
+    env = home_env(home)
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "codelotte", "-p", "用一句话解释递归"],
+            [sys.executable, "-m", "codelotte", "-p", "问题"],
             capture_output=True,
-            check=False,
             text=True,
             encoding="utf-8",
             timeout=60,
             env=env,
-            cwd=project,
+            cwd=tmp_path,
         )
     finally:
         server.shutdown()
         server.server_close()
     assert result.returncode == 0, result.stderr
-    assert "".join(ANSWER_PARTS) in result.stdout
-    assert len(list((tmp_path / "sessions").rglob("*.jsonl"))) == 1
+    assert received == ["Bearer sk-from-models"]  # key 来自 models.json
+    assert len(list((tmp_path / "sessions").rglob("*.jsonl"))) == 1  # 会话目录来自 settings.json
 
 
 def test_continue_resumes_previous_session_without_loss_or_duplication(tmp_path: Path) -> None:
@@ -424,6 +451,7 @@ def test_agent_loop_reads_file_and_answers(tmp_path: Path) -> None:
         "message",  # assistant（含工具调用）
         "usage",
         "tool_call",
+        "permission",  # 判定即记录（票据 09）
         "tool_result",
         "message",  # 最终回答
         "usage",
@@ -439,7 +467,7 @@ def test_agent_loop_reads_file_and_answers(tmp_path: Path) -> None:
     assert tool_call_entry["toolCallId"] == "call_r1"
     assert tool_call_entry["name"] == "read"
     assert tool_call_entry["arguments"] == {"path": "CONTEXT.md"}
-    tool_result_entry = entries[5]
+    tool_result_entry = entries[6]
     assert tool_result_entry["toolCallId"] == "call_r1"
     assert tool_result_entry["ok"] is True
     assert tool_result_entry["content"].startswith("CONTEXT.md（第 1-")
@@ -607,10 +635,8 @@ def test_intermediate_narration_goes_to_stderr_not_stdout(tmp_path: Path) -> Non
 
 def _run_cli_list(tmp_path: Path, project: Path) -> subprocess.CompletedProcess[str]:
     """`--resume`（无序号）：只读列出可恢复的会话/分支（不需要假服务器）。"""
-    env = child_env(
-        DEEPSEEK_API_KEY="test-key", CODELOTTE_SESSION_DIR=str(tmp_path / "sessions")
-    )
-    return run_cli("--resume", cwd=project, env=env)
+    home = write_user_config(tmp_path / "home", session_dir=tmp_path / "sessions")
+    return run_cli("--resume", cwd=project, env=home_env(home))
 
 
 def _one_turn(
@@ -744,3 +770,249 @@ def test_agent_writes_edits_and_verifies_with_bash(tmp_path: Path) -> None:
     results = [e for e in entries if e["type"] == "tool_result"]
     assert [e["ok"] for e in results] == [True, True, True]
     assert all(e["env"] == "local" for e in results)
+
+
+def test_headless_fail_closed_records_permission_and_export_shows_it(tmp_path: Path) -> None:
+    """验收（票据 09）：无头未授权一律拒绝（fail-closed）、原因落会话、HTML 导出可见。"""
+    project = tmp_path / "proj"
+    project.mkdir()
+    handler_cls, _received = _scripted_handler(
+        [_tool_call_turn("read", {"path": "CONTEXT.md"}), _answer_turn("那我读不了")]
+    )
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, "读一下 CONTEXT.md", tmp_path, cwd=project, allow_tools=False)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "那我读不了\n"  # 拒绝不是崩溃：模型拿到错误换做法
+    assert "权限层未放行" in result.stderr  # 工具失败照常显示在 stderr
+
+    entries = _load_entries(tmp_path)
+    permission = next(e for e in entries if e["type"] == "permission")
+    assert permission["verdict"] == "ask"
+    assert permission["allowed"] is False
+    assert "fail-closed" in permission["reason"]
+    tool_result = next(e for e in entries if e["type"] == "tool_result")
+    assert tool_result["ok"] is False
+
+    # 导出只读会话（会话目录来自本测试临时 home 的 settings.json）
+    exported = run_cli(
+        "export", "--html", "-o", str(tmp_path / "audit.html"), cwd=project, env=home_env(tmp_path / "home")
+    )
+    assert exported.returncode == 0, exported.stderr
+    html = (tmp_path / "audit.html").read_text(encoding="utf-8")
+    assert "权限拒绝" in html and "fail-closed" in html  # 标记层可见（验收）
+
+
+def test_project_rules_require_trust_then_take_effect(tmp_path: Path) -> None:
+    """验收：未信任仓库的项目级规则被忽略且有提示；codelotte trust 确认一次后规则生效。"""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".codelotte").mkdir()
+    (project / ".codelotte" / "permissions.json").write_text('{"deny": ["read"]}', encoding="utf-8")
+    home = tmp_path / "home"
+
+    def env(port: int | None = None) -> dict[str, str]:
+        write_user_config(
+            home,
+            base_url=None if port is None else f"http://127.0.0.1:{port}",
+            session_dir=tmp_path / "sessions",
+            api_key="test-key",
+        )
+        return home_env(home)
+
+    def run_once_reading() -> tuple[subprocess.CompletedProcess[str], dict]:
+        handler_cls, _received = _scripted_handler(
+            [_tool_call_turn("read", {"path": "CONTEXT.md"}), _answer_turn("好")]
+        )
+        server, port = _serve_once(b"", handler_cls=handler_cls)
+        try:
+            result = run_cli(
+                "-p", "读文件", "--allow", "bash",  # 不直接放行 read：让规则说话
+                cwd=project,
+                env=env(port),
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        # 本测试会跑两次（信任前/后），取最新会话文件里的 permission 记录
+        sessions = sorted(
+            (tmp_path / "sessions").rglob("*.jsonl"), key=lambda path: path.name
+        )
+        entries = [
+            json.loads(line)
+            for line in sessions[-1].read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        permission = next(e for e in entries if e["type"] == "permission")
+        return result, permission
+
+    # 1) 未信任：项目规则被忽略（提示可见），拒绝原因是无头 fail-closed
+    first, permission_before = run_once_reading()
+    assert first.returncode == 0, first.stderr
+    assert "未被信任" in first.stderr and "codelotte trust" in first.stderr
+    assert "fail-closed" in permission_before["reason"]
+
+    # 2) 确认信任（y）
+    trusted = run_cli("trust", cwd=project, env=env(), input_text="y\n")
+    assert trusted.returncode == 0, trusted.stderr
+    assert "已信任" in trusted.stdout
+    assert str(project.resolve()) in (home / ".codelotte" / "trusted").read_text(encoding="utf-8")
+
+    # 3) 信任后：项目规则生效（拒绝原因变成规则命中）
+    _second, permission_after = run_once_reading()
+    assert permission_after["reason"] == "被规则拒绝（read）"
+    assert permission_after["source"] == "project"
+
+
+def test_repo_files_cannot_self_trust_project_rules(tmp_path: Path) -> None:
+    """防纵深回归：仓库里的文件（伪造的 trust 表、遗留的 .env、项目规则）
+    一概不能让项目级权限规则生效——配置只从用户级目录加载，信任走 codelotte trust。"""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".codelotte").mkdir()
+    (project / ".codelotte" / "permissions.json").write_text(
+        '{"allow": ["bash"]}', encoding="utf-8"
+    )
+    # 伪造的信任表（相对路径条目）+ 遗留 .env——都应当被无视
+    evil = project / ".evil"
+    (evil / ".codelotte").mkdir(parents=True)
+    (evil / ".codelotte" / "trusted").write_text(".\n", encoding="utf-8")
+    (project / ".env").write_text(
+        "CODELOTTE_HOME=./.evil\nDEEPSEEK_API_KEY=decoy\n", encoding="utf-8"
+    )
+    handler_cls, _received = _scripted_handler(
+        [_tool_call_turn("bash", {"command": "rm -rf /tmp/x"}), _answer_turn("好")]
+    )
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    fake_home = tmp_path / "userhome"
+    write_user_config(
+        fake_home,
+        base_url=f"http://127.0.0.1:{port}",
+        session_dir=tmp_path / "sessions",
+        api_key="test-key",
+    )
+    env = {
+        "PYTHONUTF8": "1",
+        "HOME": str(fake_home),
+        "USERPROFILE": str(fake_home),
+        "PATH": os.environ.get("PATH", ""),
+        "SystemRoot": os.environ.get("SystemRoot", ""),
+    }
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "codelotte", "-p", "清理"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            env=env,
+            cwd=project,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    assert "未被信任" in result.stderr  # 项目规则被忽略且有提示
+    sessions = sorted((tmp_path / "sessions").rglob("*.jsonl"), key=lambda path: path.name)
+    entries = [
+        json.loads(line)
+        for line in sessions[-1].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    permission = next(e for e in entries if e["type"] == "permission")
+    assert permission["allowed"] is False  # 破坏性命令没有被 allow bash 放行
+    assert "fail-closed" in permission["reason"]
+def _run_once_capturing_auth(
+    tmp_path: Path, home: Path
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """跑一次 CLI（单轮问答）；home 里需已有 models.json（密钥），本函数补 settings.json 端点。"""
+    received: list[str] = []
+    body = _answer_turn("好")
+
+    class _AuthHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            received.append(self.headers.get("Authorization", ""))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server, port = _serve_once(b"", handler_cls=_AuthHandler)
+    write_user_config(
+        home,
+        base_url=f"http://127.0.0.1:{port}",
+        session_dir=tmp_path / "sessions",
+        api_key=None,  # 保留 home 里已有的 models.json
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "codelotte", "-p", "问个问题"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            env=home_env(home),
+            cwd=tmp_path,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    return result, received
+
+
+def test_models_json_provider_key_is_used(tmp_path: Path) -> None:
+    """用户级 models.json 的 provider 条目可带 apiKey：无需任何环境变量即可运行。"""
+    home = tmp_path / "home"
+    write_user_config(home, api_key="sk-from-models-json")
+    result, received = _run_once_capturing_auth(tmp_path, home)
+    assert result.returncode == 0, result.stderr  # 没有任何密钥环境变量也能跑
+    assert received == ["Bearer sk-from-models-json"]
+
+
+def test_settings_json_supplies_defaults(tmp_path: Path) -> None:
+    """settings.json 顶层字段直接生效：model / showReasoning / baseUrl / sessionDir。"""
+    home = tmp_path / "home"
+    handler_cls, received = _scripted_handler(
+        [
+            _sse(
+                '{"choices":[{"delta":{"reasoning_content":"先想"},"index":0}]}',
+                '{"choices":[{"delta":{"content":"答"},"index":0}]}',
+                '{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}',
+                "[DONE]",
+            )
+        ]
+    )
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    write_user_config(
+        home,
+        model="deepseek-v4-pro",
+        base_url=f"http://127.0.0.1:{port}",
+        session_dir=tmp_path / "sessions",
+        show_reasoning=True,
+        api_key="test-key",
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "codelotte", "-p", "问题"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            env=home_env(home),
+            cwd=tmp_path,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.returncode == 0, result.stderr
+    assert received[0]["model"] == "deepseek-v4-pro"  # 设置里的模型被使用
+    assert "先想" in result.stderr  # showReasoning: true → 思考过程默认打出来
