@@ -17,6 +17,8 @@ from typing import Any
 
 import pytest
 
+from tests.support import child_env, run_cli
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 ANSWER_PARTS = ["递归", "就是", "函数调用自身。"]
@@ -52,22 +54,8 @@ def test_headless_roundtrip_streams_answer_and_writes_session(tmp_path: Path) ->
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        env = {
-            **os.environ,
-            "PYTHONUTF8": "1",
-            "DEEPSEEK_API_KEY": "test-key",
-            "CODELOTTE_BASE_URL": f"http://127.0.0.1:{port}",
-            "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
-        }
-        result = subprocess.run(
-            [sys.executable, "-m", "codelotte", "-p", "用一句话解释递归"],
-            capture_output=True,
-            check=False,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
-            env=env,
-            cwd=PROJECT_ROOT,
+        result = run_cli(
+            "-p", "用一句话解释递归", env=_server_env(port, tmp_path), cwd=PROJECT_ROOT
         )
         assert result.returncode == 0, result.stderr
         assert "".join(ANSWER_PARTS) in result.stdout
@@ -128,25 +116,23 @@ def _make_body_handler(sse_body: bytes) -> type[BaseHTTPRequestHandler]:
     return _BodyHandler
 
 
+def _server_env(port: int, tmp_path: Path) -> dict[str, str]:
+    return child_env(
+        DEEPSEEK_API_KEY="test-key",
+        CODELOTTE_BASE_URL=f"http://127.0.0.1:{port}",
+        CODELOTTE_SESSION_DIR=str(tmp_path / "sessions"),
+    )
+
+
 def _run_cli_against(
     port: int, prompt: str, tmp_path: Path, *extra_args: str, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
-    env = {
-        **os.environ,
-        "PYTHONUTF8": "1",
-        "DEEPSEEK_API_KEY": "test-key",
-        "CODELOTTE_BASE_URL": f"http://127.0.0.1:{port}",
-        "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
-    }
-    return subprocess.run(
-        [sys.executable, "-m", "codelotte", "-p", prompt, *extra_args],
-        capture_output=True,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-        env=env,
+    return run_cli(
+        "-p",
+        prompt,
+        *extra_args,
         cwd=cwd if cwd is not None else PROJECT_ROOT,
+        env=_server_env(port, tmp_path),
     )
 
 
@@ -621,22 +607,10 @@ def test_intermediate_narration_goes_to_stderr_not_stdout(tmp_path: Path) -> Non
 
 def _run_cli_list(tmp_path: Path, project: Path) -> subprocess.CompletedProcess[str]:
     """`--resume`（无序号）：只读列出可恢复的会话/分支（不需要假服务器）。"""
-    env = {
-        **os.environ,
-        "PYTHONUTF8": "1",
-        "DEEPSEEK_API_KEY": "test-key",
-        "CODELOTTE_SESSION_DIR": str(tmp_path / "sessions"),
-    }
-    return subprocess.run(
-        [sys.executable, "-m", "codelotte", "--resume"],
-        capture_output=True,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-        env=env,
-        cwd=project,
+    env = child_env(
+        DEEPSEEK_API_KEY="test-key", CODELOTTE_SESSION_DIR=str(tmp_path / "sessions")
     )
+    return run_cli("--resume", cwd=project, env=env)
 
 
 def _one_turn(

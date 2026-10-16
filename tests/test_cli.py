@@ -1,13 +1,11 @@
 """CLI 入口的冒烟测试（票据 01/02 验收项）。
 
 测试缝在"进程边界"——以子进程方式运行真实 CLI，只验证外部可观察行为。
-子进程强制 PYTHONUTF8=1（UTF-8 模式），父进程按 UTF-8 解码，
-避免 Windows ANSI 代码页（cp936）与 UTF-8 解码错位导致的假失败。
+子进程环境与调用器在 tests/support.py（三个测试模块共用）。
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -17,26 +15,7 @@ from pathlib import Path
 import pytest
 
 import codelotte
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TIMEOUT_SECONDS = 30
-
-
-def child_env() -> dict[str, str]:
-    return {**os.environ, "PYTHONUTF8": "1"}
-
-
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "codelotte", *args],
-        capture_output=True,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        timeout=TIMEOUT_SECONDS,
-        env=child_env(),
-        cwd=PROJECT_ROOT,
-    )
+from tests.support import PROJECT_ROOT, TIMEOUT_SECONDS, child_env, run_cli
 
 
 def test_version_flag_prints_version_and_exits_zero() -> None:

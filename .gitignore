@@ -12,6 +12,7 @@ build/
 .ruff_cache/
 .mypy_cache/
 snapshot_report.html
+.playwright-mcp/
 
 # 环境与凭据（绝不提交）
 .env

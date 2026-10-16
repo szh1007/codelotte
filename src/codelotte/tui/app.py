@@ -20,6 +20,7 @@ from textual.widgets import Collapsible, Input, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
 from codelotte.cost import Ledger, call_record_from_entry, format_money
+from codelotte.display import args_preview, duration_text, tool_title
 from codelotte.loop import (
     AgentLoop,
     CostRecorded,
@@ -46,26 +47,6 @@ _BODY_MAX = 1600
 _RESULT_MAX = 700
 
 
-def _short(text: str, limit: int) -> str:
-    text = text.replace("\n", " ")
-    return text if len(text) <= limit else text[:limit] + "…"
-
-
-def _args_preview(name: str, arguments: str) -> str:
-    """工具块标题上的参数预览：常用工具取关键字段，其他给压缩后的原始文本。"""
-    try:
-        args = json.loads(arguments)
-    except ValueError:
-        return _short(arguments, _ARG_PREVIEW_MAX)
-    if not isinstance(args, dict):
-        return _short(arguments, _ARG_PREVIEW_MAX)
-    if name == "bash" and "command" in args:
-        return _short(str(args["command"]), _ARG_PREVIEW_MAX)
-    if "path" in args:
-        return _short(str(args["path"]), _ARG_PREVIEW_MAX)
-    return _short(json.dumps(args, ensure_ascii=False), _ARG_PREVIEW_MAX)
-
-
 def _args_body(arguments: str, parse_error: str | None) -> Text:
     if parse_error is not None:
         return Text(f"（参数畸形：{parse_error}）\n{arguments}", style="yellow")
@@ -89,7 +70,7 @@ class ToolCallBlock(Collapsible):
         self.call_id = call_id
         self.tool_name = name
         self.finished = False
-        self._preview = _args_preview(name, arguments)
+        self._preview = args_preview(name, arguments, limit=_ARG_PREVIEW_MAX)
         super().__init__(
             Static(_args_body(arguments, parse_error), classes="tool-args"),
             Static("运行中…", classes="tool-result"),
@@ -98,7 +79,7 @@ class ToolCallBlock(Collapsible):
         )
 
     def _title_text(self, status: str) -> str:
-        return f"⚙ {self.tool_name}  {self._preview}  {status}"
+        return tool_title(self.tool_name, self._preview, status)
 
     def mark_finished(self, *, ok: bool, content: str, duration_ms: int) -> None:
         self.finished = True
@@ -106,7 +87,7 @@ class ToolCallBlock(Collapsible):
         self.title = self._title_text("✓" if ok else "✗")
         if not ok:
             self.add_class("tool-failed")  # 标题变红的样式钩子（CSS 里接）
-        head = f"（{duration_ms}ms）\n"
+        head = duration_text(duration_ms) + "\n"
         body = _short_multiline(content, _RESULT_MAX)
         result = self.query_one(".tool-result", Static)
         result.update(Text(head + body, style="" if ok else "red"))

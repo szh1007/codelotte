@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from codelotte.config import (
     load_env_files,
 )
 from codelotte.cost import load_catalog
+from codelotte.export import render_session_html, render_session_markdown
 from codelotte.loop import AgentLoop
 from codelotte.providers.base import ProviderError
 from codelotte.providers.openai_completions import OpenAICompletionsClient
@@ -32,6 +34,7 @@ from codelotte.session.store import (
     SessionError,
     fork_at,
     fork_session,
+    latest_session_path,
     list_resumable,
     load_branch,
     open_at,
@@ -98,6 +101,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="从会话活动分支的倒数第 N 条消息处创建新分支（N=1 即最后一条），后续对话写在新分支上；"
         "默认对最近会话，可与 --resume <序号> 组合指定别的分支",
     )
+    subcommands = parser.add_subparsers(dest="command", metavar="命令")
+    export_parser = subcommands.add_parser(
+        "export", help="把一次会话导出为自包含 HTML 或 Markdown（票据 08）"
+    )
+    formats = export_parser.add_mutually_exclusive_group()
+    formats.add_argument(
+        "--html",
+        nargs="?",
+        const="",
+        metavar="序号",
+        help="导出为单文件自包含 HTML（浏览器打开）；不带序号：最近会话的活动分支，"
+        "带序号（与 --resume 同一份列表）：指定分支",
+    )
+    formats.add_argument(
+        "--md",
+        nargs="?",
+        const="",
+        metavar="序号",
+        help="导出为 Markdown（终端/编辑器直接读）；序号用法同 --html",
+    )
+    export_parser.add_argument(
+        "-o", "--output", metavar="路径", help="输出文件（默认 ./<会话文件名>.html）"
+    )
     return parser
 
 
@@ -121,6 +147,16 @@ def _warn_skipped(skipped: list[str]) -> None:
         print(f"警告：跳过损坏的会话——{note}", file=sys.stderr)
 
 
+def _fail(exc: Exception) -> int:
+    """领域异常 → "错误：…"+退出码（三个入口共用一处）。
+
+    2 = 用法/配置错（改改再来：配置缺失、序号越界等）；1 = 运行期错（网络、无会话可恢复、
+    管道提前关闭、目录不可写等）。
+    """
+    print(f"错误：{exc}", file=sys.stderr)
+    return 2 if isinstance(exc, (ConfigError, SessionError)) else 1
+
+
 def _list_sessions() -> int:
     """--resume（无序号）：列出本项目可恢复的会话/分支。只读查询，不需要密钥。"""
     items, skipped = list_resumable(Path.cwd(), base_dir=get_session_dir())
@@ -140,6 +176,57 @@ def _list_sessions() -> int:
             f"{item.messages} 条消息{marker}  「{_short(item.title)}」"
         )
     print("`--resume <序号>` 恢复到指定分支；`--continue` 回到最近活动的一条。")
+    return 0
+
+
+def _run_export(args: argparse.Namespace) -> int:
+    """export 子命令：会话记录 → 单文件 HTML / Markdown。只读查询，不需要密钥。"""
+    if args.html is None and args.md is None:
+        print(
+            "错误：export 需要 --html 或 --md（用法：codelotte export --html [序号]）",
+            file=sys.stderr,
+        )
+        return 2
+    to_html = args.html is not None
+    selector = args.html if to_html else args.md
+    assert selector is not None  # 上一段已拦"两个都没给"，这里只为类型收窄
+    suffix = "html" if to_html else "md"
+    flag = "--html" if to_html else "--md"
+    cwd, base = Path.cwd(), get_session_dir()
+    try:
+        if selector == "":
+            path = latest_session_path(cwd, base_dir=base)
+            if path is None:
+                print(
+                    f"错误：没有可导出的会话：{cwd} 下没有历史会话记录", file=sys.stderr
+                )
+                return 2  # 与"没有第 N 个"同码：查无此物（审查修正：两条选择路径退出码统一）
+            leaf_id: str | None = None
+        else:
+            try:
+                index = int(selector)
+            except ValueError:
+                print(f"错误：{flag} 的序号要是一个数字（给了 {selector!r}）", file=sys.stderr)
+                return 2
+            items, skipped = list_resumable(cwd, base_dir=base)
+            _warn_skipped(skipped)
+            if not 1 <= index <= len(items):
+                raise SessionError(f"没有第 {index} 个可恢复的会话（共 {len(items)} 个）")
+            item = items[index - 1]
+            path, leaf_id = item.path, item.leaf_id
+        try:
+            entries = load_branch(path, leaf_id)
+        except json.JSONDecodeError as exc:  # 坏文件给可读错误，不裸 traceback（审查修正）
+            print(f"错误：会话文件有坏行，读不动（{path.name}）：{exc}", file=sys.stderr)
+            return 1
+        renderer = render_session_html if to_html else render_session_markdown
+        rendered = renderer(entries, load_catalog(), session_name=path.name)
+        output = Path(args.output) if args.output else Path(f"{path.stem}.{suffix}")
+        with output.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(rendered)
+    except (ConfigError, SessionError, OSError) as exc:
+        return _fail(exc)
+    print(f"已导出：{output}（{len(entries)} 条记录）")
     return 0
 
 
@@ -210,20 +297,9 @@ def _run_prompt(
     except KeyboardInterrupt:
         print("已中断（会话已保存，可 --continue 恢复）", file=sys.stderr)
         return 130
-    except ConfigError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
-        return 2
-    except ProviderError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
-        return 1
-    except SessionError as exc:
-        # --resume/--fork 的序号问题（错误信息本身就是给用户看的）
-        print(f"错误：{exc}", file=sys.stderr)
-        return 2
-    except OSError as exc:
-        # 管道提前关闭（`codelotte ... | head`）、--continue 但无会话、会话目录不可写等
-        print(f"错误：{exc}", file=sys.stderr)
-        return 1
+    except (ProviderError, ConfigError, SessionError, OSError) as exc:
+        # OSError 覆盖：管道提前关闭（`codelotte ... | head`）、无会话可恢复、目录不可写等
+        return _fail(exc)
 
 
 def _run_tui(
@@ -249,15 +325,8 @@ def _run_tui(
         TuiApp(agent=loop, model=get_model(), history=history).run()
         print_session_invoice(loop)  # 会话结束汇总：与 -p 同一口径（票据 07）
         return 0
-    except ConfigError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
-        return 2
-    except SessionError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
-        return 2
-    except OSError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
-        return 1
+    except (ConfigError, SessionError, OSError) as exc:
+        return _fail(exc)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -267,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "export":
+        return _run_export(args)
     if args.resume == "":
         if args.prompt is not None:
             parser.error(

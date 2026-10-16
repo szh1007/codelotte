@@ -42,7 +42,7 @@
 | [05](05-tui-v1.md) | TUI v1（Textual 终端界面） | 04 | ✅ done（真机验证通过） |
 | [06](06-session-tree-fork.md) | 会话树与分支 / fork | 03 | ✅ done（真机验证待做） |
 | [07](07-cost-ledger.md) | 成本记账与展示 | 05 | ✅ done（真机对账通过） |
-| [08](08-html-export-v1.md) | HTML 会话导出 v1 | 06, 07 | ready-for-agent |
+| [08](08-html-export-v1.md) | HTML 会话导出 v1 | 06, 07 | ✅ done（真机样例待做） |
 | [09](09-permission-layer.md) | 权限层（规则 + 审批 + trust） | 04 | ready-for-agent |
 | [10](10-docker-sandbox.md) | Docker 沙箱 | 04 | ready-for-agent |
 | [11](11-loop-guardrails.md) | 死循环三层防御 | 04 | ready-for-agent |
