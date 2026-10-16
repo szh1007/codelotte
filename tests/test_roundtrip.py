@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,6 +88,15 @@ def test_headless_roundtrip_streams_answer_and_writes_session(tmp_path: Path) ->
         assert usage["outputTokens"] == 11
         assert usage["cacheHitTokens"] == 2
         assert usage["cacheMissTokens"] == 5
+        # 票据 07：时段档 + 按当时价目表的估算 + 请求指纹（对账与缓存排查的原始数据）
+        assert usage["period"] in {"peak", "offpeak"}
+        rate = 1.0 if usage["period"] == "peak" else 0.5
+        assert usage["cost"] == pytest.approx((2 * 0.04 + 5 * 2.0 + 11 * 8.0) / 1_000_000 * rate)
+        assert re.fullmatch(r"[0-9a-f]{16}", usage["requestFingerprint"])
+        # 会话结束打印分项账单（按模型/时段/缓存三类，会话累计口径）
+        assert "账单（会话累计，人民币元）：1 次模型调用" in result.stderr
+        assert "按模型  deepseek-flash 1 次" in result.stderr
+        assert "按缓存" in result.stderr and "缓存命中率 29%" in result.stderr  # 2/(2+5)
     finally:
         server.shutdown()
         server.server_close()

@@ -22,10 +22,11 @@ from codelotte.config import (
     get_session_dir,
     load_env_files,
 )
+from codelotte.cost import load_catalog
 from codelotte.loop import AgentLoop
 from codelotte.providers.base import ProviderError
 from codelotte.providers.openai_completions import OpenAICompletionsClient
-from codelotte.run import run_once
+from codelotte.run import print_session_invoice, run_once
 from codelotte.sandbox import LocalExecutor
 from codelotte.session.store import (
     SessionError,
@@ -156,6 +157,9 @@ def _build_agent(
     resume_index 给出时恢复指定分支；fork_from_end 可与其组合（在选中的分支上再分岔）。
     """
     model = get_model()
+    catalog = (
+        load_catalog()
+    )  # 价目/峰谷/节假日（票据 07）；坏目录在这里就以 ConfigError 报出
     client = OpenAICompletionsClient(
         base_url=get_base_url(), api_key=get_api_key(), model=model
     )
@@ -186,6 +190,7 @@ def _build_agent(
         model=model,
         env=executor.env,
         messages=messages,
+        catalog=catalog,
     )
 
 
@@ -242,6 +247,7 @@ def _run_tui(
         )
         history = load_branch(loop.session_path, loop.leaf_id)  # 只回放活动分支
         TuiApp(agent=loop, model=get_model(), history=history).run()
+        print_session_invoice(loop)  # 会话结束汇总：与 -p 同一口径（票据 07）
         return 0
     except ConfigError as exc:
         print(f"错误：{exc}", file=sys.stderr)

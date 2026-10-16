@@ -5,7 +5,8 @@
 一次性落盘，失败或被中断（Ctrl+C）时已看到的部分同样落盘（stopReason=interrupted）——
 无论从哪条路径离开回合，界面看到的都有记录兜底，不出现"终端看到了、会话里没有"的悬空状态。
 
-对外只有一条结构化事件流：文本/思考增量与用量沿用 Provider 层事件，
+对外只有一条结构化事件流：文本/思考增量沿用 Provider 层事件；用量在流结束时计价、
+随 usage 记录落盘后以 CostRecorded 广播（计价是应用层事实，不放进 Provider 抽象）；
 工具调用与回合边界是本层事件。TUI、无头模式（-p）与后续的导出/评测都消费它——
 同一套事件、不同呈现，这是「界面所见」与「无头行为」一致的保证（SPEC §A）。
 
@@ -16,12 +17,15 @@ deepseek 雷区：带 tools 的请求必须把历史 assistant 的 reasoning_con
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from codelotte.cost import CallRecord, Catalog, price_call
 from codelotte.providers.base import (
     ProviderError,
     ProviderEvent,
@@ -82,9 +86,29 @@ class TurnEnded:
     calls_made: int
 
 
+@dataclass(frozen=True)
+class CostRecorded:
+    """一次模型调用的账单（时段判定与估价已随 usage 记录先落盘，票据 07）。"""
+
+    record: CallRecord
+
+
 LoopEvent = (
-    TextDelta | ReasoningDelta | UsageEvent | ToolRequested | ToolFinished | TurnEnded
+    TextDelta | ReasoningDelta | CostRecorded | ToolRequested | ToolFinished | TurnEnded
 )
+
+
+def _request_fingerprint(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> str:
+    """请求指纹（sha256 前 16 位十六进制，SPEC §I）：同一状态两次运行指纹一致、
+    历史一变就变——跨运行比对可排查缓存失效（跟 usage 一起落盘）。"""
+    payload = json.dumps(
+        {"messages": messages, "tools": tools},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -140,6 +164,7 @@ class AgentLoop:
         tools: tuple[Tool, ...],
         store: SessionStore,
         model: str,
+        catalog: Catalog,
         env: str = "local",
         messages: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -148,6 +173,7 @@ class AgentLoop:
         self._store = store
         self._model = model
         self._env = env
+        self._catalog = catalog
         self._tool_schemas = wire_tools(tools)
         self.messages: list[dict[str, Any]] = (
             list(messages) if messages is not None else []
@@ -161,6 +187,11 @@ class AgentLoop:
     def leaf_id(self) -> str | None:
         """当前活动分支的叶子记录 id（消费方按它取分支记录，如 TUI 的历史回放）。"""
         return self._store.leaf_id
+
+    @property
+    def catalog(self) -> Catalog:
+        """本次运行的模型目录（账单/展示按它折算）。"""
+        return self._catalog
 
     async def run_turn(self, prompt: str) -> AsyncIterator[LoopEvent]:
         """跑一个完整回合并广播事件。工具失败不中断（错误文本回传模型自纠）。
@@ -181,6 +212,10 @@ class AgentLoop:
                 raise turn.failure
             stop_reason = turn.stop_reason
             if not turn.tool_calls:
+                # 答案也要进上下文（审查修正：原来只有带工具调用的 assistant 进 messages，
+                # 同进程下一轮请求会缺上一条回答，与 --continue 重建的请求不一致——
+                # 缓存前缀与请求指纹都会因此错位）。
+                self.messages.append(_assistant_message(turn))
                 yield TurnEnded(
                     stop_reason=stop_reason,
                     hit_iteration_cap=False,
@@ -205,6 +240,7 @@ class AgentLoop:
         增量（文本/思考/用量）是呈现用事件，随到随发；assistant 记录在流结束时一次性落盘
         （流式中途失败或被取消时，已看到的部分也落盘后再向上抛——记录是事实源）。
         """
+        fingerprint = _request_fingerprint(self.messages, self._tool_schemas)
         parts: list[str] = []
         reasoning_parts: list[str] = []
         try:
@@ -220,8 +256,9 @@ class AgentLoop:
                 elif isinstance(event, ToolCallsEvent):
                     turn.tool_calls = event.calls
                 elif isinstance(event, UsageEvent):
-                    turn.usage = event.usage
-                    yield event
+                    turn.usage = (
+                        event.usage
+                    )  # 收下备用；对外的用量事件是计价后的 CostRecorded
                 elif isinstance(event, StreamEnd):
                     turn.stop_reason = event.reason
         except ProviderError as exc:
@@ -234,6 +271,9 @@ class AgentLoop:
                 self._store.append(
                     "message", **_assistant_fields(turn, self._model, interrupted=True)
                 )
+            if turn.usage is not None:
+                # 用量已经收到 = 这次调用已经在计费了：取消也不能丢账（审查修正）
+                self._record_usage(turn.usage, fingerprint)
             raise
         turn.content = "".join(parts)
         turn.reasoning = "".join(reasoning_parts)
@@ -244,14 +284,36 @@ class AgentLoop:
             ),
         )
         if turn.usage is not None:
-            self._store.append(
-                "usage",
+            yield self._record_usage(turn.usage, fingerprint)
+
+    def _record_usage(self, usage: StreamUsage, fingerprint: str) -> CostRecorded:
+        """计价 + 落盘 usage 记录（SPEC §I「每次模型调用记录一条 usage」），返回广播用事件。"""
+        priced = price_call(
+            self._catalog, self._model, usage, at=datetime.now(timezone.utc)
+        )
+        self._store.append(
+            "usage",
+            model=self._model,
+            inputTokens=usage.input_tokens,
+            outputTokens=usage.output_tokens,
+            cacheHitTokens=usage.cache_hit_tokens,
+            cacheMissTokens=usage.cache_miss_tokens,
+            period=priced.period,  # 时段档（票据 07，SPEC §I）
+            cost=priced.cost,  # 按当时价目表的估算（目录里没有这个模型时 None）
+            currency=self._catalog.currency,  # 记录自描述：金额的货币随记录走（价格会变）
+            requestFingerprint=fingerprint,  # 排查缓存失效用
+        )
+        return CostRecorded(
+            record=CallRecord(
                 model=self._model,
-                inputTokens=turn.usage.input_tokens,
-                outputTokens=turn.usage.output_tokens,
-                cacheHitTokens=turn.usage.cache_hit_tokens,
-                cacheMissTokens=turn.usage.cache_miss_tokens,
+                period=priced.period,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_hit_tokens=priced.cache_hit_tokens,  # 计价口径（未拆缓存时补差额）
+                cache_miss_tokens=priced.cache_miss_tokens,
+                cost=priced.cost,
             )
+        )
 
     async def _run_call(self, call: ToolCall) -> AsyncIterator[LoopEvent]:
         """一次工具调用：记录 → 占位应答 →（广播）→ 执行 → 原地回填 → 结果记录 →（广播）。

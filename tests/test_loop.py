@@ -1,33 +1,53 @@
-"""AgentLoop 事件流测试（票据 05）：增量直通、工具时序、记录先于事件、失败/中断的部分落盘。"""
+"""AgentLoop 事件流测试（票据 05/07）：增量直通、工具时序、记录先于事件、失败/中断的部分落盘、
+计价落盘（时段/美元/请求指纹）与 CostRecorded 事件。"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from codelotte.loop import MAX_ITERATIONS, AgentLoop, ToolFinished, ToolRequested, TurnEnded
+from codelotte.cost import Catalog
+from codelotte.loop import (
+    MAX_ITERATIONS,
+    AgentLoop,
+    CostRecorded,
+    ToolFinished,
+    ToolRequested,
+    TurnEnded,
+)
 from codelotte.providers.base import ProviderError, StreamEnd, TextDelta, ToolCall, ToolCallsEvent
 from codelotte.sandbox import LocalExecutor
+from codelotte.session.context import messages_from_entries
 from codelotte.session.store import SessionStore, load_entries
 from codelotte.tools import default_tools
-from tests.fake_client import PAUSE, ScriptedClient, text_turn, tool_turn
+from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn, tool_turn
 
 
 def _store(tmp_path: Path) -> SessionStore:
     path = tmp_path / "session.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("", encoding="utf-8")
     return SessionStore.resume(path)
 
 
-def _loop(tmp_path: Path, client: ScriptedClient) -> AgentLoop:
+def _loop(
+    tmp_path: Path,
+    client: ScriptedClient,
+    *,
+    catalog: Catalog | None = None,
+    messages: list[dict] | None = None,
+) -> AgentLoop:
     return AgentLoop(
         client=client,
         tools=default_tools(LocalExecutor()),
         store=_store(tmp_path),
         model="fake-model",
+        catalog=catalog if catalog is not None else fake_catalog(),
+        messages=messages,
     )
 
 
@@ -158,6 +178,75 @@ def test_iteration_cap_ends_turn_with_event(tmp_path: Path) -> None:
     assert ended.calls_made == MAX_ITERATIONS
     entries = load_entries(loop.session_path)
     assert entries[-1]["kind"] == "iterationLimit"
+
+
+def test_usage_records_period_price_and_request_fingerprint(tmp_path: Path) -> None:
+    """票据 07：usage 记录带时段/估价/请求指纹；CostRecorded 事件与记录同值（记录先落盘）。"""
+    client = ScriptedClient([text_turn("好", usage=(10, 5, 4, 6))])
+    loop = _loop(tmp_path, client)
+    events = asyncio.run(_collect(loop))
+
+    cost = next(e for e in events if isinstance(e, CostRecorded))
+    usage_entry = next(e for e in load_entries(loop.session_path) if e["type"] == "usage")
+    expected = (4 * 0.04 + 6 * 2.0 + 5 * 8.0) / 1_000_000
+    assert cost.record.cost == pytest.approx(expected)
+    assert cost.record.period in {"peak", "offpeak"}
+    assert usage_entry["cost"] == pytest.approx(expected)
+    assert usage_entry["period"] == cost.record.period
+    assert re.fullmatch(r"[0-9a-f]{16}", usage_entry["requestFingerprint"])
+
+
+def test_fingerprint_is_stable_for_same_state_and_changes_with_history(tmp_path: Path) -> None:
+    """同一状态重放指纹一致（跨运行可比对）、历史一变就变——排查缓存失效的前提。"""
+    client = ScriptedClient([text_turn("答一"), text_turn("答二")])
+    loop = _loop(tmp_path / "a", client)
+    asyncio.run(_collect(loop, "问题一"))
+    asyncio.run(_collect(loop, "问题二"))
+    fingerprints = [
+        e["requestFingerprint"]
+        for e in load_entries(loop.session_path)
+        if e["type"] == "usage"
+    ]
+    assert fingerprints[0] != fingerprints[1]
+
+    replayed = _loop(tmp_path / "b", ScriptedClient([text_turn("答一")]))
+    asyncio.run(_collect(replayed, "问题一"))
+    first = next(
+        e["requestFingerprint"]
+        for e in load_entries(replayed.session_path)
+        if e["type"] == "usage"
+    )
+    assert first == fingerprints[0]
+
+
+def test_final_answer_enters_context_so_live_and_resumed_requests_match(
+    tmp_path: Path,
+) -> None:
+    """回归（审查发现）：无工具调用的回答也要进 messages——否则同进程第二轮的请求
+    缺上一条回答，与 --continue 重建的请求不一致（缓存前缀与请求指纹都会因此错位）。"""
+    client = ScriptedClient([text_turn("答一"), text_turn("答二")])
+    loop = _loop(tmp_path, client)
+    asyncio.run(_collect(loop, "问一"))
+    after_first = load_entries(loop.session_path)
+    asyncio.run(_collect(loop, "问二"))
+
+    assert [m["role"] for m in client.requests[1]] == ["user", "assistant", "user"]
+    assert client.requests[1][1]["content"] == "答一"
+
+    # 恢复态（--continue 的路径）：同一份记录重建 → 请求与指纹都与 live 一致
+    resumed_client = ScriptedClient([text_turn("答二")])
+    resumed = _loop(
+        tmp_path / "resumed",
+        resumed_client,
+        messages=messages_from_entries(after_first),
+    )
+    asyncio.run(_collect(resumed, "问二"))
+    assert resumed_client.requests[0] == client.requests[1]
+    live_fp = [e["requestFingerprint"] for e in load_entries(loop.session_path) if e["type"] == "usage"][-1]
+    resumed_fp = [
+        e["requestFingerprint"] for e in load_entries(resumed.session_path) if e["type"] == "usage"
+    ][0]
+    assert live_fp == resumed_fp
 
 
 def test_malformed_call_is_not_executed(tmp_path: Path) -> None:

@@ -2,10 +2,13 @@
 
 终端约定：真终端（stdout 是 tty）里模型文本实时流式输出（人要看进度）；管道/重定向时
 不实时写，轮末才决定去向——**终轮的文本（答案）进 stdout，中间轮次的过渡叙述进 stderr**，
-管道拿到的是纯净答案。思考过程（reasoning_content）、工具活动与用量总结始终走 stderr。
+管道拿到的是纯净答案。思考过程（reasoning_content）、工具活动、用量总结与分项账单
+（票据 07：按模型/时段/缓存三类）始终走 stderr；账单是**会话累计**口径（从记录读，
+与 TUI 状态栏同源），失败/中断路径也照打——钱花了就得报账。
 工具失败不是异常：错误文本作为工具结果回传模型自纠，循环继续（SPEC §D）。
 
-除了"怎么呈现"，这里不做任何业务逻辑——落盘、工具执行、循环控制都在 loop.py。
+除了"怎么呈现"，这里不做任何业务逻辑——落盘、工具执行、循环控制都在 loop.py；
+计价是 loop 落盘时算好的（usage 记录里的 period/cost），这里只累计与渲染。
 """
 
 from __future__ import annotations
@@ -13,14 +16,17 @@ from __future__ import annotations
 import json
 import sys
 
+from codelotte.cost import Ledger, call_record_from_entry
 from codelotte.loop import (
     MAX_ITERATIONS,
     AgentLoop,
+    CostRecorded,
     ToolFinished,
     ToolRequested,
     TurnEnded,
 )
-from codelotte.providers.base import ReasoningDelta, TextDelta, UsageEvent
+from codelotte.providers.base import ReasoningDelta, TextDelta
+from codelotte.session.store import load_branch
 
 __all__ = ["run_once"]
 
@@ -125,8 +131,7 @@ async def run_once(
 ) -> int:
     """跑一个回合并按终端约定呈现。loop 由调用方装配（cli._build_agent）。"""
     presenter = _Presenter(show_reasoning=show_reasoning)
-    usage_seen = False
-    in_tokens = out_tokens = hit_tokens = 0
+    ledger = Ledger()
     stop_reason: str | None = None
     hit_cap = False
     calls_made = 0
@@ -136,11 +141,8 @@ async def run_once(
                 presenter.on_text(event.text)
             elif isinstance(event, ReasoningDelta):
                 presenter.on_reasoning(event.text)
-            elif isinstance(event, UsageEvent):
-                usage_seen = True
-                in_tokens += event.usage.input_tokens
-                out_tokens += event.usage.output_tokens
-                hit_tokens += event.usage.cache_hit_tokens
+            elif isinstance(event, CostRecorded):
+                ledger.record(event.record)
             elif isinstance(event, ToolRequested):
                 presenter.on_tool_requested(event)
             elif isinstance(event, ToolFinished):
@@ -152,7 +154,25 @@ async def run_once(
                 calls_made = event.calls_made
     finally:
         presenter.close()  # 失败/中断路径：思考块与残留文本也要收尾
+        _report(
+            loop,
+            ledger,
+            stop_reason=stop_reason,
+            hit_cap=hit_cap,
+            calls_made=calls_made,
+        )  # 账单是事实：失败/中断也照打（审查修正）
+    return 1 if hit_cap else 0
 
+
+def _report(
+    loop: AgentLoop,
+    ledger: Ledger,
+    *,
+    stop_reason: str | None,
+    hit_cap: bool,
+    calls_made: int,
+) -> None:
+    """收尾汇总：警告 + 本次运行的 token 行 + 会话累计分项账单。"""
     if hit_cap:
         sys.stderr.write(
             f"[codelotte] 警告：已达迭代上限 {MAX_ITERATIONS} 轮，回合强制结束\n"
@@ -165,12 +185,27 @@ async def run_once(
         sys.stderr.write(
             "[codelotte] 警告：输出被 max_tokens 截断（finish_reason=length）\n"
         )
-    total_in = in_tokens if usage_seen else "?"
-    total_out = out_tokens if usage_seen else "?"
-    total_hit = hit_tokens if usage_seen else "?"
+    total_in = ledger.input_tokens if ledger.calls else "?"
+    total_out = ledger.output_tokens if ledger.calls else "?"
+    total_hit = ledger.cache_hit_tokens if ledger.calls else "?"
     sys.stderr.write(
         f"\n[codelotte] tokens in={total_in} out={total_out} cache_hit={total_hit}"
-        f" calls={calls_made} | session: {loop.session_path}\n\n"
+        f" calls={calls_made}（本次运行） | session: {loop.session_path}\n"
     )
+    print_session_invoice(loop)
+    sys.stderr.write("\n")
     sys.stderr.flush()
-    return 1 if hit_cap else 0
+
+
+def print_session_invoice(loop: AgentLoop) -> None:
+    """分项账单（会话累计，票据 07 验收）：从记录（活动分支）读，不依赖本次运行的事件。
+
+    文件才是事实源：失败/中断路径也能报账（usage 已落盘），--continue 后覆盖之前各次运行；
+    TUI 退出时由 cli 调同一个函数，两种界面同一口径。
+    """
+    ledger = Ledger()
+    for entry in load_branch(loop.session_path, loop.leaf_id):
+        if entry.get("type") == "usage":
+            ledger.record(call_record_from_entry(entry))
+    for line in ledger.invoice(loop.catalog):
+        sys.stderr.write(f"[codelotte] {line}\n")

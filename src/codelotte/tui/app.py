@@ -19,13 +19,15 @@ from textual.containers import VerticalScroll
 from textual.widgets import Collapsible, Input, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
-from codelotte.loop import AgentLoop, ToolFinished, ToolRequested, TurnEnded
-from codelotte.providers.base import (
-    ProviderError,
-    ReasoningDelta,
-    TextDelta,
-    UsageEvent,
+from codelotte.cost import Ledger, call_record_from_entry, format_money
+from codelotte.loop import (
+    AgentLoop,
+    CostRecorded,
+    ToolFinished,
+    ToolRequested,
+    TurnEnded,
 )
+from codelotte.providers.base import ProviderError, ReasoningDelta, TextDelta
 from codelotte.session.context import INTERRUPTED_TOOL_NOTE
 
 _CSS = """
@@ -147,7 +149,7 @@ class TuiApp(App[None]):
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
         self._tool_blocks: dict[str, ToolCallBlock] = {}
-        self._in_tokens = self._out_tokens = self._hit_tokens = self._miss_tokens = 0
+        self._ledger = Ledger()  # 账单累计（历史回放 + 实时事件同一本账，票据 07）
 
     # ---- 组装与启动 ----
 
@@ -229,12 +231,8 @@ class TuiApp(App[None]):
             await self._write_markdown(event.text)
         elif isinstance(event, ReasoningDelta):
             pass  # v1 不显示思考过程（-r 的语义保留给无头模式；会话文件里有）
-        elif isinstance(event, UsageEvent):
-            usage = event.usage
-            self._in_tokens += usage.input_tokens
-            self._out_tokens += usage.output_tokens
-            self._hit_tokens += usage.cache_hit_tokens
-            self._miss_tokens += usage.cache_miss_tokens
+        elif isinstance(event, CostRecorded):
+            self._ledger.record(event.record)  # 计价在 loop 落盘时算好，界面只累计
             self._refresh_status()
         elif isinstance(event, ToolRequested):
             await self._end_markdown()
@@ -337,10 +335,7 @@ class TuiApp(App[None]):
             elif (
                 kind == "usage"
             ):  # 恢复会话后状态栏要把已有用量也带上（记录里有的，界面也要有）
-                self._in_tokens += int(entry.get("inputTokens", 0))
-                self._out_tokens += int(entry.get("outputTokens", 0))
-                self._hit_tokens += int(entry.get("cacheHitTokens", 0))
-                self._miss_tokens += int(entry.get("cacheMissTokens", 0))
+                self._ledger.record(call_record_from_entry(entry))
         self._mark_unfinished_tools()  # 中断在工具执行中的旧调用：回放不能显示"运行中"
         self._refresh_status()
 
@@ -351,12 +346,15 @@ class TuiApp(App[None]):
         else:
             text.append("● 就绪", style="dim")
         text.append(f"  │  {self._model}")
-        if self._in_tokens or self._out_tokens:
-            cached = self._hit_tokens + self._miss_tokens
-            rate = f"{self._hit_tokens / cached:.0%}" if cached else "—"
+        if self._ledger.calls:
             text.append(
-                f"  │  tokens in={self._in_tokens} out={self._out_tokens} 缓存命中 {rate}"
+                f"  │  tokens in={self._ledger.input_tokens} out={self._ledger.output_tokens}"
+                f" 缓存命中 {self._ledger.hit_rate_text}"
             )
+            if self._ledger.priced:  # 累计花费（票据 07 验收：token/花费/命中率并列）
+                text.append(
+                    f"  │  ≈{format_money(self._ledger.cost, self._agent.catalog.currency)}"
+                )
         text.append(f"  │  {Path(self._agent.session_path).name}")
         return text
 

@@ -92,7 +92,7 @@ codelotte/
 
 ### 2.5 导出（面试演示本体）
 
-`codelotte export --html <session>` → 自包含单文件（内联 CSS/JS）：时间线（消息/工具调用可折叠）+ **成本面板**（token/命中率/峰谷美元）+ 标记（压缩点、注入拦截、死循环熔断）。README 放真实样例链接。
+`codelotte export --html <session>` → 自包含单文件（内联 CSS/JS）：时间线（消息/工具调用可折叠）+ **成本面板**（token/命中率/峰谷费用）+ 标记（压缩点、注入拦截、死循环熔断）。README 放真实样例链接。
 
 ## 3. 评测系统（D1）
 

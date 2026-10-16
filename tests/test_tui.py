@@ -17,6 +17,7 @@ import pytest
 from textual.pilot import Pilot
 from textual.widgets import Input, Markdown, Static
 
+from codelotte.cost import Catalog
 from codelotte.loop import AgentLoop
 from codelotte.providers.base import TextDelta
 from codelotte.sandbox import LocalExecutor
@@ -25,7 +26,7 @@ from codelotte.session.store import SessionStore, load_entries
 from codelotte.tools import default_tools
 from codelotte.tui import TuiApp
 from codelotte.tui.app import ToolCallBlock
-from tests.fake_client import PAUSE, ScriptedClient, text_turn, tool_turn
+from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn, tool_turn
 
 SESSION_NAME = "20260101T000000Z_testtest.jsonl"
 
@@ -36,6 +37,8 @@ def _make(
     *,
     history: list[dict[str, Any]] | None = None,
     messages: list[dict[str, Any]] | None = None,
+    model: str = "fake-model",
+    catalog: Catalog | None = None,
 ) -> tuple[TuiApp, ScriptedClient, SessionStore]:
     path = tmp_path / SESSION_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -46,10 +49,11 @@ def _make(
         client=client,
         tools=default_tools(LocalExecutor()),
         store=store,
-        model="fake-model",
+        model=model,
+        catalog=catalog if catalog is not None else fake_catalog(model),
         messages=messages,
     )
-    return TuiApp(agent=loop, model="fake-model", history=history or []), client, store
+    return TuiApp(agent=loop, model=model, history=history or []), client, store
 
 
 def _as_tui(pilot: Pilot) -> TuiApp:
@@ -200,6 +204,55 @@ def test_resume_replays_usage_into_status_bar(tmp_path: Path) -> None:
             status = str(app.query_one("#status", Static).content)
             assert "tokens in=12 out=7" in status
             assert "缓存命中 67%" in status  # 8/(8+4)
+            assert "≈" not in status  # 票据 05 时代的老记录没有估价：不显示金额、不回算
+
+    asyncio.run(scenario())
+
+
+def test_status_bar_shows_cost_after_turn(tmp_path: Path) -> None:
+    """票据 07 验收：状态栏实时显示累计花费（连同 token 与缓存命中率）。"""
+
+    async def scenario() -> None:
+        app, _client, _store = _make(
+            tmp_path,
+            [text_turn("答案", usage=(100_000, 500, 80_000, 20_000))],
+            model="deepseek-flash",
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "问题")
+            await _wait_idle(pilot)
+            status = str(app.query_one("#status", Static).content)
+            assert "tokens in=100000 out=500" in status
+            assert "缓存命中 80%" in status  # 80000/(80000+20000)
+            # (80000×0.04 + 20000×2.0 + 500×8.0)/1M ≈ 0.00708，谷时五折
+            assert "¥0.047200" in status or "¥0.023600" in status
+
+    asyncio.run(scenario())
+
+
+def test_resume_replays_recorded_cost_into_status_bar(tmp_path: Path) -> None:
+    """--continue 回放：记录里带 cost 的调用（票据 07 起）要把金额带回状态栏。"""
+
+    async def scenario() -> None:
+        history = [
+            {
+                "type": "usage",
+                "model": "deepseek-flash",
+                "inputTokens": 1_000_000,
+                "outputTokens": 0,
+                "cacheHitTokens": 1_000_000,
+                "cacheMissTokens": 0,
+                "period": "peak",
+                "cost": 0.04,
+            },
+        ]
+        app, _client, _store = _make(
+            tmp_path, [text_turn("x")], history=history, messages=messages_from_entries(history)
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(0.05)
+            status = str(app.query_one("#status", Static).content)
+            assert "≈¥0.040000" in status
 
     asyncio.run(scenario())
 
@@ -213,7 +266,11 @@ def test_continue_renders_history_and_appends(tmp_path: Path) -> None:
         store = SessionStore.resume(path)
         client1 = ScriptedClient([[TextDelta("上回说到一半"), PAUSE]])
         loop1 = AgentLoop(
-            client=client1, tools=default_tools(LocalExecutor()), store=store, model="fake-model"
+            client=client1,
+            tools=default_tools(LocalExecutor()),
+            store=store,
+            model="fake-model",
+            catalog=fake_catalog(),
         )
 
         async def drain() -> None:
