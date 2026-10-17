@@ -350,6 +350,113 @@ def test_eval_run_bucket_filter_only_prints_the_selected_bucket(tmp_path: Path) 
     assert "001-audit-report" not in result.stdout
 
 
+def test_eval_controls_self_check_passes_without_a_model(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    out = tmp_path / "runs"
+
+    result = run_cli(
+        "eval",
+        "controls",
+        "--tasks",
+        str(PROJECT_ROOT / "evals" / "tasks"),
+        "--out",
+        str(out),
+        cwd=PROJECT_ROOT,
+        env=home_env(home),
+    )
+
+    assert result.returncode == 0, result.stderr
+    report_path = Path(result.stdout.strip())
+    assert report_path.parent.parent == out
+    markdown = report_path.read_text(encoding="utf-8")
+    assert "控制 agent 自检" in markdown
+    assert "自检结论" in markdown
+    assert "oracle" in markdown and "no-op" in markdown and "cheating" in markdown
+    data = json.loads((report_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert data["mode"] == "controls"
+    assert data["checks"] and all(check["passed"] for check in data["checks"])
+    # 每组都有自己的明细报表与轨迹
+    for name in ("oracle", "no-op", "cheating"):
+        assert (report_path.parent / "harnesses" / name / "report.md").is_file()
+    assert list((report_path.parent / "harnesses" / "cheating" / "sessions").glob("*-cheating.json"))
+
+
+def test_eval_compare_dry_run_does_not_need_a_model(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = run_cli(
+        "eval",
+        "compare",
+        "--harness",
+        "codelotte",
+        "--harness",
+        "raw",
+        "--dry-run",
+        "--tasks",
+        str(PROJECT_ROOT / "evals" / "tasks"),
+        "--out",
+        str(tmp_path / "runs"),
+        cwd=PROJECT_ROOT,
+        env=home_env(home),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "2 组" in result.stdout
+    assert "codelotte" in result.stdout and "raw" in result.stdout
+    assert "dry-run" in result.stdout
+    assert not (tmp_path / "runs").exists()
+
+
+def test_eval_compare_runs_a_baseline_and_writes_a_comparison_report(
+    tmp_path: Path,
+) -> None:
+    tasks_dir = _write_general_task(tmp_path / "tasks")
+    server, received = _serve_general_turns()
+    port = server.server_address[1]
+    try:
+        home = write_user_config(
+            tmp_path / "home", base_url=f"http://127.0.0.1:{port}", api_key="test-key"
+        )
+        out = tmp_path / "runs"
+        result = run_cli(
+            "eval",
+            "compare",
+            "--harness",
+            "raw",
+            "--repeat",
+            "1",
+            "--task",
+            "copy-file",
+            "--tasks",
+            str(tasks_dir),
+            "--out",
+            str(out),
+            "--no-sandbox",
+            cwd=PROJECT_ROOT,
+            env=home_env(home),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    report_path = Path(result.stdout.strip())
+    assert report_path.parent.parent == out
+    markdown = report_path.read_text(encoding="utf-8")
+    assert "对照组" in markdown
+    assert "裸单轮 API" in markdown
+    assert "copy-file" in markdown
+    assert "❌" in markdown
+    data = json.loads((report_path.parent / "report.json").read_text(encoding="utf-8"))
+    assert data["mode"] == "compare"
+    assert [item["name"] for item in data["harnesses"]] == ["raw"]
+    assert data["harnesses"][0]["cases"][0]["passed"] is False
+    assert len(received) == 1  # 裸单轮 API 只调用一次
+    assert "tools" not in received[0]
+
+
 def test_eval_compaction_rejects_tasks_without_checkpoints(tmp_path: Path) -> None:
     tasks_dir = _write_general_task(tmp_path / "tasks", checkpoints=False)
     home = write_user_config(

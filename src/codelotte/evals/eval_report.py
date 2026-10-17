@@ -79,9 +79,12 @@ def summarize_eval(
 
 
 def _case_detail(case: EvalCaseResult) -> str:
+    detail = case.verifier_detail
     if case.error:
-        return f"{case.verifier_detail}；运行错误：{case.error}"
-    return case.verifier_detail
+        detail = f"{detail}；运行错误：{case.error}"
+    if case.flagged:
+        detail = f"{detail}；作弊标记：{case.flag_reason or '保护文件被改动'}"
+    return detail
 
 
 def _meta_table(meta: EvalRunMeta) -> list[str]:
@@ -93,6 +96,8 @@ def _meta_table(meta: EvalRunMeta) -> list[str]:
         f"| 开始 / 结束 | {meta.started_at} → {meta.finished_at} |",
         f"| git ref | `{meta.git_ref}` |",
         f"| 工作树有改动 | {dirty} |",
+        f"| harness / 类型 | `{meta.harness}` / {meta.harness_kind} |",
+        f"| harness 版本 / 隔离 | {meta.harness_version or '未知'} / {meta.isolation} |",
         f"| 模型 / 思考档位 | `{meta.model}` / `{meta.reasoning_effort}` |",
         f"| 上下文窗口 | {meta.context_window} |",
         f"| 每个任务重复次数 | {meta.repetitions} |",
@@ -141,14 +146,15 @@ def _summary_table(
 
 def _case_table(cases: Sequence[EvalCaseResult], run_dir: Path, currency: str) -> list[str]:
     lines = [
-        "| 任务 | 重复 | 通过 | 验收 / 错误 | 模型调用 | 成本 | 耗时 | 计费时段 | 会话 |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| 任务 | 重复 | 通过 | 标记 | 验收 / 错误 | 模型调用 | 成本 | 耗时 | 计费时段 | 轨迹 |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for case in cases:
         mark = "✅" if case.passed else "❌"
+        flagged = "⚠" if case.flagged else "—"
         session = _relative(case.session_path, run_dir)
         lines.append(
-            f"| {case.task_id} | r{case.repetition} | {mark} | "
+            f"| {case.task_id} | r{case.repetition} | {mark} | {flagged} | "
             f"{_short(_case_detail(case))} | {case.model_calls} | "
             f"{format_money(case.cost, currency)} | {case.duration_seconds:.1f}s | "
             f"{_periods_text(case.periods)} | `{session}` |"

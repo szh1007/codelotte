@@ -273,9 +273,31 @@ class SessionStore:
         self._last_id: str | None = None
 
     @classmethod
-    def start(cls, cwd: Path, *, base_dir: Path | None = None) -> "SessionStore":
+    def start(
+        cls,
+        cwd: Path,
+        *,
+        base_dir: Path | None = None,
+        directory_name: str | None = None,
+    ) -> "SessionStore":
+        """新建会话。
+
+        `directory_name` 给评测设施用：工作区是临时目录、绝对路径很长，把整条路径编码
+        进目录名会在 Windows 超过 260 字符；评测传入短案例名即可。生产路径不传，
+        仍按项目路径编码（--continue/--resume 的目录约定不变）。
+        """
         base = base_dir if base_dir is not None else _default_base_dir()
-        directory = base / project_key(cwd)
+        if directory_name is None:
+            directory = base / project_key(cwd)
+        else:
+            name = directory_name.strip()
+            if (
+                not name
+                or name in {".", ".."}
+                or any(ch in name for ch in ("/", "\\", ":"))
+            ):
+                raise ValueError(f"会话目录名不合法：{directory_name!r}")
+            directory = base / name
         directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         store = cls(directory / f"{stamp}_{_new_id()[:8]}.jsonl")

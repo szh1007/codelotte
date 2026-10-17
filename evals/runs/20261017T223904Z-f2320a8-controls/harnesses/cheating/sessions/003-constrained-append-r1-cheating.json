@@ -1,0 +1,10 @@
+{
+  "harness": "cheating",
+  "kind": "control",
+  "writes": [
+    "output.txt"
+  ],
+  "tampered": [
+    "data.txt"
+  ]
+}

@@ -39,6 +39,14 @@ print("scope ok")
 [[verifier.files]]
 path = "protected.txt"
 unchanged = true
+[[verifier.files]]
+path = "check.py"
+unchanged = true
+
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"allowed.txt" = """status: final
+"""
 
 [[checkpoints]]
 question = "任务目标是什么？"

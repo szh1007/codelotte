@@ -43,3 +43,5 @@ select = ["E4", "E7", "E9", "E501", "F"]
 
 [tool.pyright]
 # 不显式 pin 版本/严格度：让 pyright 跟随解释器（.python-version 已锁 3.13）
+# 跑数目录里的 workspaces 是被测 agent 的产物（可能故意写坏），不是本项目源码
+exclude = ["evals/runs", "**/__pycache__"]

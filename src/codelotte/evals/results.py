@@ -23,3 +23,8 @@ class EvalCaseResult:
     session_path: str | None
     workspace: str
     error: str | None = None
+    harness: str = "codelotte"
+    flagged: bool = False
+    flag_reason: str | None = None
+    harness_version: str | None = None
+    note: str | None = None

@@ -40,6 +40,21 @@ print("calc ok")
 [[verifier.files]]
 path = "notes.txt"
 contains = "for i in range(n):"
+# 指令要求不要修改 check.py；控制 agent 的 cheating 会篡改它
+[[verifier.files]]
+path = "check.py"
+unchanged = true
+
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"calc.py" = """def sum_first_n(values, n):
+    total = 0
+    for i in range(n):
+        total += values[i]
+    return total
+"""
+"notes.txt" = """for i in range(n):
+"""
 
 [[checkpoints]]
 question = "任务目标是什么？"

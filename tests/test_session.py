@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from codelotte.session.store import SessionStore, project_key
 
 
@@ -51,6 +53,27 @@ def test_project_key_encoding(tmp_path: Path) -> None:
     key = project_key(Path("D:/__WorkSpace__/codelotte"))
     assert key.startswith("--") and key.endswith("--")
     assert "/" not in key and "\\" not in key and ":" not in key
+
+
+def test_start_can_use_a_short_directory_name(tmp_path: Path) -> None:
+    """评测工作区路径很长，会话目录不能把整条绝对路径编码进文件名（Windows 260 上限）。"""
+    store = SessionStore.start(
+        Path("D:/very/long/workspace/path"),
+        base_dir=tmp_path / "sessions",
+        directory_name="003-constrained-append-r1",
+    )
+
+    assert store.path.parent == tmp_path / "sessions" / "003-constrained-append-r1"
+    assert len(store.path.parent.name) < 40
+
+
+def test_start_rejects_a_directory_name_that_escapes_the_base(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="目录名"):
+        SessionStore.start(
+            Path("D:/work/proj"),
+            base_dir=tmp_path,
+            directory_name="../escape",
+        )
 
 
 def test_line_breakers_are_escaped_so_records_stay_one_line(tmp_path: Path) -> None:

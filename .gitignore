@@ -20,6 +20,9 @@ docs/demo/sample/demo-export.html
 # CI 冒烟跑数（artifact 上传，不提交）
 evals/runs-ci/
 
+# 对照组的 mini-swe-agent 独立环境（重依赖；按需本地安装，不进仓库）
+.mini-venv/
+
 # 环境与凭据（绝不提交）
 .env
 .env.*

@@ -1,0 +1,10 @@
+{
+  "harness": "oracle",
+  "kind": "control",
+  "writes": [
+    "allowed.txt"
+  ],
+  "oracle_files": [
+    "allowed.txt"
+  ]
+}

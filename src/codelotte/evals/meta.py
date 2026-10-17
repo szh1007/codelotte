@@ -108,6 +108,11 @@ class EvalRunMeta:
     tasks: tuple[TaskMeta, ...]
     command: str
     currency: str = "CNY"
+    # 票据 16：这一轮跑的是哪个 harness（codelotte / raw / mini-swe-agent / 控制 agent）
+    harness: str = "codelotte"
+    harness_kind: str = "agent"
+    harness_version: str | None = None
+    isolation: str = "unknown"
 
 
 def _git(repo: Path, *args: str) -> str | None:
@@ -244,24 +249,29 @@ def uv_lock_sha(repo: Path) -> str | None:
     return _sha256_file(repo / "uv.lock")
 
 
-def prepare_run(
-    tasks: Sequence[Task], *, runs_root: Path, repo_root: Path, run_id: str
+def prepare_run_dir(
+    tasks: Sequence[Task],
+    *,
+    run_dir: Path,
+    repo_root: Path,
+    exclude: Path | None = None,
 ) -> RunContext:
-    """建 run 目录并在开跑前锁定 git ref/工作树/依赖/任务指纹/快照 SHA。
+    """在已确定的 run 目录里锁定复现凭证并建 workspaces/sessions。
 
-    快照 ref 先解析：ref 无效属于配置错，不能留下一个空 run 目录。
+    `exclude` 是工作树指纹要排除的目录：对照跑数的各组落在同一个父目录下，
+    必须排除父目录（而不是组子目录），否则前一组产物会把后一组的指纹弄脏。
     """
-    runs_root = runs_root.resolve()
     repo_root = repo_root.resolve()
+    run_dir = run_dir.resolve()
     snapshot_refs = resolve_task_snapshots(tasks, repo_root)
-    run_dir = create_run_dir(runs_root, run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
     workspace_root = run_dir / "workspaces"
     session_root = run_dir / "sessions"
-    workspace_root.mkdir()
-    session_root.mkdir()
+    workspace_root.mkdir(exist_ok=True)
+    session_root.mkdir(exist_ok=True)
     # 跑数期间工作区/会话目录会增长，凭证必须在开跑前取
     git_ref = current_git_ref(repo_root)
-    dirty, diff_sha = worktree_fingerprint(repo_root, exclude=run_dir)
+    dirty, diff_sha = worktree_fingerprint(repo_root, exclude=exclude or run_dir)
     lock_sha = uv_lock_sha(repo_root)
     task_metas = tuple(
         TaskMeta(
@@ -284,3 +294,15 @@ def prepare_run(
         snapshot_refs=snapshot_refs,
         task_metas=task_metas,
     )
+
+
+def prepare_run(
+    tasks: Sequence[Task], *, runs_root: Path, repo_root: Path, run_id: str
+) -> RunContext:
+    """建 run 目录并在开跑前锁定 git ref/工作树/依赖/任务指纹/快照 SHA。
+
+    快照 ref 先解析：ref 无效属于配置错，不能留下一个空 run 目录。
+    """
+    runs_root = runs_root.resolve()
+    run_dir = create_run_dir(runs_root, run_id)
+    return prepare_run_dir(tasks, run_dir=run_dir, repo_root=repo_root)

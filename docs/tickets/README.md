@@ -50,7 +50,7 @@
 | [13](13-compaction-regression-suite.md) | 专用测评 - 压缩回归 v0 | 12 | ✅ done（自动化全绿；基线 12 案例入库） |
 | [14](14-readme-and-dogfood.md) | README v1 + 演示材料 + dogfood 启动 | 08, 12 | ✅ done（2026-10-18；录屏与 ≥3 天 dogfood 暂时忽略，作者后续补充） |
 | [15](15-eval-runner.md) | 评测 runner（任务格式 + pass^k + CI 冒烟） | 10, 12 | ✅ done（2026-10-18；CI eval-smoke 全绿） |
-| [16](16-baselines-and-control-agents.md) | 对照组 + 控制 agent 自检 | 15 | ready-for-agent |
+| [16](16-baselines-and-control-agents.md) | 对照组 + 控制 agent 自检 | 15 | ✅ done（2026-10-18；三组对照与 oracle/no-op/cheating 自检均跑通） |
 | [17](17-llm-judge-kappa.md) | LLM judge 兜底（κ 校准） | 15 | ready-for-agent |
 | [18](18-failure-attribution.md) | 失败归因分类器（D5） | 15 | ready-for-agent |
 | [19](19-experiment-e4-scaffolding-tax.md) | 实验 E4：scaffolding tax 对照 | 16 | ready-for-agent |

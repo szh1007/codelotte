@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+- 对照组与控制 agent 自检：`codelotte eval compare`（codelotte / mini-swe-agent / 裸单轮 API 同任务集并列对比，任务级成功率/成本/耗时）与 `codelotte eval controls`（oracle 应 100%、no-op 应 0%、cheating 应 0% 且被标记；离线零成本）；抽出 harness 协议，mini-swe-agent 走独立解释器 + 本地录制代理（假 key、真实 usage），任务增加 `[control.oracle.files]` 参考解与只读输入 `unchanged` 保护（票据 16）
+- 修复：嵌套评测 run 的会话目录曾把完整工作区绝对路径编码进目录名，Windows 上超过 260 字符；eval 会话改用短案例名目录（`SessionStore.start(directory_name=...)`），生产路径的 `--continue/--resume` 约定不变
 - 通用测评：`codelotte eval run`（任务 × 重复次数、pass^k、每任务成本/耗时/计费时段）、TOML 仓库快照与命令验收器、`report.md/json` 与失败会话定位；新增 B 桶任务 004/005；`eval compaction` 明确拒绝无 checkpoint 的通用任务（票据 15）
 - CI 增加 B 桶冒烟 job（需 `DEEPSEEK_API_KEY` secret；未配置时跳过）
 - 重构：单任务执行核心抽到 `evals/execution.py`，压缩回归与通用测评共用（票据 15）

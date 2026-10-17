@@ -27,11 +27,24 @@ from codelotte.config import (
     record_changelog_version,
 )
 from codelotte.cost import Catalog, load_catalog
+from codelotte.evals.compare import run_comparison
+from codelotte.evals.execution import CodelotteHarness
+from codelotte.evals.harnesses import (
+    CheatingHarness,
+    NoOpHarness,
+    OracleHarness,
+    RawHarness,
+)
 from codelotte.evals.meta import (
+    create_run_dir,
     current_git_ref,
     find_repo_root,
     make_run_id,
     resolve_task_snapshots,
+)
+from codelotte.evals.mini_baseline import (
+    MiniSweAgentHarness,
+    resolve_mini_command,
 )
 from codelotte.evals.runner import run_eval_suite
 from codelotte.evals.suite import run_suite
@@ -285,6 +298,102 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_sandbox",
         action="store_true",
         help="任务命令直接在宿主机执行（默认 Docker；实验任务仍是临时工作区）",
+    )
+
+    compare_parser = eval_sub.add_parser(
+        "compare",
+        help="对照组：同一任务集跑 codelotte / mini-swe-agent / 裸单轮 API，任务级并列对比",
+    )
+    compare_parser.add_argument(
+        "--harness",
+        action="append",
+        choices=("codelotte", "mini-swe-agent", "raw"),
+        metavar="组",
+        help="只跑指定 harness（可重复；默认三组全跑：codelotte、mini-swe-agent、raw）",
+    )
+    compare_parser.add_argument(
+        "--tasks", metavar="目录", help="任务目录（默认仓库根下的 evals/tasks）"
+    )
+    compare_parser.add_argument(
+        "--out", metavar="目录", help="跑数根目录（默认仓库根下的 evals/runs）"
+    )
+    compare_parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        metavar="N",
+        help="每个任务重复次数（默认 1；三组使用同一值）",
+    )
+    compare_parser.add_argument(
+        "--seed", type=int, default=0, metavar="N", help="随机种子（默认 0）"
+    )
+    compare_parser.add_argument(
+        "--task",
+        action="append",
+        metavar="ID",
+        help="只跑指定任务 id（可重复；默认全部）",
+    )
+    compare_parser.add_argument(
+        "--bucket",
+        action="append",
+        choices=("A", "B", "C"),
+        metavar="A/B/C",
+        help="只跑指定桶（可重复；默认全部）",
+    )
+    compare_parser.add_argument(
+        "--mini-python",
+        metavar="解释器",
+        help="装了 mini-swe-agent 的 Python 解释器（默认从 PATH 上的 mini 推同环境解释器）",
+    )
+    compare_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只校验任务、快照与 harness 可用性并打印计划，不调用模型、不建 run 目录",
+    )
+    compare_parser.add_argument(
+        "--no-sandbox",
+        dest="no_sandbox",
+        action="store_true",
+        help="任务命令直接在宿主机执行（默认 Docker；与 mini-swe-agent 的本地环境对齐）",
+    )
+
+    controls_parser = eval_sub.add_parser(
+        "controls",
+        help="控制 agent 自检：oracle 应 100%、no-op 应 0%、cheating 应 0% 且被标记",
+    )
+    controls_parser.add_argument(
+        "--tasks", metavar="目录", help="任务目录（默认仓库根下的 evals/tasks）"
+    )
+    controls_parser.add_argument(
+        "--out", metavar="目录", help="跑数根目录（默认仓库根下的 evals/runs）"
+    )
+    controls_parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        metavar="N",
+        help="每个任务重复次数（默认 1；控制 agent 是确定性的）",
+    )
+    controls_parser.add_argument(
+        "--seed", type=int, default=0, metavar="N", help="随机种子（默认 0）"
+    )
+    controls_parser.add_argument(
+        "--task",
+        action="append",
+        metavar="ID",
+        help="只跑指定任务 id（可重复；默认全部）",
+    )
+    controls_parser.add_argument(
+        "--bucket",
+        action="append",
+        choices=("A", "B", "C"),
+        metavar="A/B/C",
+        help="只跑指定桶（可重复；默认全部）",
+    )
+    controls_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只校验任务/快照并打印自检计划，不写 run 目录",
     )
     return parser
 
@@ -695,6 +804,22 @@ def _eval_paths(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     return repo_root, tasks_dir, out_dir
 
 
+def _print_eval_task_plan(
+    tasks: Sequence[Task], snapshot_refs: dict[str, str]
+) -> None:
+    """dry-run 共用的任务清单：任务、桶、超时/调用上限与快照 SHA。"""
+    for task in tasks:
+        snapshot = (
+            f"，快照 {task.snapshot.ref} → {snapshot_refs[task.id]}"
+            if task.snapshot is not None
+            else ""
+        )
+        print(
+            f"- {task.id}（{task.bucket} 桶，超时 {task.timeout_seconds:g}s，"
+            f"最多 {task.max_model_calls} 次模型调用{snapshot}）"
+        )
+
+
 def _select_eval_tasks(
     tasks: Sequence[Task],
     *,
@@ -729,6 +854,7 @@ class _EvalRuntime:
     compaction_limits: CompactionLimits
     guardrail_limits: GuardrailLimits
     executor_factory: Callable[[], Executor]
+    isolation: str
     run_id: str
     command: str
     progress: Callable[[str], None]
@@ -748,9 +874,11 @@ def _eval_runtime(
     if args.no_sandbox:
         print(SANDBOX_OFF_WARNING, file=sys.stderr)
         executor_factory: Callable[[], Executor] = LocalExecutor
+        isolation = "local"
     else:
         _ensure_docker_available()
         executor_factory = DockerExecutor
+        isolation = "docker"
 
     def progress(line: str) -> None:
         print(f"[eval] {line}", file=sys.stderr, flush=True)
@@ -761,6 +889,7 @@ def _eval_runtime(
         compaction_limits=compaction_limits,
         guardrail_limits=guardrail_limits,
         executor_factory=executor_factory,
+        isolation=isolation,
         run_id=make_run_id(current_git_ref(repo_root)),
         command="codelotte " + shlex.join(list(argv)),
         progress=progress,
@@ -844,16 +973,7 @@ def _run_eval_run(
         snapshot_refs = resolve_task_snapshots(tasks, repo_root)
         if args.dry_run:
             print(f"任务目录：{tasks_dir}")
-            for task in tasks:
-                snapshot = (
-                    f"，快照 {task.snapshot.ref} → {snapshot_refs[task.id]}"
-                    if task.snapshot is not None
-                    else ""
-                )
-                print(
-                    f"- {task.id}（{task.bucket} 桶，超时 {task.timeout_seconds:g}s，"
-                    f"最多 {task.max_model_calls} 次模型调用{snapshot}）"
-                )
+            _print_eval_task_plan(tasks, snapshot_refs)
             print(
                 f"计划：{len(tasks)} 任务 × {args.repeat} 次重复"
                 f" = {len(tasks) * args.repeat} 条案例；"
@@ -880,6 +1000,7 @@ def _run_eval_run(
                 seed=args.seed,
                 command=runtime.command,
                 progress=runtime.progress,
+                isolation=runtime.isolation,
             )
         )
     except (TaskFileError, ConfigError, ValueError, OSError) as exc:
@@ -888,6 +1009,163 @@ def _run_eval_run(
     print(f"[eval] 完成：{len(cases)} 条案例；报表 {report}", file=sys.stderr)
     print(report)
     return 1 if any(case.error for case in cases) else 0
+
+
+def _run_eval_compare(
+    args: argparse.Namespace, *, settings: Settings, argv: Sequence[str]
+) -> int:
+    """对照组：同一任务集跑 codelotte / mini-swe-agent / 裸单轮 API。"""
+    try:
+        if args.repeat < 1:
+            raise ConfigError(f"--repeat 要 ≥1（给了 {args.repeat}）")
+        names = list(dict.fromkeys(args.harness or ["codelotte", "mini-swe-agent", "raw"]))
+        if "mini-swe-agent" not in names and args.mini_python:
+            raise ConfigError("--mini-python 只在跑 mini-swe-agent 时有效")
+        repo_root, tasks_dir, out_dir = _eval_paths(args)
+        tasks = _select_eval_tasks(
+            load_tasks(tasks_dir), task_ids=args.task, buckets=args.bucket
+        )
+        snapshot_refs = resolve_task_snapshots(tasks, repo_root)
+        mini_command = (
+            resolve_mini_command(mini_python=args.mini_python)
+            if "mini-swe-agent" in names
+            else None
+        )
+        if args.dry_run:
+            print(f"任务目录：{tasks_dir}")
+            _print_eval_task_plan(tasks, snapshot_refs)
+            for name in names:
+                if name == "mini-swe-agent":
+                    assert mini_command is not None
+                    print(f"- 组 {name}：启动命令 {shlex.join(mini_command)}")
+                elif name == "raw":
+                    print("- 组 raw：单次 user 消息，无 tools")
+                else:
+                    print("- 组 codelotte：真实 loop + 工具 + 验收")
+            print(
+                f"计划：{len(names)} 组 × {len(tasks)} 任务 × {args.repeat} 次重复"
+                f" = {len(names) * len(tasks) * args.repeat} 条案例"
+            )
+            print("dry-run：任务/快照/harness 校验通过，未调用模型、未创建 run 目录。")
+            return 0
+        runtime = _eval_runtime(args, settings=settings, argv=argv, repo_root=repo_root)
+        run_dir = create_run_dir(out_dir, runtime.run_id + "-compare")
+
+        def codelotte_factory() -> CodelotteHarness:
+            return CodelotteHarness(
+                client=_client_from_spec(runtime.spec),
+                model=runtime.spec.id,
+                catalog=runtime.catalog,
+                executor_factory=runtime.executor_factory,
+                context_window=runtime.spec.context_window,
+                compaction_limits=runtime.compaction_limits,
+                guardrail_limits=runtime.guardrail_limits,
+                isolation=runtime.isolation,
+            )
+
+        def raw_factory() -> RawHarness:
+            return RawHarness(
+                client=_client_from_spec(runtime.spec),
+                model=runtime.spec.id,
+                catalog=runtime.catalog,
+            )
+
+        def mini_factory() -> MiniSweAgentHarness:
+            assert mini_command is not None
+            return MiniSweAgentHarness(
+                model=runtime.spec.id,
+                base_url=runtime.spec.base_url,
+                api_key=runtime.spec.api_key,
+                catalog=runtime.catalog,
+                command=mini_command,
+                reasoning_effort=runtime.spec.reasoning_effort,
+            )
+
+        factories = {
+            "codelotte": codelotte_factory,
+            "raw": raw_factory,
+            "mini-swe-agent": mini_factory,
+        }
+        runs, _checks = asyncio.run(
+            run_comparison(
+                tasks,
+                harnesses=[(name, factories[name]) for name in names],
+                repetitions=args.repeat,
+                run_dir=run_dir,
+                repo_root=repo_root,
+                seed=args.seed,
+                command=runtime.command,
+                model=runtime.spec.id,
+                reasoning_effort=runtime.spec.reasoning_effort,
+                context_window=runtime.spec.context_window,
+                currency=runtime.catalog.currency,
+                progress=runtime.progress,
+            )
+        )
+    except (TaskFileError, ConfigError, ValueError, OSError) as exc:
+        return _fail(exc)
+    report = run_dir / "report.md"
+    errored = sum(1 for run in runs for case in run.cases if case.error)
+    print(f"[eval] 完成：{len(runs)} 组对照；报表 {report}", file=sys.stderr)
+    print(report)
+    return 1 if errored else 0
+
+
+def _run_eval_controls(
+    args: argparse.Namespace, *, argv: Sequence[str]
+) -> int:
+    """控制 agent 自检：不调用模型、不需要 Docker/密钥，直接检验评分链路。"""
+    try:
+        if args.repeat < 1:
+            raise ConfigError(f"--repeat 要 ≥1（给了 {args.repeat}）")
+        repo_root, tasks_dir, out_dir = _eval_paths(args)
+        tasks = _select_eval_tasks(
+            load_tasks(tasks_dir), task_ids=args.task, buckets=args.bucket
+        )
+        snapshot_refs = resolve_task_snapshots(tasks, repo_root)
+        if args.dry_run:
+            print(f"任务目录：{tasks_dir}")
+            _print_eval_task_plan(tasks, snapshot_refs)
+            print(
+                f"计划：oracle / no-op / cheating × {len(tasks)} 任务 × {args.repeat} 次"
+                f" = {3 * len(tasks) * args.repeat} 条案例"
+            )
+            print("预期：oracle 100% 通过；no-op 0% 通过；cheating 0% 通过且全部被标记。")
+            print("dry-run：任务/快照校验通过，未写 run 目录。")
+            return 0
+        run_id = make_run_id(current_git_ref(repo_root)) + "-controls"
+        run_dir = create_run_dir(out_dir, run_id)
+        command = "codelotte " + shlex.join(list(argv))
+        runs, checks = asyncio.run(
+            run_comparison(
+                tasks,
+                harnesses=[
+                    ("oracle", OracleHarness),
+                    ("no-op", NoOpHarness),
+                    ("cheating", CheatingHarness),
+                ],
+                repetitions=args.repeat,
+                run_dir=run_dir,
+                repo_root=repo_root,
+                seed=args.seed,
+                command=command,
+                model="—",
+                reasoning_effort="—",
+                context_window=0,
+                currency="CNY",
+            )
+        )
+    except (TaskFileError, ConfigError, ValueError, OSError) as exc:
+        return _fail(exc)
+    report = run_dir / "report.md"
+    passed = bool(checks) and all(check.passed for check in checks)
+    print(
+        f"[eval] 控制 agent 自检{'通过' if passed else '未通过'}；"
+        f"{len(runs)} 组案例；报表 {report}",
+        file=sys.stderr,
+    )
+    print(report)
+    return 0 if passed else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -918,9 +1196,20 @@ def main(argv: list[str] | None = None) -> int:
                 settings=settings,
                 argv=list(argv) if argv is not None else sys.argv[1:],
             )
+        if eval_command == "compare":
+            return _run_eval_compare(
+                args,
+                settings=settings,
+                argv=list(argv) if argv is not None else sys.argv[1:],
+            )
+        if eval_command == "controls":
+            return _run_eval_controls(
+                args,
+                argv=list(argv) if argv is not None else sys.argv[1:],
+            )
         parser.error(
-            "用法：codelotte eval {compaction,run} …；"
-            "compaction 跑压缩回归，run 跑通用测评"
+            "用法：codelotte eval {compaction,run,compare,controls} …；"
+            "compaction 跑压缩回归，run 跑通用测评，compare 跑对照组，controls 跑控制 agent 自检"
         )
     if args.command == "export":
         return _run_export(args)

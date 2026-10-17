@@ -366,6 +366,8 @@
 
 **实验注入点（不属于测试专用开关）**：压缩触发策略 `CompactionPolicy` 有生产默认实现（`default_compaction_policy`），票据 13 的回归套件在装配时注入"强制压缩 k 次"的策略来隔离实验变量；它不改变生产路径，也不是测试分支。E1 的触发策略 A/B 复用同一注入点。
 
+**评测 harness 缝（票据 16，不属于生产测试开关）**：`evals/harness_types.Harness` + `execute_harness` 只服务评测设施，把"被测 agent"从"工作区准备/验收/防篡改检查"里解耦；生产路径仍只有 Provider/Executor 两个缝。它让同一个任务集能跑 codelotte、mini-swe-agent、裸单轮 API 与 oracle/no-op/cheating 三种控制 agent，验收与评分始终是同一份真实代码。
+
 **分层与覆盖**：
 
 | 层 | 测什么 | 手段 |

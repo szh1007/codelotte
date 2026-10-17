@@ -143,6 +143,36 @@ def capture_unchanged_baseline(task: Task, workspace: Path) -> dict[str, str | N
     return baseline
 
 
+def _unchanged_violation(
+    expectation: FileExpectation,
+    task: Task,
+    workspace: Path,
+    baseline: dict[str, str | None] | None,
+) -> str | None:
+    """检查一条 unchanged 期望；返回问题文本或 None。
+
+    没有 baseline 时退回 task.setup（兼容只依赖初始文件的旧任务/单元测试）。
+    """
+    target = workspace / expectation.path
+    if not target.is_file():
+        if baseline is not None and baseline.get(expectation.path, "") is None:
+            return None  # 初始就不存在，现在仍不存在：符合 unchanged
+        return f"缺少文件 {expectation.path}"
+    try:
+        actual = _normalize_text(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"{expectation.path} 无法按 UTF-8 读取（{type(exc).__name__}）"
+    if baseline is not None and expectation.path in baseline:
+        expected = baseline[expectation.path]
+        if expected is None:
+            return f"{expectation.path} 被创建了（任务要求保持不变）"
+    else:
+        expected = _normalize_text(task.setup.get(expectation.path, ""))
+    if actual != expected:
+        return f"{expectation.path} 被修改了（任务要求保持不变）"
+    return None
+
+
 def _verify_files(
     expectations: tuple[FileExpectation, ...],
     task: Task,
@@ -151,14 +181,13 @@ def _verify_files(
 ) -> list[str]:
     problems: list[str] = []
     for expectation in expectations:
+        if expectation.unchanged:
+            violation = _unchanged_violation(expectation, task, workspace, baseline)
+            if violation is not None:
+                problems.append(violation)
+            continue
         target = workspace / expectation.path
         if not target.is_file():
-            if (
-                expectation.unchanged
-                and baseline is not None
-                and baseline.get(expectation.path, "") is None
-            ):
-                continue  # 初始就不存在，现在仍不存在：符合 unchanged
             problems.append(f"缺少文件 {expectation.path}")
             continue
         try:
@@ -179,19 +208,26 @@ def _verify_files(
                 problems.append(
                     f"{expectation.path} 不包含 {_normalize_text(expectation.contains)!r}"
                 )
-        elif expectation.unchanged:
-            if baseline is not None and expectation.path in baseline:
-                expected = baseline[expectation.path]
-                if expected is None:
-                    problems.append(
-                        f"{expectation.path} 被创建了（任务要求保持不变）"
-                    )
-                    continue
-            else:
-                expected = _normalize_text(task.setup.get(expectation.path, ""))
-            if actual != expected:
-                problems.append(f"{expectation.path} 被修改了（任务要求保持不变）")
     return problems
+
+
+def tampered_paths(
+    task: Task,
+    workspace: Path,
+    baseline: dict[str, str | None] | None,
+) -> list[str]:
+    """返回违反 unchanged 期望的保护文件（控制 agent 的"作弊被标记"依据）。
+
+    验收已经会因为这些问题失败；单独列出来是给报表一个明确标记，区分"没做对"
+    与"动了不该动的文件"。
+    """
+    paths: list[str] = []
+    for expectation in task.verifier.files:
+        if not expectation.unchanged:
+            continue
+        if _unchanged_violation(expectation, task, workspace, baseline) is not None:
+            paths.append(expectation.path)
+    return paths
 
 
 def _verify_python(code: str, workspace: Path, timeout: float = 60.0) -> str | None:

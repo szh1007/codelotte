@@ -37,6 +37,23 @@ equals = """a.txt:2
 b.txt:1
 c.txt:0
 """
+# 只读输入：控制 agent 的 cheating 会改它们，验收应把任务记为失败并标记
+[[verifier.files]]
+path = "a.txt"
+unchanged = true
+[[verifier.files]]
+path = "b.txt"
+unchanged = true
+[[verifier.files]]
+path = "c.txt"
+unchanged = true
+
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"report.txt" = """a.txt:2
+b.txt:1
+c.txt:0
+"""
 
 [[checkpoints]]
 question = "任务目标是什么？"

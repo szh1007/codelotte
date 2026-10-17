@@ -39,6 +39,14 @@ equals = """1: red
 path = "data.txt"
 unchanged = true
 
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"output.txt" = """1: red
+2: green
+3: blue
+4: yellow
+"""
+
 [[checkpoints]]
 question = "任务目标是什么？"
 facts = [

@@ -4,6 +4,7 @@
 >
 > - 专用测评 - 压缩回归 v0（强制压缩 k 次、checkpoint 保留率、v0 基线）：
 >   [compaction.md](compaction.md)
+> - 对照组与控制 agent 自检（票据 16）：本文件 §4.5 / §4.6
 > - 跑数记录：[record.md](record.md)
 > - 任务定义：[evals/tasks/*.toml](tasks/)
 
@@ -23,21 +24,32 @@ uv run codelotte eval run --bucket B --repeat 1
 # 4. 压缩回归：强制压缩 k=0/1/3/5，测 checkpoint 状态保留率
 uv run codelotte eval compaction --k 0,1,3,5
 
-# 5. 打开最新 run 的报表
+# 5. 控制 agent 自检（离线、零成本；不需要密钥/Docker）
+uv run codelotte eval controls
+
+# 6. 对照组：codelotte / mini-swe-agent / 裸单轮 API 跑同一任务集
+uv run codelotte eval compare --repeat 1 --no-sandbox
+
+# 7. 打开最新 run 的报表
 #    evals/runs/<新目录>/report.md
 ```
 
 已经装有 `codelotte` 命令时，把 `uv run codelotte` 换成 `codelotte` 即可。
 
-## 1. 两个命令在干什么
+## 1. 四个命令在干什么
 
 - `eval run`（票据 15）：**通用测评**。任务按生产默认策略跑 N 次，回答“当前 harness
   能不能过、每条任务花多少钱/多久、pass^N 是多少”。
 - `eval compaction`（票据 13）：**专用测评 - 压缩回归 v0**。强制压缩 k 次，回答
   “压缩后还记得任务吗”。
+- `eval compare`（票据 16）：**对照组**。同一任务集分别跑 codelotte、mini-swe-agent
+  和裸单轮 API，回答“模型自身的功劳 vs harness 的增量”（scaffolding tax）。
+- `eval controls`（票据 16）：**控制 agent 自检**。oracle 应 100%、no-op 应 0%、
+  cheating 应 0% 且被标记；先证明评测器不瞎打分，再相信任何真实跑分。
 
-两者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用通用测评 `eval run`；
-专用测评 - 压缩回归 v0 用 `eval compaction`，细节见 [compaction.md](compaction.md)。
+四者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
+压缩专项用 `eval compaction`（细节见 [compaction.md](compaction.md)）；对照与自检
+见 §4.5 / §4.6。
 
 ## 2. 目录地图
 
@@ -355,23 +367,95 @@ codelotte eval run --dry-run
 但报表 artifact 会如实显示。要让它变红，可在 workflow 里加一步检查 `report.json` 的
 `summaries[].pass_pow_k`。
 
-### 4.5 已知局限
+### 4.5 对照组（`eval compare`）
 
-- 没有对照组（mini-swe-agent / 裸 API）与控制 agent 自检——票据 16。
+同一条任务、同一次数，分别跑三种 harness：
+
+| 组 | 是什么 | 看什么 |
+|---|---|---|
+| `codelotte` | 真实 loop + 四个工具 + 权限/压缩/防线 | 我们 harness 的完整能力 |
+| `mini-swe-agent` | 开源教学级 agent（真实 2.4.6 包），只有 bash | 同样模型下另一套 scaffolding |
+| `raw` | 裸单轮 API：一条 user 消息、无 tools | “模型自己”的下界 |
+
+三组使用**同一个模型与同一任务集**；对照报告把它们按任务并排，单元格是
+`通过标记 · 通过/尝试 · pass^N · 总成本 · 平均耗时`。各组明细仍在
+`harnesses/<组名>/report.md`。
+
+mini-swe-agent 不在项目依赖里（它带 litellm/datasets 等重依赖）。推荐装独立 venv：
+
+```bash
+# Windows
+uv venv .mini-venv
+uv pip install --python .mini-venv/Scripts/python.exe mini-swe-agent==2.4.6
+uv run codelotte eval compare --mini-python .mini-venv/Scripts/python.exe --repeat 1 --no-sandbox
+
+# macOS / Linux
+uv venv .mini-venv
+uv pip install --python .mini-venv/bin/python mini-swe-agent==2.4.6
+uv run codelotte eval compare --mini-python .mini-venv/bin/python --repeat 1 --no-sandbox
+```
+
+- 不写 `--mini-python` 时，依次尝试：PATH 上的 `mini`（推同环境解释器）→ 当前解释器
+  （能 `import minisweagent`）→ 报错并给安装命令。
+- 只想跑两组：`--harness codelotte --harness raw`（`--harness` 可重复）。
+- `--dry-run` 会校验任务、快照 ref 和 mini 是否可用，不建 run 目录、不调用模型。
+- **成本口径**：三组都用本项目价目表按实际 usage 估算。mini 的真实 key 只留在
+  codelotte 进程内存里的本地录制代理；被测 agent 的 bash 只看到假 key。
+- **公平性限制**：任务里的“执行纪律”（必须用 read/write、不得用 bash）不在验收范围内，
+  只看最终状态；mini 只有 bash，所以别把三组当成同一策略。耗时对比请让 codelotte
+  也用 `--no-sandbox`（与 mini 的本地环境对齐）。
+
+### 4.6 控制 agent 自检（`eval controls`）
+
+三个“假 agent”检验评测器本身：
+
+| 控制 agent | 行为 | 预期 |
+|---|---|---|
+| `oracle` | 直接落任务参考解（`[control.oracle.files]`）或从文件期望推导 | 100% 通过 |
+| `no-op` | 什么都不做 | 0% 通过，且不应产生标记 |
+| `cheating` | 写假成功内容 + 篡改所有 `unchanged` 保护文件 | 0% 通过，且全部被标记 |
+
+```bash
+uv run codelotte eval controls
+uv run codelotte eval controls --dry-run    # 只校验任务/快照
+```
+
+- 不调用模型、不需要 API key、不需要 Docker；几秒钟跑完，可以放进任何 CI。
+- `report.md` 顶部有“自检结论”表；任何一条不符，CLI 返回退出码 1，
+  报告会写“先修评测器，再相信任何真实跑分”。
+- `cheating` 的标记来自 `unchanged` 保护文件检查；为了让这条防线覆盖全部任务，
+  首批任务已给只读输入（`a/b/c.txt`、`check.py`、`input/policy.txt`、
+  `protected.txt`）加 `unchanged = true`。
+- 新增任务时至少给 oracle 一个参考解，并至少留一个 `unchanged` 只读保护文件；
+  `tests/test_eval_tasks.py` 会检查 shipped 任务两者都有。没有保护文件时，cheating
+  仍会因内容不对记 0，但不会产生“篡改”标记。
+
+### 4.7 已知局限
+
 - 没有 LLM judge 与 κ 校准——票据 17。
 - pass^k 是严格口径；不提供 pass@k（至少一次通过）的并列指标。
 - 首批任务只有 5 条，B 桶 3 条；任务集扩大与 E1/E2 正式实验在票据 20。
 - 任务的初始化脚本按平台 shell 语义执行；跨平台任务应优先用 Python 或 `python -c`。
+- `eval compare` 的三组不是同一策略：codelotte 有四个工具与压缩/防线，mini 只有 bash，
+  raw 没有工具；对照回答的是“最终状态 + 成本/耗时”，不是同策略 A/B。
+- mini 的思考参数沿用它的默认请求；codelotte 用 `reasoning_effort` 配置。同模型，
+  但请求参数不保证逐字段一致。
 
-### 4.6 代码地图
+### 4.8 代码地图
 
 | 文件 | 职责 |
 |---|---|
-| `src/codelotte/evals/tasks.py` | TOML 加载与校验（文件/快照/验收器/checkpoint） |
-| `src/codelotte/evals/workspace.py` | 工作区准备、git 快照、初始化脚本、确定性验收 |
-| `src/codelotte/evals/execution.py` | 单任务执行核心（真实 loop、预算、成本/时段、验收） |
-| `src/codelotte/evals/runner.py` | 通用测评编排（任务 × 重复、pass^k 数据） |
-| `src/codelotte/evals/eval_report.py` | 通用报表（Markdown/JSON） |
+| `src/codelotte/evals/tasks.py` | TOML 加载与校验（文件/快照/验收器/checkpoint/参考解） |
+| `src/codelotte/evals/workspace.py` | 工作区准备、git 快照、初始化脚本、确定性验收、保护文件检查 |
+| `src/codelotte/evals/execution.py` | 单任务执行核心（codelotte loop、预算、成本/时段、验收） |
+| `src/codelotte/evals/harness_types.py` | harness 协议与 `HarnessExecution` |
+| `src/codelotte/evals/harnesses.py` | 裸单轮 API + 三种控制 agent |
+| `src/codelotte/evals/mini_baseline.py` | mini-swe-agent 外部进程适配 |
+| `src/codelotte/evals/mini_runner.py` | 在 mini 解释器里跑的独立入口（绕开交互层） |
+| `src/codelotte/evals/mini_proxy.py` | 本地录制代理（假 key、真实 usage） |
+| `src/codelotte/evals/runner.py` | 通用 harness 编排（任务 × 重复、pass^k 数据） |
+| `src/codelotte/evals/compare.py` | 多组对照、控制 agent 自检、并列报表 |
+| `src/codelotte/evals/eval_report.py` | 单组报表（Markdown/JSON） |
 | `src/codelotte/evals/regression.py` | 压缩回归（强制压缩 + checkpoint 探针） |
 | `evals/tasks/*.toml` | 任务定义 |
 | `evals/runs/<run-id>/` | 跑数证据 |

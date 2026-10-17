@@ -34,6 +34,10 @@ def test_shipped_suite_covers_the_required_buckets() -> None:
             assert checkpoint.question.strip()
             assert checkpoint.facts
             assert all(fact for fact in checkpoint.facts)
+        # 票据 16：每条任务都有控制 agent 的参考解，oracle 才能做到 100%
+        assert task.oracle_files
+        # 每条任务至少有一个只读保护文件，cheating 才有可检测的篡改目标
+        assert any(expectation.unchanged for expectation in task.verifier.files)
 
 
 def test_checkpoints_are_optional_for_the_general_runner(tmp_path: Path) -> None:
@@ -86,6 +90,50 @@ command_timeout = 5
     assert task.verifier.command == ("python", "check.py")
     assert task.verifier.command_timeout == 5
     assert task.setup == {}
+
+
+def test_parses_control_oracle_files(tmp_path: Path) -> None:
+    path = tmp_path / "oracle.toml"
+    path.write_text(
+        """
+id = "oracle"
+bucket = "A"
+instruction = "x"
+[setup]
+files = { "a.txt" = "a" }
+[verifier]
+python = "pass"
+[control.oracle.files]
+"a.txt" = "fixed"
+"out.txt" = "done"
+""",
+        encoding="utf-8",
+    )
+
+    task = load_task(path)
+
+    assert task.oracle_files == {"a.txt": "fixed", "out.txt": "done"}
+
+
+def test_rejects_oracle_paths_that_escape_the_workspace(tmp_path: Path) -> None:
+    path = tmp_path / "oracle-escape.toml"
+    path.write_text(
+        """
+id = "oracle-escape"
+bucket = "A"
+instruction = "x"
+[setup]
+files = { "a.txt" = "a" }
+[verifier]
+python = "pass"
+[control.oracle.files]
+"../evil.txt" = "boom"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskFileError, match="相对路径"):
+        load_task(path)
 
 
 def test_rejects_snapshot_repo_paths_that_escape_the_repo(tmp_path: Path) -> None:

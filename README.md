@@ -75,6 +75,28 @@ All tasks are complete: bug fixed, check passes, notes.txt written.
 - 压缩 5 次的样例轨迹：[HTML](docs/examples/session-001-audit-report-k5.html) · [Markdown](docs/examples/session-001-audit-report-k5.md)
 - 指标口径与局限：[evals/compaction.md](evals/compaction.md)
 
+### 对照组：codelotte vs mini-swe-agent vs 裸单轮 API（2026-10-18）
+
+同一 5 条任务 × 1 次重复，同一个 `deepseek-flash`、同一思考档位 `high`。mini-swe-agent
+2.4.6 通过独立解释器接入；真实 API key 由本地录制代理注入，被测 agent 只看到假 key。
+
+| 组 | 通过 | 模型调用 | 总成本 | 平均耗时/案例 |
+|---|---|---|---|---|
+| codelotte | 5/5 (100%) | 31 | ¥0.015903 | 5.3s |
+| mini-swe-agent | 5/5 (100%) | 31 | ¥0.022858 | 13.6s |
+| 裸单轮 API（无工具） | 0/5 (0%) | 5 | ¥0.011245 | 3.4s |
+
+**这证明了什么、不证明什么。** 工具循环是必要条件：裸单轮 API 一条都过不了；codelotte
+与 mini-swe-agent 都能过，但 codelotte 在同样调用次数下成本更低、耗时不到 mini 的 40%。
+不过这批 v0 任务太短，两个有工具的 harness 成功率没有拉开——真正的 scaffolding tax
+需要更难的任务集，正式 E4 在票据 19。三组不是同策略 A/B：任务里的“必须用 read/write”
+等执行纪律不在验收范围内。口径与限制见报表“口径与限制”。
+
+- 对照报表：[evals/runs/20261017T223658Z-f2320a8-compare/report.md](evals/runs/20261017T223658Z-f2320a8-compare/report.md)
+- 控制 agent 自检（离线、零成本）：[evals/runs/20261017T223904Z-f2320a8-controls/report.md](evals/runs/20261017T223904Z-f2320a8-controls/report.md)
+  ——oracle 5/5、no-op 0/5、cheating 0/5 且 5/5 被标记。
+- 操作手册：[evals/run.md](evals/run.md) §4.5 / §4.6。
+
 ## 架构
 
 ```mermaid
@@ -180,7 +202,7 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 23 张曳光弹票据与状态 |
-| [evals/run.md](evals/run.md) | 通用测评：两个命令、任务格式、pass^k、CI 冒烟 |
+| [evals/run.md](evals/run.md) | 通用测评、对照组（`eval compare`）、控制 agent 自检、任务格式、pass^k、CI 冒烟 |
 | [evals/compaction.md](evals/compaction.md) | 专用测评 - 压缩回归 v0：机制、评分、基线、人工标注 |
 | [evals/record.md](evals/record.md) | 评测跑数记录：索引、目录约定、已入库基线 |
 | [docs/tech/configuration.md](docs/tech/configuration.md) | 配置取值链与每个设置项 |
@@ -194,9 +216,11 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 死循环三层防御、压缩 v1、专用测评 - 压缩回归 v0（个别真机验证备注见票据索引）。票据 14、15 已完成：
 票据 14 交付 README、ADR 索引、演示材料与 dogfood 日志（3 分钟录屏与连续 dogfood 暂时忽略，
 作者后续补充）；票据 15 交付通用测评（`codelotte eval run`、`pass^k`、仓库快照、每任务成本/时段）
-与 B 桶 CI 冒烟，CI 已全绿。票据 16–23 覆盖对照组、失败归因、E1–E5 实验与最终材料包。
+与 B 桶 CI 冒烟，CI 已全绿。票据 16 交付对照组（`codelotte eval compare`：codelotte /
+mini-swe-agent / 裸单轮 API）与控制 agent 自检（`codelotte eval controls`），三组对照与
+oracle/no-op/cheating 均已真实跑通。票据 17–23 覆盖失败归因、E1–E5 实验与最终材料包。
 
-当前工作树的工程检查：`476 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
+当前工作树的工程检查：`498 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。

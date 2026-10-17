@@ -32,6 +32,20 @@ equals = """quarterly status: green
 path = "summary.txt"
 equals = """done
 """
+# 两个输入文件都只读：控制 agent 的 cheating 会篡改它们
+[[verifier.files]]
+path = "input.txt"
+unchanged = true
+[[verifier.files]]
+path = "policy.txt"
+unchanged = true
+
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"result.txt" = """quarterly status: green
+"""
+"summary.txt" = """done
+"""
 
 [[checkpoints]]
 question = "任务目标是什么？"

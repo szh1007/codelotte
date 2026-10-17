@@ -8,7 +8,7 @@ checkpoints 是压缩回归的选配项（票据 13），通用测评 不需要�
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +91,9 @@ class Task:
     snapshot: Snapshot | None = None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     max_model_calls: int = DEFAULT_MAX_MODEL_CALLS
+    # 控制 agent 的参考解（[control.oracle.files]）：只给 oracle 自检用，真实 agent 看不到。
+    # 它不进 task_fingerprint——改参考解不应该让历史模型跑数失去可比性。
+    oracle_files: dict[str, str] = field(default_factory=dict)
 
 
 def _require(raw: dict[str, Any], key: str, where: str) -> Any:
@@ -227,6 +230,33 @@ def _verifier(raw: Any, where: str) -> Verifier:
     )
 
 
+def _oracle_files(raw: Any, where: str) -> dict[str, str]:
+    """控制 agent 的参考解；缺省为空（oracle 会尝试从文件验收期望推导）。"""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise TaskFileError(f"{where} 的 control 应是对象")
+    oracle = raw.get("oracle")
+    if oracle is None:
+        return {}
+    if not isinstance(oracle, dict):
+        raise TaskFileError(f"{where} 的 control.oracle 应是对象")
+    files_raw = oracle.get("files")
+    if files_raw is None:
+        return {}
+    if not isinstance(files_raw, dict):
+        raise TaskFileError(f"{where} 的 control.oracle.files 应是对象")
+    files: dict[str, str] = {}
+    for path, content in files_raw.items():
+        key = _relative_path(path, "control.oracle.files 的路径", where)
+        if not isinstance(content, str):
+            raise TaskFileError(
+                f"{where} 的 control.oracle.files[{key!r}] 要是字符串"
+            )
+        files[key] = content
+    return files
+
+
 def _checkpoints(raw: Any, where: str) -> tuple[Checkpoint, ...]:
     """压缩回归的问题集；通用测评 的任务可以完全不写。"""
     if raw is None:
@@ -273,6 +303,7 @@ def load_task(path: Path) -> Task:
     setup, snapshot = _setup(_require(raw, "setup", where), where)
     verifier = _verifier(_require(raw, "verifier", where), where)
     checkpoints = _checkpoints(raw.get("checkpoints"), where)
+    oracle_files = _oracle_files(raw.get("control"), where)
     timeout = _positive_number(
         raw.get("timeout_seconds"),
         "timeout_seconds",
@@ -292,6 +323,7 @@ def load_task(path: Path) -> Task:
         snapshot=snapshot,
         timeout_seconds=timeout,
         max_model_calls=max_calls,
+        oracle_files=oracle_files,
     )
 
 
