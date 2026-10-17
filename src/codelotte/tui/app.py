@@ -24,6 +24,9 @@ from textual.widgets.markdown import MarkdownStream
 from codelotte.cost import Ledger, call_record_from_entry, format_money
 from codelotte.display import (
     args_preview,
+    compaction_after_share,
+    compaction_title,
+    compaction_utilization,
     duration_text,
     guardrail_notice,
     guardrail_stop_text,
@@ -32,6 +35,7 @@ from codelotte.display import (
 )
 from codelotte.loop import (
     AgentLoop,
+    CompactionEvent,
     CostRecorded,
     GuardrailTriggered,
     ToolFinished,
@@ -58,6 +62,8 @@ ToolCallBlock > .tool-args { color: $text-muted; }
 ToolCallBlock > .tool-result { padding: 0 0 1 0; }
 ToolCallBlock.tool-failed CollapsibleTitle { color: $error; }
 ToolCallBlock.tool-interrupted CollapsibleTitle { color: $warning; }
+CompactionBlock { margin: 0 0 1 0; }
+CompactionBlock CollapsibleTitle { color: $warning; }
 #approval-box { width: 90%; max-width: 100; background: $surface; border: round $warning; padding: 1 2; }
 #approval-box .approval-line { margin: 0 0 1 0; }
 #approval-buttons { height: auto; }
@@ -130,6 +136,30 @@ class ToolCallBlock(Collapsible):
         self.add_class("tool-interrupted")
         self.query_one(".tool-result", Static).update(
             Text(INTERRUPTED_TOOL_NOTE, style="yellow")
+        )
+
+
+class CompactionBlock(Collapsible):
+    """一次上下文压缩：收起标题带触发方式与前后占比，展开可看摘要（票据 12）。"""
+
+    def __init__(
+        self,
+        *,
+        mode: str,
+        utilization: float,
+        window: int,
+        after_tokens: int,
+        summary: str,
+        warning: str | None,
+    ) -> None:
+        text = (f"⚠ {warning}\n\n" if warning else "") + summary
+        title = compaction_title(
+            mode, utilization, compaction_after_share(after_tokens, window)
+        )
+        super().__init__(
+            Static(Text(text, style="dim"), classes="compaction-summary"),
+            title=f"⚠ {title}" if warning else title,
+            collapsed=True,
         )
 
 
@@ -226,6 +256,9 @@ class TuiApp(App[None]):
         self._reasoning_parts: list[str] = []
         self._tool_blocks: dict[str, ToolCallBlock] = {}
         self._ledger = Ledger()  # 账单累计（历史回放 + 实时事件同一本账，票据 07）
+        # 压缩后的上下文占用估算（票据 12）：摘要调用的 usage 是"压缩前"的大小，
+        # 下一次正常调用的 CostRecorded 到来前，状态栏先用压缩后的估算值。
+        self._context_override: int | None = None
         agent.approver = self._approve  # 权限审批走弹层（票据 09）；-p 模式没有此处、fail-closed
 
     # ---- 组装与启动 ----
@@ -335,6 +368,7 @@ class TuiApp(App[None]):
             # 思考事件只在开启时出现（reasoning_effort 为 none 时接口不产生）——来了就展示
             await self._write_reasoning(event.text)
         elif isinstance(event, CostRecorded):
+            self._context_override = None  # 新的真实 usage 已到，压缩估算不再是当前值
             self._ledger.record(event.record)  # 计价在 loop 落盘时算好，界面只累计
             self._refresh_status()
         elif isinstance(event, ToolRequested):
@@ -356,6 +390,22 @@ class TuiApp(App[None]):
                 self._scroll_end()
         elif isinstance(event, GuardrailTriggered):
             await self._mount_guardrail(event.layer, event.message)
+        elif isinstance(event, CompactionEvent):
+            self._context_override = event.after_tokens
+            await self._end_markdown()
+            if event.warning:
+                await self._mount_notice(f"⚠ {event.warning}")  # 折叠块外可见
+            await self._mount(
+                CompactionBlock(
+                    mode=event.mode,
+                    utilization=event.utilization,
+                    window=event.window,
+                    after_tokens=event.after_tokens,
+                    summary=event.summary,
+                    warning=event.warning,
+                )
+            )
+            self._refresh_status()
         elif isinstance(event, TurnEnded):
             self._close_reasoning()
             await self._end_markdown()
@@ -470,9 +520,31 @@ class TuiApp(App[None]):
                 await self._mount_guardrail(
                     str(entry.get("layer", "")), str(entry.get("message", ""))
                 )
+            elif kind == "compaction":
+                # 压缩点（票据 12）：历史里也画出来，摘要可展开查看
+                window = int(entry.get("window", 0) or 0)
+                before_tokens = int(entry.get("beforeTokens", 0) or 0)
+                after_tokens = int(entry.get("estimatedAfterTokens", 0) or 0)
+                warning = str(entry["warning"]) if entry.get("warning") else None
+                self._context_override = after_tokens or None
+                if warning:
+                    await self._mount_notice(f"⚠ {warning}")  # 折叠块外可见
+                await self._mount(
+                    CompactionBlock(
+                        mode=str(entry.get("mode", "soft")),
+                        utilization=compaction_utilization(
+                            before_tokens, window, entry.get("utilization")
+                        ),
+                        window=window,
+                        after_tokens=after_tokens,
+                        summary=str(entry.get("summary", "")),
+                        warning=warning,
+                    )
+                )
             elif (
                 kind == "usage"
             ):  # 恢复会话后状态栏要把已有用量也带上（记录里有的，界面也要有）
+                self._context_override = None
                 self._ledger.record(call_record_from_entry(entry))
         self._mark_unfinished_tools()  # 中断在工具执行中的旧调用：回放不能显示"运行中"
         self._refresh_status()
@@ -484,12 +556,17 @@ class TuiApp(App[None]):
         else:
             text.append("● 就绪", style="dim")
         text.append(f"  │  {self._model}")
-        if self._ledger.calls and self._context_window:
-            # 上下文占用：最近一次请求的输入 tokens / 窗口（用户级生效的 contextWindow，没写用随包默认）；
-            # >100% 是超用户预算（请求本身不会失败——真实上限是官方值），不显示会让人怀疑 token 计数的怪数字
-            used = self._ledger.calls[-1].input_tokens
+        if (self._ledger.calls or self._context_override is not None) and self._context_window:
+            # 上下文占用：最近一次请求的输入 tokens / 用户级生效窗口（与压缩阈值同源）。
+            # 压缩后到下一次真实请求前，用压缩后的估算值（摘要调用的 usage 是压缩前的大小）。
+            # >100% 是超**用户预算**（请求本身不会失败——真实上限是官方值），标"超预算"。
+            used = (
+                self._context_override
+                if self._context_override is not None
+                else self._ledger.calls[-1].input_tokens
+            )
             share = used / self._context_window
-            label = ">100%" if share > 1 else f"{share:.1%}"
+            label = f"超预算 {share:.0%}" if share > 1 else f"{share:.1%}"
             text.append(f"  │  上下文 {label}")
         if self._ledger.calls:
             text.append(

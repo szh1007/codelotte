@@ -16,6 +16,7 @@ from pathlib import Path
 
 from codelotte import __version__
 from codelotte.changelog import changelog_notice
+from codelotte.compaction import CompactionLimits
 from codelotte.config import (
     ConfigError,
     Settings,
@@ -362,6 +363,8 @@ def _build_agent(
     executor: Executor = LocalExecutor() if no_sandbox else DockerExecutor()
     # 死循环三层防御阈值（票据 11）：settings.json 覆盖 + guardrails 的默认值
     guardrail_limits = GuardrailLimits.from_settings(resolved)
+    # 压缩双阈值（票据 12）：settings.json 覆盖 + compaction 的默认值
+    compaction_limits = CompactionLimits.from_settings(resolved)
     cwd = Path.cwd()
     if resume_index is not None:
         items, skipped = list_resumable(cwd)
@@ -391,6 +394,8 @@ def _build_agent(
         catalog=catalog,
         permissions=permissions,
         guardrail_limits=guardrail_limits,
+        compaction_limits=compaction_limits,
+        context_window=spec.context_window,  # 与 TUI 状态栏同源（票据 12 预置决策）
     )
     return loop, spec, executor
 

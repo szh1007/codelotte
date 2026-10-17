@@ -118,7 +118,11 @@ def _make_body_handler(sse_body: bytes) -> type[BaseHTTPRequestHandler]:
 
 
 def _server_env(
-    port: int, tmp_path: Path, *, reasoning_effort: str | None = None
+    port: int,
+    tmp_path: Path,
+    *,
+    reasoning_effort: str | None = None,
+    context_window: int | None = None,
 ) -> dict[str, str]:
     """e2e 的配置全部走文件：临时 home 里写好 settings.json（选 provider/模型）
     与 models.json（端点/密钥/模型条目）。"""
@@ -127,6 +131,7 @@ def _server_env(
         base_url=f"http://127.0.0.1:{port}",
         api_key="test-key",
         reasoning_effort=reasoning_effort,
+        context_window=context_window,
     )
     return home_env(home)
 
@@ -139,6 +144,7 @@ def _run_cli_against(
     cwd: Path | None = None,
     allow_tools: bool = True,
     reasoning_effort: str | None = None,
+    context_window: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     # --no-sandbox：冒烟套件不依赖 Docker daemon（SPEC §K）；Docker 行为由独立套件覆盖
     args = ["-p", prompt, *extra_args, "--no-sandbox"]
@@ -148,7 +154,12 @@ def _run_cli_against(
     return run_cli(
         *args,
         cwd=cwd if cwd is not None else PROJECT_ROOT,
-        env=_server_env(port, tmp_path, reasoning_effort=reasoning_effort),
+        env=_server_env(
+            port,
+            tmp_path,
+            reasoning_effort=reasoning_effort,
+            context_window=context_window,
+        ),
     )
 
 
@@ -424,7 +435,12 @@ def _scripted_handler(
     return _ScriptedHandler, received
 
 
-def _tool_call_turn(tool_name: str, arguments: dict, call_id: str = "call_r1") -> bytes:
+def _tool_call_turn(
+    tool_name: str,
+    arguments: dict,
+    call_id: str = "call_r1",
+    usage: tuple[int, int] = (10, 5),
+) -> bytes:
     """一轮"请求调用工具"的 SSE 回复（带思考与用量）。"""
     payload = json.dumps(
         {
@@ -446,10 +462,13 @@ def _tool_call_turn(tool_name: str, arguments: dict, call_id: str = "call_r1") -
             ]
         }
     )
+    usage_json = json.dumps(
+        {"choices": [], "usage": {"prompt_tokens": usage[0], "completion_tokens": usage[1]}}
+    )
     return _sse(
         payload,
         '{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}',
-        '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+        usage_json,
         "[DONE]",
     )
 
@@ -1101,3 +1120,38 @@ def test_changelog_notice_printed_on_upgrade(tmp_path: Path) -> None:
     assert "更新内容" not in upgraded.stdout  # 不污染答案通道
     data = json.loads(settings_path.read_text(encoding="utf-8"))
     assert data["lastChangelogVersion"] == __version__  # 提示过后写回当前版本
+
+
+def test_context_compaction_e2e_keeps_the_task_going(tmp_path: Path) -> None:
+    """票据 12 全链路：usage 90/100 → 硬触发摘要 → 压缩后的请求继续完成并落 compaction 记录。"""
+    target = tmp_path / "note.txt"
+    target.write_text("hello\n", encoding="utf-8")
+    handler_cls, received = _scripted_handler(
+        [
+            _tool_call_turn("read", {"path": str(target)}, call_id="c1", usage=(90, 5)),
+            _answer_turn("1. 任务目标：读文件\n2. 下一步：回答"),
+            _answer_turn("完成"),
+        ]
+    )
+    server, port = _serve_once(b"", handler_cls=handler_cls)
+    try:
+        result = _run_cli_against(port, "读文件并回答", tmp_path, context_window=100)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    assert "完成" in result.stdout
+
+    entries = _load_entries(tmp_path)
+    compaction = [entry for entry in entries if entry["type"] == "compaction"]
+    assert len(compaction) == 1
+    assert compaction[0]["mode"] == "hard" and compaction[0]["window"] == 100
+    assert any(entry.get("content") == "读文件并回答" for entry in entries)  # 原件仍可查
+
+    # 请求 1 = 摘要：无 tools，最后一条是七项模板指令
+    assert not received[1].get("tools")
+    assert "七个标题" in received[1]["messages"][-1]["content"]
+    # 请求 2 = 压缩后的正常请求：system 摘要 + 独立硬约束开头
+    assert received[2]["messages"][0]["role"] == "system"
+    assert "硬约束" in received[2]["messages"][0]["content"]

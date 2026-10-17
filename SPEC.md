@@ -243,7 +243,7 @@
 - **事件先落盘再呈现**：任何时刻进程被杀，重启后从会话文件恢复状态（无需额外 WAL/数据库）。
 - **确定性序列化**：同一分支的上下文装配结果逐字节稳定（键序固定、无时间戳混入正文），这是缓存命中与可复现的前提。
 - **上下文装配顺序**（从稳定到易变，为缓存优化）：系统提示 → 工具定义 → 项目说明文件（AGENTS.md 类）→ 历史消息 → 当前输入。前两者几乎从不变化 → 全部请求共享同一前缀。
-- **上下文用量估算**：以 API 返回的 usage 为准，本地估算器（字符/4 近似）仅用于提前触发压缩判断，二者偏差记录到日志以便校准。
+- **上下文用量估算**：以 API 返回的 usage 为准（压缩触发分子用上一次请求的实际 input tokens，票据 12）；本地估算器（字符/4 近似）只用于压缩后大小与最小保留集判断，不作为触发分子；二者偏差记录到日志以便校准。
 
 ### F. 压缩（Compaction，D4 核心）
 
@@ -252,14 +252,15 @@
 **决策**：
 
 - **双触发**：
-  - 软触发：上下文利用率 ≥ ~60% 时，在**最近的"任务边界"**压缩（边界 = 用户消息位置 ∪ git commit 点），避免把"做到一半"的操作链截断；
-  - 硬触发：利用率 ≥ ~85% 时立即压缩（不等边界）。
+  - 软触发：上下文利用率 ≥ 软阈值（默认 60%，settings.json 可配）时，在**最近的"任务边界"**压缩（边界 = 用户消息位置 ∪ git commit 点），避免把"做到一半"的操作链截断；
+  - 硬触发：利用率 ≥ 硬阈值（默认 85%，settings.json 可配）时立即压缩（不等边界）。
   - 被否备选：单一阈值（如行业常见的 95% 自动压缩）——压缩发生太晚，压缩前的每轮都在为超长上下文付高价，且高利用率区模型质量已在退化。
 - **结构化摘要模板**（固定七项）：任务目标 / 已完成事项 / 关键决策及其理由 / 活跃约束（不得违反的规则）/ 涉及文件清单 / 当前未解决问题 / 下一步。摘要由同一模型生成（self-summarize），作为 `compaction` entry 写入。
 - **硬约束重注入**：摘要之外，把"活跃约束"额外以系统级消息重新插入压缩后的上下文——防止摘要器把约束"润色"掉（调研数据：压缩导致策略违规率 38% 的实验证据）。
 - **原件永远可寻址**：压缩只影响后续请求的上下文装配，原始 entry 仍在会话文件里，随时可查——这是"可恢复压缩"。
 - **压缩回归套件**（实验资产，不是普通单测）：固定任务集下强制压缩 k=1/3/5 次，报告：① pass 率衰减曲线；② **关键状态保留率**——压缩后注入一串 checkpoint 问题（"你的任务目标是什么？已完成哪些步骤？有哪些约束？"），用确定性比对 + 人工标注评分；③ 触发策略 × 摘要模板的 A/B 对照。目标是产出一张"压缩次数 → 质量"的曲线，这在公开资料里几乎不存在。
 - 用户在 TUI 中可见压缩发生（事件标记），导出 HTML 中高亮压缩点——透明性是产品立场。
+- **v1 实现（票据 12）**：触发分子 = 上一次请求的实际 usage（恢复时取最后 usage，其后有 compaction 则取其估算值），分母 = 用户级生效窗口；软/硬阈值来自 settings.json 的 `compactionSoftThreshold` / `compactionHardThreshold`（比例，**0.2 ≤ soft < hard ≤ 0.9 且 hard - soft ≥ 0.2**；默认 0.60 / 0.85）。软触发取上次压缩之后的最新任务边界（用户消息 ∪ 成功 `git commit` 所属 assistant 位置），硬触发压到最小保留集（最近一个 turn）。摘要调用同模型、无工具、照常计 usage 但不落 assistant 消息；compaction entry 存 `summary` / `firstKeptEntryId` / `constraints` / `mode` / `utilization` / `window` / `beforeTokens` / `estimatedAfterTokens` / `warning`。压缩后上下文 = system（摘要 + 独立硬约束）+ 保留段；最小集仍超目标时写 warning，不无限压。
 
 ### G. 权限层
 
@@ -341,7 +342,7 @@
 - 配置取值链：**命令行参数（如 `--allow`）> 用户级 `~/.codelotte/settings.json`（选 provider/模型/超时）→ 用户级 `~/.codelotte/models.json`（端点/密钥/模型条目）> 随包默认值（窗口/输出上限/展示名/思考强度）> 必填报错指路**。**没有替你猜的默认，也没有任何环境变量来源**（`.env`、`env` 包层、`CODELOTTE_*` 变量均已移除）；用户级目录固定为系统家目录；不存在任何项目级配置文件。缺哪个就报错并指出去哪补。思考开关与强度统一在模型条目的 `reasoning_effort`（直接进请求体；`none` 关闭思考，其余档位开启并控制强度，照官方 thinking_mode 的档位表）：**展示总是跟随开关**——开启时思考内容既落盘又展示，没有单独的展示配置。
 - 三份配置分家（2026-10-17 v3）：随包 `src/codelotte/providers/models.json` 只用于**计费、展示与上限参考**（纯函数逻辑：价目/峰谷/节假日/官方端点提示/展示名/窗口与输出默认值）；用户级 `~/.codelotte/models.json` 是**运行参数的唯一来源**（provider 级 baseUrl/apiKey + models 清单）。随包文件不参与请求，密钥只进用户级文件。
 - 用户配置的模型 `id` 必须命中随包目录里**已适配**的模型（没适配的不给用）；`contextWindow`/`maxTokens` 可省（随包默认）、写了不能超过随包值；`name` 用户优先；`reasoning_effort` 可省（默认随包的 `high`），写在模型条目里直接进请求体；多写的字段（含计费字段）一律忽略——钱的事以随包文件为准。
-- `settings.json` 的文件键与 `Settings` 字段一一对应：`lastChangelogVersion`（更新提示水位，启动比对 `CHANGELOG.md` 并写回）、`defaultProvider`、`defaultModel`、`commandTimeoutSeconds`、死循环防御的四个阈值 `guardrailRepeatLimit` / `guardrailStagnationLimit` / `guardrailFailureLimit` / `guardrailPlanningLimit`（票据 11）。会话目录固定为 `~/.codelotte/sessions`。
+- `settings.json` 的文件键与 `Settings` 字段一一对应：`lastChangelogVersion`（更新提示水位，启动比对 `CHANGELOG.md` 并写回）、`defaultProvider`、`defaultModel`、`commandTimeoutSeconds`、死循环防御的四个阈值 `guardrailRepeatLimit` / `guardrailStagnationLimit` / `guardrailFailureLimit` / `guardrailPlanningLimit`（票据 11）、压缩双阈值 `compactionSoftThreshold` / `compactionHardThreshold`（比例 0.2–0.9，hard - soft ≥ 0.2；票据 12）。会话目录固定为 `~/.codelotte/sessions`。
 - 权限规则走 `permissions.json` + 项目级信任门槛（票据 09）；**配置一律只从用户级目录读取**（固定的系统家目录下的 `~/.codelotte/`）：settings/models 能决定请求去向与所用密钥，放进项目目录等于让陌生仓库遥控你的请求；且没有任何开关能把这个目录重定位。
 - 完整键表与示例见 [docs/tech/configuration.md](docs/tech/configuration.md)。
 

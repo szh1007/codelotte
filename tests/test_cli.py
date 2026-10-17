@@ -279,6 +279,50 @@ def test_build_agent_applies_guardrail_limits_from_settings(
     )
 
 
+def test_build_agent_passes_the_effective_context_window_to_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """票据 12 预置决策：压缩分母 = 用户级生效窗口，必须与 TUI 状态栏同源。"""
+    from codelotte.cli import _build_agent
+
+    monkeypatch.chdir(tmp_path)
+    home = write_user_config(tmp_path / "home", context_window=1234)
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+
+    loop, spec, _executor = _build_agent()
+    assert spec.context_window == 1234
+    assert loop.context_window == 1234
+
+
+def test_build_agent_applies_compaction_thresholds_from_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """票据 12：压缩软/硬阈值从 settings.json 进 loop；没写用 0.60/0.85。"""
+    from codelotte.cli import _build_agent
+    from codelotte.compaction import CompactionLimits
+
+    monkeypatch.chdir(tmp_path)
+    home = write_user_config(tmp_path / "home")
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+
+    loop, _spec, _executor = _build_agent()
+    assert loop.compaction_limits == CompactionLimits()
+
+    home = write_user_config(
+        tmp_path / "home2",
+        settings_extra={
+            "compactionSoftThreshold": 0.5,
+            "compactionHardThreshold": 0.8,
+        },
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    loop, _spec, _executor = _build_agent()
+    assert loop.compaction_limits == CompactionLimits(soft=0.5, hard=0.8)
+
+
 def test_build_agent_history_follows_selected_branch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

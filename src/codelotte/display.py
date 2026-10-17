@@ -62,3 +62,23 @@ _GUARDRAIL_STOP_LABELS = {STOP_CIRCUIT: "连续失败熔断", STOP_PLANNING: "�
 def guardrail_stop_text(stop: str) -> str:
     """回合终止原因的中文说法（TUI 展示用；不把内部 token 直接给用户）。"""
     return _GUARDRAIL_STOP_LABELS.get(stop, stop)
+
+
+def compaction_after_share(after_tokens: int, window: int) -> float:
+    """压缩后估算占比（窗口缺失/为 0 时返回 0；TUI、导出与 -p 共用）。"""
+    return after_tokens / window if window else 0.0
+
+
+def compaction_utilization(
+    before_tokens: int, window: int, stored: object = None
+) -> float:
+    """触发时占比：优先用事件值；历史记录不落百分比时由 beforeTokens/window 现算。"""
+    if isinstance(stored, (int, float)) and not isinstance(stored, bool):
+        return float(stored)
+    return before_tokens / window if window else 0.0
+
+
+def compaction_title(mode: str, utilization: float, after_share: float) -> str:
+    """压缩点标题（TUI 折叠块与导出的同一句话，票据 12）。"""
+    label = "硬触发" if mode == "hard" else "软触发"
+    return f"🗜 上下文压缩（{label} · {utilization:.0%} → 预计 {after_share:.0%}）"

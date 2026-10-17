@@ -30,7 +30,15 @@ from codelotte.cost import (
     call_record_from_entry,
     format_money,
 )
-from codelotte.display import args_preview, duration_text, guardrail_notice, tool_title
+from codelotte.display import (
+    args_preview,
+    compaction_after_share,
+    compaction_title,
+    compaction_utilization,
+    duration_text,
+    guardrail_notice,
+    tool_title,
+)
 from codelotte.guardrails import EVENT_GUARDRAIL
 from codelotte.session.context import INTERRUPTED_TOOL_NOTE
 
@@ -61,6 +69,7 @@ details[open] > summary { border-bottom: 1px solid #eef0f2; }
 details > .body { padding: .6rem .9rem; }
 details.tool-failed > summary { color: #b3261e; }
 details.tool-interrupted > summary { color: #8a6d00; }
+details.compaction > summary { color: #1a56b0; font-weight: 600; }
 pre { margin: 0; padding: .5rem .7rem; background: #f3f4f6; border-radius: 6px;
       white-space: pre-wrap; word-break: break-word; font: 13px/1.5 ui-monospace, Consolas, monospace; }
 .reasoning > summary { color: #6b7280; font-style: italic; }
@@ -173,6 +182,41 @@ def _render_permission(entry: dict[str, Any]) -> str:
     return f'<div class="{cls}">{_esc(_permission_line(entry))}</div>'
 
 
+def _compaction_share(entry: dict[str, Any]) -> float:
+    window = entry.get("window")
+    after = entry.get("estimatedAfterTokens")
+    if isinstance(window, int) and window > 0 and isinstance(after, int):
+        return compaction_after_share(after, window)
+    return 0.0
+
+
+def _compaction_entry_title(entry: dict[str, Any]) -> str:
+    before = entry.get("beforeTokens")
+    window = entry.get("window")
+    return compaction_title(
+        str(entry.get("mode", "soft")),
+        compaction_utilization(
+            int(before) if isinstance(before, int) else 0,
+            int(window) if isinstance(window, int) else 0,
+            entry.get("utilization"),  # 兼容旧记录/测试夹具；新记录不落百分比
+        ),
+        _compaction_share(entry),
+    )
+
+
+def _render_compaction(entry: dict[str, Any]) -> str:
+    """压缩点（票据 12）：高亮可折叠，摘要可查看；警告放在折叠块外，默认可见。"""
+    warning = entry.get("warning")
+    warning_html = (
+        f'<div class="marker warn">{_esc(warning)}</div>' if warning else ""
+    )
+    return (
+        warning_html
+        + f'<details class="compaction"><summary>{_esc(_compaction_entry_title(entry))}</summary>'
+        + f'<div class="body"><pre>{_esc(entry.get("summary", ""))}</pre></div></details>'
+    )
+
+
 def _render_marker(entry: dict[str, Any]) -> str:
     kind = entry.get("kind")
     if entry.get("type") == "event" and kind == "fork":
@@ -215,6 +259,8 @@ def _render_timeline(entries: list[dict[str, Any]]) -> str:
             blocks.append(_render_marker(entry))
         elif kind == "permission":
             blocks.append(_render_permission(entry))
+        elif kind == "compaction":
+            blocks.append(_render_compaction(entry))
         # session / usage 在页头与成本面板呈现；未知类型如实标注（前向兼容）
         elif kind not in ("session", "usage"):
             blocks.append(_render_marker(entry))
@@ -406,6 +452,14 @@ def _md_tool_call(entry: dict[str, Any], result: dict[str, Any] | None) -> str:
     return "\n".join(parts)
 
 
+def _md_compaction(entry: dict[str, Any]) -> str:
+    parts = [f"### {_md_heading(_compaction_entry_title(entry))}", ""]
+    if entry.get("warning"):
+        parts += [f"> ⚠ {_md_heading(entry['warning'])}", ""]
+    parts.append(_md_fence(str(entry.get("summary", ""))))
+    return "\n".join(parts)
+
+
 def _md_marker(entry: dict[str, Any]) -> str:
     kind = entry.get("kind")
     if entry.get("type") == "event" and kind == "fork":
@@ -441,6 +495,8 @@ def _md_timeline(entries: list[dict[str, Any]]) -> str:
             blocks.append(_md_marker(entry))
         elif kind == "permission":
             blocks.append(f"> {_md_heading(_permission_line(entry))}")
+        elif kind == "compaction":
+            blocks.append(_md_compaction(entry))
         # session / usage 在页头与成本面板呈现；未知类型如实标注（前向兼容）
         elif kind not in ("session", "usage"):
             blocks.append(_md_marker(entry))

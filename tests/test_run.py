@@ -13,7 +13,8 @@ from codelotte.permissions import allow_builtin_tools
 from codelotte.providers.base import ProviderError, StreamUsage, TextDelta, UsageEvent
 from codelotte.run import print_session_invoice, run_once
 from codelotte.sandbox import LocalExecutor
-from codelotte.session.store import SessionStore, load_entries
+from codelotte.session.context import messages_from_entries
+from codelotte.session.store import SessionStore, load_branch, load_entries
 from codelotte.tools import default_tools
 from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn, tool_turn
 
@@ -120,3 +121,47 @@ def test_guardrail_circuit_break_reports_and_returns_nonzero(
     assert "守护拦截（推理层）" in err
     assert "熔断" in err
     assert [e for e in load_entries(loop.session_path) if e.get("kind") == "guardrail"]
+
+
+def test_compaction_is_reported_in_p_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """票据 12：-p 也要把压缩点与触发方式写进 stderr（不打断答案）。"""
+    path = tmp_path / "session.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+    store = SessionStore.resume(path)
+    store.append("message", role="user", content="旧任务")
+    store.append(
+        "message", role="assistant", content="旧回答", model="fake-model", stopReason="stop"
+    )
+    store.append(
+        "usage",
+        model="fake-model",
+        inputTokens=90,
+        outputTokens=5,
+        cacheHitTokens=0,
+        cacheMissTokens=0,
+        period="peak",
+        cost=None,
+        currency="CNY",
+        requestFingerprint="seed",
+    )
+    loop = AgentLoop(
+        client=ScriptedClient([text_turn("摘要"), text_turn("完成")]),
+        tools=default_tools(LocalExecutor()),
+        store=store,
+        model="fake-model",
+        catalog=fake_catalog(),
+        permissions=allow_builtin_tools(),
+        messages=messages_from_entries(load_branch(path)),
+        context_window=100,
+    )
+
+    code = asyncio.run(run_once(loop, "新任务"))
+
+    assert code == 0
+    err = capsys.readouterr().err
+    assert "上下文压缩（硬触发" in err
+    assert "90%" in err
+    assert [e for e in load_entries(path) if e.get("type") == "compaction"]

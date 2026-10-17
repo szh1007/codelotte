@@ -31,10 +31,10 @@ from codelotte.permissions import (
 from codelotte.providers.base import ProviderError, ReasoningDelta, TextDelta
 from codelotte.sandbox import LocalExecutor
 from codelotte.session.context import messages_from_entries
-from codelotte.session.store import SessionStore, load_entries
+from codelotte.session.store import SessionStore, load_branch, load_entries
 from codelotte.tools import default_tools
 from codelotte.tui import TuiApp
-from codelotte.tui.app import ApprovalScreen, ToolCallBlock
+from codelotte.tui.app import ApprovalScreen, CompactionBlock, ToolCallBlock
 from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn, tool_turn
 
 SESSION_NAME = "20260101T000000Z_testtest.jsonl"
@@ -52,11 +52,21 @@ def _make(
     context_window: int | None = None,
     startup_notices: Sequence[str] = (),
     guardrail_limits: GuardrailLimits | None = None,
+    seed: Sequence[dict[str, Any]] = (),
 ) -> tuple[TuiApp, ScriptedClient, SessionStore]:
     path = tmp_path / SESSION_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
     store = SessionStore.resume(path)
+    for entry in seed:  # 恢复态的历史记录（省去测试自己拼 JSONL）
+        fields = {
+            key: value
+            for key, value in entry.items()
+            if key not in ("type", "id", "parentId", "timestamp")
+        }
+        store.append(str(entry["type"]), **fields)
+    if messages is None and seed:
+        messages = messages_from_entries(load_branch(store.path))
     client = ScriptedClient(turns)
     loop = AgentLoop(
         client=client,
@@ -67,6 +77,7 @@ def _make(
         permissions=permissions if permissions is not None else allow_builtin_tools(),
         messages=messages,
         guardrail_limits=guardrail_limits,
+        context_window=context_window,
     )
     return (
         TuiApp(
@@ -606,8 +617,8 @@ def test_status_bar_shows_name_and_context_percentage(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_status_bar_clamps_context_percentage(tmp_path: Path) -> None:
-    """超窗显示 >100%（回归：审查发现原来会渲染 500.0% 这种怪数字）。"""
+def test_status_bar_labels_over_budget(tmp_path: Path) -> None:
+    """超预算语义（票据 12）：500/100 显示「超预算 500%」，不再渲染 >100% 的怪数字。"""
 
     async def scenario() -> None:
         app, _client, _store = _make(
@@ -617,7 +628,7 @@ def test_status_bar_clamps_context_percentage(tmp_path: Path) -> None:
             await _submit(pilot, "问")
             await _wait_idle(pilot)
             status = str(app.query_one("#status", Static).content)
-            assert "上下文 >100%" in status
+            assert "上下文 超预算 500%" in status
 
     asyncio.run(scenario())
 
@@ -722,5 +733,85 @@ def test_history_replays_guardrail_markers(tmp_path: Path) -> None:
             joined = "".join(_texts(app))
             assert "🛡 守护拦截（工具层）" in joined
             assert "连续 3 次调用 bash" in joined
+
+    asyncio.run(scenario())
+
+
+def test_compaction_block_is_rendered_live(tmp_path: Path) -> None:
+    """票据 12：压缩发生时有可见标记，摘要可展开查看；状态栏用压缩后的估算值。"""
+    summary = (
+        "1. 任务目标：修好测试\n"
+        "2. 已完成事项：读过旧文件\n"
+        "3. 关键决策及其理由：先读后写\n"
+        "4. 活跃约束：不改工作区外文件\n"
+        "5. 涉及文件清单：old.txt\n"
+        "6. 当前未解决问题：还没写结果\n"
+        "7. 下一步：写结果"
+    )
+    seed = [
+        {"type": "message", "role": "user", "content": "旧任务"},
+        {"type": "message", "role": "assistant", "content": "旧回答"},
+        {
+            "type": "usage",
+            "inputTokens": 90,
+            "outputTokens": 5,
+            "cacheHitTokens": 0,
+            "cacheMissTokens": 0,
+            "period": "peak",
+            "cost": None,
+            "currency": "CNY",
+            "requestFingerprint": "seed",
+        },
+    ]
+
+    async def scenario() -> None:
+        app, _client, _store = _make(
+            tmp_path,
+            [text_turn(summary, usage=(20, 10, 0, 0)), text_turn("继续完成")],
+            context_window=100,
+            seed=seed,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _submit(pilot, "新任务")
+            await _wait_idle(pilot)
+            joined = "".join(_texts(app))
+            assert "🗜 上下文压缩（硬触发" in joined
+            assert "1. 任务目标" in joined
+            assert "继续完成" in "".join(md.source for md in app.query(Markdown))
+            status = str(app.query_one("#status", Static).content)
+            assert "上下文" in status and "超预算" not in status
+
+    asyncio.run(scenario())
+
+
+def test_history_replays_compaction_summary(tmp_path: Path) -> None:
+    """--continue 回放：压缩点与摘要要可见（原始消息也照常回放）。"""
+    history = [
+        {"type": "message", "role": "user", "content": "旧任务"},
+        {"type": "message", "role": "assistant", "content": "旧回答"},
+        {
+            "type": "compaction",
+            "summary": "1. 任务目标：旧目标\n2. 已完成事项：旧进展",
+            "mode": "soft",
+            "utilization": 0.62,
+            "window": 1000,
+            "estimatedAfterTokens": 300,
+            "firstKeptEntryId": "kept",
+            "constraints": "硬约束",
+            "warning": "窗口配置小于最小保留集：已压到 300 tokens",
+        },
+    ]
+
+    async def scenario() -> None:
+        app, _client, _store = _make(tmp_path, [text_turn("x")], history=history)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.05)
+            joined = "".join(_texts(app))
+            assert "🗜 上下文压缩（软触发" in joined
+            assert "1. 任务目标：旧目标" in joined
+            assert "旧回答" in joined  # 原始记录仍可回看
+            # 最小集警告默认可见（块外提示 + 标题 ⚠），不只藏在折叠体里
+            assert "窗口配置小于最小保留集" in joined
+            assert "⚠" in str(app.query_one(CompactionBlock).title)
 
     asyncio.run(scenario())

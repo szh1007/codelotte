@@ -183,3 +183,66 @@ def test_settings_fields_cover_every_known_key() -> None:
     from codelotte.config import _KNOWN_SETTINGS
 
     assert len(Settings.__dataclass_fields__) - 1 == len(_KNOWN_SETTINGS)  # 减去 notices（非文件字段）
+
+
+def test_compaction_thresholds_are_read_from_settings(tmp_path: Path) -> None:
+    """票据 12：软/硬压缩阈值可配（比例 0.2–0.9）。"""
+    home = tmp_path / "home"
+    _write_settings(
+        home,
+        {
+            "compactionSoftThreshold": 0.5,
+            "compactionHardThreshold": 0.8,
+        },
+    )
+    settings = load_settings(home)
+    assert settings.compaction_soft_threshold == 0.5
+    assert settings.compaction_hard_threshold == 0.8
+
+
+def test_compaction_thresholds_enforce_range_and_gap(tmp_path: Path) -> None:
+    """0.2 ≤ soft < hard ≤ 0.9 且 hard - soft ≥ 0.2；单边覆盖也要按生效值校验。"""
+    home = tmp_path / "home"
+    for soft, hard in ((0.2, 0.4), (0.6, 0.85), (0.7, 0.9), (0.2, 0.9)):
+        _write_settings(
+            home,
+            {"compactionSoftThreshold": soft, "compactionHardThreshold": hard},
+        )
+        settings = load_settings(home)
+        assert settings.compaction_soft_threshold == soft
+        assert settings.compaction_hard_threshold == hard
+
+    for soft, hard in ((0.19, 0.5), (0.5, 0.91), (0.6, 0.7), (0.7, 0.85)):
+        _write_settings(
+            home,
+            {"compactionSoftThreshold": soft, "compactionHardThreshold": hard},
+        )
+        with pytest.raises(
+            ConfigError, match="compactionSoftThreshold|compactionHardThreshold|压缩阈值"
+        ):
+            load_settings(home)
+
+    for key in ("compactionSoftThreshold", "compactionHardThreshold"):
+        for bad in ("0.6", True):
+            _write_settings(home, {key: bad})
+            with pytest.raises(ConfigError, match=key):
+                load_settings(home)
+
+    # 只改一边：另一边用默认值，差距也要满足 ≥0.2
+    _write_settings(home, {"compactionSoftThreshold": 0.75})  # 默认 hard 0.85，差 0.10
+    with pytest.raises(ConfigError, match="压缩阈值"):
+        load_settings(home)
+    _write_settings(home, {"compactionHardThreshold": 0.75})  # 默认 soft 0.60，差 0.15
+    with pytest.raises(ConfigError, match="压缩阈值"):
+        load_settings(home)
+
+
+def test_compaction_defaults_match_the_trigger_module() -> None:
+    """守卫：settings 校验用的默认值与 compaction.trigger 的常量不漂移。"""
+    from codelotte.compaction import HARD_THRESHOLD, SOFT_THRESHOLD
+    from codelotte.config import COMPACTION_HARD_DEFAULT, COMPACTION_SOFT_DEFAULT
+
+    assert (COMPACTION_SOFT_DEFAULT, COMPACTION_HARD_DEFAULT) == (
+        SOFT_THRESHOLD,
+        HARD_THRESHOLD,
+    )

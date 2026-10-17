@@ -25,6 +25,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from codelotte.compaction import (
+    COMPACTION_CONSTRAINTS,
+    CompactionLimits,
+    CompactionMode,
+    build_compaction_messages,
+    build_summary_messages,
+    context_tokens_from_entries,
+    estimate_tokens,
+    plan_compaction,
+)
 from codelotte.cost import CallRecord, Catalog, price_call
 from codelotte.guardrails import (
     EVENT_GUARDRAIL,
@@ -65,8 +75,8 @@ from codelotte.providers.base import (
     UsageEvent,
     assistant_message,
 )
-from codelotte.session.context import INTERRUPTED_TOOL_NOTE
-from codelotte.session.store import SessionStore
+from codelotte.session.context import INTERRUPTED_TOOL_NOTE, messages_from_entries
+from codelotte.session.store import SessionStore, load_branch
 from codelotte.tools import Tool, ToolResult, execute_tool, find_tool, wire_tools
 
 MAX_ITERATIONS = 50  # 迭代硬上限兜底（死循环三层防御是票据 11）
@@ -106,9 +116,9 @@ class ToolFinished:
 
 @dataclass(frozen=True)
 class TurnEnded:
-    """一个回合结束。stop_reason 是最后一次模型调用的结束原因。
+    """一个 run（用户回合）结束。stop_reason 是最后一次模型调用的结束原因。
 
-    guardrail_stop 非空表示回合被死循环防御终止（"circuitBreaker" / "planning"），
+    guardrail_stop 非空表示这个 run 被死循环防御终止（"circuitBreaker" / "planning"），
     消费方据此给出明确原因（票据 11）。
     """
 
@@ -131,6 +141,24 @@ class GuardrailTriggered:
 
 
 @dataclass(frozen=True)
+class CompactionEvent:
+    """一次上下文压缩（compaction 记录已先落盘，票据 12）。
+
+    utilization 是触发时的 usage / 用户级生效窗口；after_tokens 是压缩后上下文的本地估算
+    （字符/4）。warning 非空表示最小保留集仍高于目标（窗口配置偏小），不假装达标。
+    """
+
+    mode: CompactionMode
+    utilization: float
+    window: int
+    before_tokens: int
+    after_tokens: int
+    summary: str
+    first_kept_entry_id: str
+    warning: str | None = None
+
+
+@dataclass(frozen=True)
 class CostRecorded:
     """一次模型调用的账单（时段判定与估价已随 usage 记录先落盘，票据 07）。"""
 
@@ -144,6 +172,7 @@ LoopEvent = (
     | ToolRequested
     | ToolFinished
     | GuardrailTriggered
+    | CompactionEvent
     | TurnEnded
 )
 
@@ -171,7 +200,7 @@ class _Authorization:
 
 @dataclass
 class _Turn:
-    """一轮模型回复的收集结果（失败时 failure 非空，其余字段为已收集到的部分）。"""
+    """一个 turn（一次模型回复）的收集结果（失败时 failure 非空，其余字段为已收集到的部分）。"""
 
     content: str = ""
     reasoning: str = ""
@@ -228,6 +257,8 @@ class AgentLoop:
         messages: list[dict[str, Any]] | None = None,
         approver: Approver | None = None,
         guardrail_limits: GuardrailLimits | None = None,
+        compaction_limits: CompactionLimits | None = None,
+        context_window: int | None = None,
     ) -> None:
         self._client = client
         self._tools = tools
@@ -242,6 +273,18 @@ class AgentLoop:
         )
         self._guardrails = GuardrailTracker(self._guardrail_limits)
         self._turn_goal = ""
+        # 压缩双阈值（票据 12）：settings.json 可配，默认 0.60 / 0.85
+        self._compaction_limits = (
+            compaction_limits if compaction_limits is not None else CompactionLimits()
+        )
+        # 压缩（票据 12）：分母是用户级生效窗口（与 TUI 状态栏同源，cli 传入）；
+        # 分子优先用恢复会话里的最后一次 usage/压缩估算，否则从 0 开始。
+        self._context_window = context_window
+        self._last_input_tokens = (
+            context_tokens_from_entries(load_branch(store.path, store.leaf_id))
+            if context_window is not None
+            else 0
+        )
         # 审批者只在有交互面时注入（TUI）；无头上为 None——ask 一律 fail-closed（SPEC §G）
         self.approver = approver
         self._tool_schemas = wire_tools(tools)
@@ -278,10 +321,22 @@ class AgentLoop:
         """本次运行的死循环防御阈值（配置透传结果，票据 11）。"""
         return self._guardrail_limits
 
-    async def run_turn(self, prompt: str) -> AsyncIterator[LoopEvent]:
-        """跑一个完整回合并广播事件。工具失败不中断（错误文本回传模型自纠）。
+    @property
+    def context_window(self) -> int | None:
+        """本次运行的上下文窗口（用户级生效值；压缩与状态栏同源，票据 12）。"""
+        return self._context_window
 
-        ProviderError 在把已收集的部分落盘后向上抛，由消费方决定怎么呈现与退出码。
+    @property
+    def compaction_limits(self) -> CompactionLimits:
+        """本次运行的压缩双阈值（settings.json 透传结果，票据 12）。"""
+        return self._compaction_limits
+
+    async def run_turn(self, prompt: str) -> AsyncIterator[LoopEvent]:
+        """跑一个 run（用户回合）并广播事件：用户一句话 → 多次模型 turn → 最终回答。
+
+        一个 run 可以包含很多 turn（每次模型回复 + 工具链）；工具失败不中断
+        （错误文本回传模型自纠）。ProviderError 在把已收集的部分落盘后向上抛，
+        由消费方决定怎么呈现与退出码。
         """
         self._store.append("message", role="user", content=prompt)
         self.messages.append({"role": "user", "content": prompt})
@@ -292,6 +347,11 @@ class AgentLoop:
         calls_made = 0
         stop_reason: str | None = None
         for _ in range(MAX_ITERATIONS):
+            # 装配下一次请求之前判压缩（票据 12）：软触发等边界、硬触发不等
+            async for event in self._maybe_compact():
+                if isinstance(event, CompactionEvent):
+                    calls_made += 1  # 摘要本身也是一次真实模型调用
+                yield event
             calls_made += 1
             turn = _Turn()
             async for event in self._consume_stream(turn):
@@ -363,6 +423,98 @@ class AgentLoop:
                 stop_reason=stop_reason, hit_iteration_cap=True, calls_made=calls_made
             )
 
+    async def _maybe_compact(self) -> AsyncIterator[LoopEvent]:
+        """装配下一次请求前判压缩（票据 12）：可能先做一次无工具的摘要调用。
+
+        摘要调用的 usage 照常计价落盘，但不落 assistant 消息（它是元操作，不是对话）；
+        compaction entry 记录摘要、保留边界与独立重注入的硬约束。压缩后 live messages
+        从记录重装配，与 --continue 的装配逐条一致。
+        """
+        if self._context_window is None:
+            return
+        entries = load_branch(self._store.path, self._store.leaf_id)
+        decision = plan_compaction(
+            entries,
+            input_tokens=self._last_input_tokens,
+            context_window=self._context_window,
+        )
+        if decision is None:
+            return
+        prefix_messages = messages_from_entries(entries[: decision.cut_index])
+        if not prefix_messages:
+            return
+
+        before_tokens = self._last_input_tokens
+        summary_turn = _Turn()
+        cost_events: list[CostRecorded] = []
+        async for event in self._consume_stream(
+            summary_turn,
+            use_tools=False,
+            messages=build_summary_messages(prefix_messages),
+            record_message=False,
+        ):
+            if isinstance(event, CostRecorded):
+                cost_events.append(event)
+        if summary_turn.failure is not None:
+            raise summary_turn.failure
+        summary = summary_turn.content.strip()
+        if not summary:
+            raise ProviderError("压缩摘要为空：模型没有返回摘要内容")
+
+        kept_messages = messages_from_entries(entries[decision.cut_index :])
+        compacted = build_compaction_messages(
+            summary, COMPACTION_CONSTRAINTS, kept_messages
+        )
+        after_tokens = estimate_tokens(compacted)
+        warning = self._compaction_warning(decision.mode, after_tokens)
+        self._store.append(
+            "compaction",
+            summary=summary,
+            firstKeptEntryId=decision.first_kept_entry_id,
+            constraints=COMPACTION_CONSTRAINTS,  # 独立于摘要，恢复时原样重注入
+            mode=decision.mode,
+            # 不落百分比（票据 12 预置决策：百分比每回合现算）；展示由 beforeTokens/window 现算
+            window=self._context_window,
+            beforeTokens=before_tokens,
+            estimatedAfterTokens=after_tokens,
+            summaryModel=self._model,
+            warning=warning,
+        )
+        self.messages = messages_from_entries(
+            load_branch(self._store.path, self._store.leaf_id)
+        )
+        # 下一次请求前不能再用旧的高 usage 反复压缩；下一次真实请求的 usage 会覆盖它
+        self._last_input_tokens = after_tokens
+        for cost in cost_events:
+            yield cost
+        yield CompactionEvent(
+            mode=decision.mode,
+            utilization=decision.utilization,
+            window=self._context_window,
+            before_tokens=before_tokens,
+            after_tokens=after_tokens,
+            summary=summary,
+            first_kept_entry_id=decision.first_kept_entry_id,
+            warning=warning,
+        )
+
+    def _compaction_warning(self, mode: str, after_tokens: int) -> str | None:
+        """最小保留集仍高于目标时明确提示（不无限压、不假装达标）。"""
+        if self._context_window is None or self._context_window <= 0:
+            return None
+        share = after_tokens / self._context_window
+        if share >= 1.0:
+            return (
+                f"窗口配置小于最小保留集：已压到 {after_tokens} tokens（预计占 "
+                f"{share:.0%}）；原始记录仍可查，建议调大 contextWindow 或缩短任务"
+            )
+        if mode == "hard" and share >= self._compaction_limits.soft:
+            return (
+                f"已压到最小保留集，预计仍占 {share:.0%}"
+                f"（未达到 {self._compaction_limits.soft:.0%} 目标）；原始记录仍可查"
+            )
+        return None
+
     async def _circuit_break(self, calls_made: int) -> AsyncIterator[LoopEvent]:
         """推理层熔断：记录事件 → 重注入总结要求 → 禁用工具再请求一次 → 结束回合。
 
@@ -414,21 +566,29 @@ class AgentLoop:
         return GuardrailTriggered(layer=layer, guard=guard, message=message)
 
     async def _consume_stream(
-        self, turn: _Turn, *, use_tools: bool = True
+        self,
+        turn: _Turn,
+        *,
+        use_tools: bool = True,
+        messages: list[dict[str, Any]] | None = None,
+        record_message: bool = True,
     ) -> AsyncIterator[LoopEvent]:
         """请求模型一次：边收边广播增量事件，收完落盘（turn 由调用方持有，回填收集结果）。
 
         增量（文本/思考/用量）是呈现用事件，随到随发；assistant 记录在流结束时一次性落盘
         （流式中途失败或被取消时，已看到的部分也落盘后再向上抛——记录是事实源）。
-        use_tools=False 用于熔断后的总结调用：请求不带工具定义，指纹也按无工具算。
+        use_tools=False 用于熔断/压缩的总结调用：请求不带工具定义，指纹也按无工具算。
+        record_message=False 用于压缩摘要：usage 照记，但不把元操作写成 assistant 对话。
+        messages 给出时用它代替 self.messages（摘要请求的输入是历史前缀，不是当前上下文）。
         """
+        request_messages = self.messages if messages is None else messages
         tool_schemas = self._tool_schemas if use_tools else None
-        fingerprint = _request_fingerprint(self.messages, tool_schemas or [])
+        fingerprint = _request_fingerprint(request_messages, tool_schemas or [])
         parts: list[str] = []
         reasoning_parts: list[str] = []
         try:
             async for event in self._client.stream_chat(
-                self.messages, tools=tool_schemas
+                request_messages, tools=tool_schemas
             ):
                 if isinstance(event, TextDelta):
                     parts.append(event.text)
@@ -453,7 +613,7 @@ class AgentLoop:
             # 中断（Ctrl+C）：已经看到的文本也要落盘，再放行取消让执行器清理子进程
             turn.content = "".join(parts)
             turn.reasoning = "".join(reasoning_parts)
-            if turn.content or turn.reasoning or turn.tool_calls:
+            if record_message and (turn.content or turn.reasoning or turn.tool_calls):
                 self._store.append(
                     "message", **_assistant_fields(turn, self._model, interrupted=True)
                 )
@@ -463,17 +623,19 @@ class AgentLoop:
             raise
         turn.content = "".join(parts)
         turn.reasoning = "".join(reasoning_parts)
-        self._store.append(
-            "message",
-            **_assistant_fields(
-                turn, self._model, interrupted=turn.failure is not None
-            ),
-        )
+        if record_message:
+            self._store.append(
+                "message",
+                **_assistant_fields(
+                    turn, self._model, interrupted=turn.failure is not None
+                ),
+            )
         if turn.usage is not None:
             yield self._record_usage(turn.usage, fingerprint)
 
     def _record_usage(self, usage: StreamUsage, fingerprint: str) -> CostRecorded:
         """计价 + 落盘 usage 记录（SPEC §I「每次模型调用记录一条 usage」），返回广播用事件。"""
+        self._last_input_tokens = usage.input_tokens  # 下一次压缩判定的分子（实际 usage）
         priced = price_call(
             self._catalog, self._model, usage, at=datetime.now(timezone.utc)
         )

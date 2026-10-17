@@ -17,11 +17,12 @@ import json
 import sys
 
 from codelotte.cost import Ledger, call_record_from_entry
-from codelotte.display import guardrail_notice
+from codelotte.display import compaction_after_share, compaction_title, guardrail_notice
 from codelotte.guardrails import STOP_CIRCUIT, STOP_PLANNING
 from codelotte.loop import (
     MAX_ITERATIONS,
     AgentLoop,
+    CompactionEvent,
     CostRecorded,
     GuardrailTriggered,
     ToolFinished,
@@ -100,6 +101,16 @@ class _Presenter:
         sys.stderr.write(f"[codelotte] {guardrail_notice(event.layer, event.message)}\n")
         sys.stderr.flush()
 
+    def on_compaction(self, event: CompactionEvent) -> None:
+        self._close_reasoning()
+        after_share = compaction_after_share(event.after_tokens, event.window)
+        sys.stderr.write(
+            f"[codelotte] {compaction_title(event.mode, event.utilization, after_share)}\n"
+        )
+        if event.warning:
+            sys.stderr.write(f"[codelotte] 警告：{event.warning}\n")
+        sys.stderr.flush()
+
     def on_turn_ended(self) -> None:
         self._close_reasoning()
         self._finish_text(intermediate=False)  # 终轮文本：答案
@@ -155,6 +166,8 @@ async def run_once(loop: AgentLoop, prompt: str) -> int:
                 presenter.on_tool_finished(event)
             elif isinstance(event, GuardrailTriggered):
                 presenter.on_guardrail(event)
+            elif isinstance(event, CompactionEvent):
+                presenter.on_compaction(event)
             elif isinstance(event, TurnEnded):
                 presenter.on_turn_ended()
                 stop_reason = event.stop_reason

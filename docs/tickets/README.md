@@ -46,7 +46,7 @@
 | [09](09-permission-layer.md) | 权限层（规则 + 审批 + trust） | 04 | ✅ done（真机 TUI 审批 + 与票据 10 沙箱联训均通过） |
 | [10](10-docker-sandbox.md) | Docker 沙箱 | 04 | ✅ done（真机 Docker Desktop 验证通过） |
 | [11](11-loop-guardrails.md) | 死循环三层防御 | 04 | ✅ done（自动化全绿；三层均有剧本化触发测试） |
-| [12](12-compaction-v1.md) | 压缩 v1（双触发 + 结构化摘要） | 06, 07 | ready-for-agent |
+| [12](12-compaction-v1.md) | 压缩 v1（双触发 + 结构化摘要） | 06, 07 | ✅ done（自动化全绿；含压缩后续跑） |
 | [13](13-compaction-regression-suite.md) | 压缩回归套件 v0 | 12 | ready-for-agent |
 | [14](14-readme-and-dogfood.md) | README v1 + 演示材料 + dogfood 启动 | 08, 12 | ready-for-agent |
 | [15](15-eval-runner.md) | 评测 runner（任务格式 + pass^k + CI 冒烟） | 10, 12 | ready-for-agent |

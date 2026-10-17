@@ -24,6 +24,12 @@ COMMAND_TIMEOUT_MAX = 600  # 秒，与 tools/bash.py 的 MAX_TIMEOUT 对齐（�
 # 死循环三层防御阈值（票据 11）：2 是"拦截要连续两次"的下限，100 是防止把上限调得形同虚设
 GUARDRAIL_LIMIT_MIN = 2
 GUARDRAIL_LIMIT_MAX = 100
+# 压缩双阈值（票据 12）：比例口径，0.2 ≤ soft < hard ≤ 0.9，且 hard - soft ≥ 0.2
+COMPACTION_SOFT_DEFAULT = 0.60
+COMPACTION_HARD_DEFAULT = 0.85
+COMPACTION_THRESHOLD_MIN = 0.2
+COMPACTION_THRESHOLD_MAX = 0.9
+COMPACTION_THRESHOLD_MIN_GAP = 0.2
 
 
 class ConfigError(Exception):
@@ -47,6 +53,9 @@ class Settings:
     guardrail_stagnation_limit: int | None = None
     guardrail_failure_limit: int | None = None
     guardrail_planning_limit: int | None = None
+    # 压缩双阈值（票据 12；比例 0.2–0.9，未写 = guardrails/compaction 的默认值）
+    compaction_soft_threshold: float | None = None
+    compaction_hard_threshold: float | None = None
     notices: list[str] = field(default_factory=list)
 
 
@@ -57,12 +66,18 @@ _GUARDRAIL_FIELDS = {
     "guardrailPlanningLimit": "guardrail_planning_limit",
 }
 
+_COMPACTION_FIELDS = {
+    "compactionSoftThreshold": "compaction_soft_threshold",
+    "compactionHardThreshold": "compaction_hard_threshold",
+}
+
 _KNOWN_SETTINGS = {
     "lastChangelogVersion": str,
     "defaultProvider": str,
     "defaultModel": str,
     "commandTimeoutSeconds": int,
     **{key: int for key in _GUARDRAIL_FIELDS},  # 同一份键表，避免两处漂移
+    **{key: float for key in _COMPACTION_FIELDS},
 }
 
 
@@ -114,12 +129,46 @@ def load_settings(home: Path | None = None) -> Settings:
                     f"{GUARDRAIL_LIMIT_MAX} 之间（给了 {value}）"
                 )
             setattr(settings, _GUARDRAIL_FIELDS[key], value)
+        elif key in _COMPACTION_FIELDS and isinstance(value, (int, float)) and not isinstance(
+            value, bool
+        ):
+            number = float(value)
+            if not COMPACTION_THRESHOLD_MIN <= number <= COMPACTION_THRESHOLD_MAX:
+                raise ConfigError(
+                    f"settings.json 的 {key!r} 要在 {COMPACTION_THRESHOLD_MIN}–"
+                    f"{COMPACTION_THRESHOLD_MAX} 之间（给了 {value}）"
+                )
+            setattr(settings, _COMPACTION_FIELDS[key], number)
         else:
             expected = _KNOWN_SETTINGS[key].__name__
             raise ConfigError(
                 f"settings.json 的 {key!r} 类型不对（应为 {expected}）：{value!r}"
             )
+    _check_compaction_thresholds(settings)
     return settings
+
+
+def _check_compaction_thresholds(settings: Settings) -> None:
+    """跨字段校验：单边覆盖时另一边用默认值，按生效值检查 hard - soft ≥ 0.2。
+
+    每个值已单独限制在 0.2–0.9；间距 ≥0.2 同时保证 soft < hard。
+    """
+    soft = (
+        settings.compaction_soft_threshold
+        if settings.compaction_soft_threshold is not None
+        else COMPACTION_SOFT_DEFAULT
+    )
+    hard = (
+        settings.compaction_hard_threshold
+        if settings.compaction_hard_threshold is not None
+        else COMPACTION_HARD_DEFAULT
+    )
+    if hard - soft < COMPACTION_THRESHOLD_MIN_GAP:
+        raise ConfigError(
+            "settings.json 的压缩阈值要满足 hard - soft >= "
+            f"{COMPACTION_THRESHOLD_MIN_GAP}（compactionSoftThreshold={soft:g}, "
+            f"compactionHardThreshold={hard:g}）"
+        )
 
 
 def record_changelog_version(version: str, home: Path | None = None) -> Path | None:

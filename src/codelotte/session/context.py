@@ -3,8 +3,10 @@
 装配是确定性的：同一份文件装配两次逐字节一致（键序固定、无时间戳混入）。
 规则：
 - message / tool_call / tool_result 进入上下文；usage、session、普通 event 跳过。
-- 例外：event/kind=guardrail 且带 injected 的记录（死循环防御的提醒，票据 11）按 user
+- 例外一：event/kind=guardrail 且带 injected 的记录（死循环防御的提醒，票据 11）按 user
   消息在记录位置插回——实时与恢复的请求前缀必须一致。
+- 例外二：compaction 记录（票据 12）把保留边界之前的旧消息折叠成 system 摘要 +
+  独立硬约束，再从 firstKeptEntryId 重放保留段；原始记录仍在文件里，只是不进请求。
 - assistant 的 toolCalls 用存储时的原始 arguments 文本回传——回传雷区与前缀缓存都要求逐字节一致。
 - stopReason=interrupted 的 assistant 记录跳过：原进程里它从未进入 messages（流中断后直接结束回合），
   重建时必须保持同样的视图，否则模型会看到一段它"没说过的尾话"。
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from codelotte.compaction.summarize import build_compaction_messages
 from codelotte.guardrails import EVENT_GUARDRAIL
 from codelotte.providers.base import assistant_message
 
@@ -24,7 +27,51 @@ INTERRUPTED_TOOL_NOTE = "（回合被中断，这个工具调用没有返回结�
 
 
 def messages_from_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按记录顺序重建消息数组（与运行中逐条 append 的结果一致，见票据 05 恢复语义）。"""
+    """按记录顺序重建消息数组（与运行中逐条 append 的结果一致，见票据 05 恢复语义）。
+
+    有 compaction 时：以最后一条压缩记录为准，把 firstKeptEntryId 之前的旧消息替换为
+    摘要 + 硬约束，再从边界重放保留段与压缩之后的记录。原始 entry 不动。
+    """
+    compactions = [
+        index
+        for index, entry in enumerate(entries)
+        if entry.get("type") == "compaction"
+    ]
+    if not compactions:
+        return _replay(entries)
+
+    # 本地导入避免 store ↔ context 的模块级循环（store 顶部会导入本模块）
+    from codelotte.session.store import SessionError
+
+    last = compactions[-1]
+    entry = entries[last]
+    index_of = {entry.get("id"): index for index, entry in enumerate(entries)}
+    boundary = entry.get("firstKeptEntryId")
+    start = index_of.get(boundary) if isinstance(boundary, str) else None
+    if start is None:
+        raise SessionError(
+            f"compaction 的 firstKeptEntryId 找不到记录：{boundary!r}"
+        )
+    if start > last:
+        raise SessionError(
+            "compaction 的 firstKeptEntryId 在压缩记录之后，记录链不合法"
+        )
+    previous = compactions[-2] if len(compactions) >= 2 else -1
+    if start <= previous:
+        raise SessionError(
+            "compaction 的保留边界落在上一次压缩之前，记录链不合法"
+        )
+
+    kept_entries = entries[start:last] + entries[last + 1 :]
+    return build_compaction_messages(
+        str(entry.get("summary", "")),
+        str(entry.get("constraints", "")),
+        _replay(kept_entries),
+    )
+
+
+def _replay(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """普通记录（无 compaction 介入的那一段）→ 消息数组。"""
     messages: list[dict[str, Any]] = []
     pending: list[str] = []  # 最近一个 assistant 声明的、还没见到结果的 toolCallId
 

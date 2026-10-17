@@ -149,9 +149,50 @@ def test_orphan_tool_result_is_shown_not_hidden() -> None:
 
 
 def test_unknown_entry_types_are_annotated() -> None:
-    entries = [{"type": "compaction", "summary": "以后会有的类型"}]
+    entries = [{"type": "futureThing", "summary": "以后会有的类型"}]
     html = _render(entries)
-    assert "记录：compaction" in html
+    assert "记录：futureThing" in html
+
+
+def test_compaction_marker_summary_and_warning_are_visible() -> None:
+    """票据 12：压缩点高亮、摘要可查看、最小集警告可见；原始消息仍照常渲染。"""
+    entries = [
+        {"type": "message", "role": "user", "content": "旧任务"},
+        {"type": "message", "role": "assistant", "content": "旧回答"},
+        {
+            "type": "compaction",
+            "summary": "1. 任务目标：修好测试\n2. 下一步：写结果",
+            "mode": "hard",
+            "utilization": 1.2,
+            "window": 100,
+            "estimatedAfterTokens": 250,
+            "firstKeptEntryId": "kept",
+            "constraints": "硬约束正文",
+            "warning": "窗口配置小于最小保留集：已压到 250 tokens（预计占 250%）",
+        },
+        {"type": "message", "role": "user", "content": "继续"},
+    ]
+    html = _render(entries)
+    assert 'details class="compaction"' in html
+    assert "🗜 上下文压缩（硬触发 · 120% → 预计 250%）" in html
+    assert "1. 任务目标：修好测试" in html
+    assert "窗口配置小于最小保留集" in html
+    assert html.index("窗口配置小于最小保留集") < html.index('details class="compaction"')
+    assert "旧任务" in html and "旧回答" in html  # 原始记录仍可查
+
+    markdown = render_session_markdown(entries, load_catalog(), session_name="s.jsonl")
+    assert "### 🗜 上下文压缩（硬触发 · 120% → 预计 250%）" in markdown
+    assert "1. 任务目标：修好测试" in markdown
+    assert "> ⚠ 窗口配置小于最小保留集" in markdown
+
+
+def test_compaction_summary_is_escaped() -> None:
+    entries = [
+        {"type": "compaction", "summary": "<script>alert(1)</script>", "mode": "soft"}
+    ]
+    html = _render(entries)
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
 
 
 def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
