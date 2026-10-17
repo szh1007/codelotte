@@ -1,4 +1,4 @@
-"""压缩回归套件的任务定义（票据 13）：TOML 加载与校验。
+"""专用测评 - 压缩回归 v0 的任务定义（票据 13）：TOML 加载与校验。
 
 任务文件是实验的输入，坏输入必须当场报错——静默跳过会让"3 条任务"变成 2 条
 却仍然出报表，数字就不可信了。
@@ -15,21 +15,116 @@ from codelotte.evals.tasks import TaskFileError, load_task, load_tasks
 TASKS_DIR = Path(__file__).resolve().parents[1] / "evals" / "tasks"
 
 
-def test_shipped_suite_has_three_complete_tasks() -> None:
+def test_shipped_suite_covers_the_required_buckets() -> None:
+    """票据 15：A 桶 ≥2、B 桶 ≥3；压缩回归需要的 checkpoint 仍然齐备。"""
     tasks = load_tasks(TASKS_DIR)
 
-    assert len(tasks) == 3
-    assert len({task.id for task in tasks}) == 3
+    assert len(tasks) >= 5
+    assert len({task.id for task in tasks}) == len(tasks)
+    buckets = {task.bucket for task in tasks}
+    assert {"A", "B"} <= buckets
+    assert sum(1 for task in tasks if task.bucket == "A") >= 2
+    assert sum(1 for task in tasks if task.bucket == "B") >= 3
     for task in tasks:
-        assert task.bucket in {"A", "B", "C"}
         assert task.instruction.strip()
-        assert task.setup  # 每条任务自带确定性初始文件
-        assert task.verifier.files or task.verifier.python
+        assert task.setup or task.snapshot
+        assert task.verifier.files or task.verifier.python or task.verifier.command
         assert len(task.checkpoints) >= 3
         for checkpoint in task.checkpoints:
             assert checkpoint.question.strip()
             assert checkpoint.facts
             assert all(fact for fact in checkpoint.facts)
+
+
+def test_checkpoints_are_optional_for_the_general_runner(tmp_path: Path) -> None:
+    path = tmp_path / "general.toml"
+    path.write_text(
+        """
+id = "general"
+bucket = "A"
+instruction = "x"
+[setup]
+files = { "a.txt" = "a" }
+[verifier]
+python = "pass"
+""",
+        encoding="utf-8",
+    )
+
+    task = load_task(path)
+
+    assert task.checkpoints == ()
+    assert task.setup == {"a.txt": "a"}
+
+
+def test_parses_a_repo_snapshot_and_command_verifier(tmp_path: Path) -> None:
+    path = tmp_path / "snapshot.toml"
+    path.write_text(
+        """
+id = "snapshot"
+bucket = "B"
+instruction = "x"
+[setup.snapshot]
+ref = "HEAD"
+repo = "."
+script = "echo init > init.txt"
+timeout_seconds = 30
+[verifier]
+command = ["python", "check.py"]
+command_timeout = 5
+""",
+        encoding="utf-8",
+    )
+
+    task = load_task(path)
+
+    assert task.snapshot is not None
+    assert task.snapshot.ref == "HEAD"
+    assert task.snapshot.repo == "."
+    assert task.snapshot.script == "echo init > init.txt"
+    assert task.snapshot.timeout_seconds == 30
+    assert task.verifier.command == ("python", "check.py")
+    assert task.verifier.command_timeout == 5
+    assert task.setup == {}
+
+
+def test_rejects_snapshot_repo_paths_that_escape_the_repo(tmp_path: Path) -> None:
+    path = tmp_path / "snapshot-escape.toml"
+    path.write_text(
+        """
+id = "snapshot-escape"
+bucket = "B"
+instruction = "x"
+[setup.snapshot]
+ref = "HEAD"
+repo = "../other"
+[verifier]
+python = "pass"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskFileError, match="相对路径"):
+        load_task(path)
+
+
+def test_rejects_a_command_verifier_that_is_not_a_string_array(tmp_path: Path) -> None:
+    path = tmp_path / "bad-command.toml"
+    path.write_text(
+        """
+id = "bad-command"
+bucket = "B"
+instruction = "x"
+[setup]
+files = { "a.txt" = "a" }
+[verifier]
+command = "python check.py"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskFileError, match="command"):
+        load_task(path)
 
 
 def test_rejects_setup_paths_that_escape_the_workspace(tmp_path: Path) -> None:

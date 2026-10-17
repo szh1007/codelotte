@@ -1,6 +1,6 @@
 """压缩回归报表（票据 13）：聚合、Markdown 报告与人工标注表。
 
-口径（同时写进 docs/tech/compaction-regression.md）：
+口径（同时写进 evals/compaction.md）：
 - 完成率 = 验收通过 / 尝试次数（失败的 run 不剔除——失败也是结果）；
 - 有效案例 = 没有运行错误且实际压缩次数 == k（k=0 的对照组天然有效）；
 - 状态保留率 = checkpoint 问题通过数 / 问题总数（包含无效案例，报表里单独标出）；
@@ -19,6 +19,12 @@ from pathlib import Path
 from codelotte.cost import format_money
 from codelotte.evals.meta import RunMeta
 from codelotte.evals.regression import CaseResult
+from codelotte.evals.report_utils import (
+    dirty_text,
+    rate as _rate,
+    relative as _relative,
+    short as _short,
+)
 
 
 @dataclass(frozen=True)
@@ -71,26 +77,8 @@ def summarize(cases: Sequence[CaseResult]) -> list[GroupSummary]:
     return summaries
 
 
-def _rate(numerator: int, denominator: int) -> str:
-    if denominator <= 0:
-        return "—"
-    return f"{numerator}/{denominator} ({numerator / denominator:.0%})"
-
-
 def _k_label(k: int) -> str:
     return "k=0（对照组）" if k == 0 else f"k={k}"
-
-
-def _short(text: str, limit: int = 240) -> str:
-    one_line = " ".join(text.split())
-    return one_line if len(one_line) <= limit else one_line[:limit] + "…"
-
-
-def _relative(path: str, run_dir: Path) -> str:
-    try:
-        return Path(path).resolve().relative_to(run_dir.resolve()).as_posix()
-    except (ValueError, OSError):
-        return path
 
 
 def _summary_table(summaries: Sequence[GroupSummary], currency: str) -> list[str]:
@@ -115,12 +103,7 @@ def _summary_table(summaries: Sequence[GroupSummary], currency: str) -> list[str
 
 
 def _meta_table(meta: RunMeta) -> list[str]:
-    if meta.git_dirty is None:
-        dirty = "未知（git 命令失败）"
-    elif not meta.git_dirty:
-        dirty = "否"
-    else:
-        dirty = f"是（指纹 {meta.git_diff_sha or 'unknown'}）"
+    dirty = dirty_text(meta.git_dirty, meta.git_diff_sha)
     k_values = ", ".join(str(k) for k in meta.k_values)
     lines = [
         "| 项 | 值 |",
@@ -139,7 +122,10 @@ def _meta_table(meta: RunMeta) -> list[str]:
         f"| 命令 | `{meta.command}` |",
     ]
     for task in meta.tasks:
-        lines.append(f"| 任务 {task.id}（{task.bucket} 桶） | `{task.sha256}` |")
+        snapshot = f"；快照 `{task.snapshot_ref}`" if task.snapshot_ref else ""
+        lines.append(
+            f"| 任务 {task.id}（{task.bucket} 桶） | `{task.sha256}`{snapshot} |"
+        )
     return lines
 
 

@@ -565,6 +565,27 @@ def test_eval_compaction_parser_defaults() -> None:
     assert args.task == ["001-audit-report"]
 
 
+def test_eval_run_parser_defaults() -> None:
+    from codelotte.cli import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "run",
+            "--bucket",
+            "B",
+            "--task",
+            "004-prompt-injection-resistance",
+            "--no-sandbox",
+        ]
+    )
+    assert args.command == "eval" and args.eval_command == "run"
+    assert args.repeat == 3 and args.seed == 0
+    assert args.bucket == ["B"]
+    assert args.task == ["004-prompt-injection-resistance"]
+    assert args.no_sandbox is True
+
+
 def test_eval_compaction_rejects_duplicate_k_readably(tmp_path: Path) -> None:
     """一条命令的入口：坏参数给可读错误 + 退出码 2，不裸 traceback。"""
     result = run_cli(
@@ -616,7 +637,7 @@ def test_eval_compaction_dry_run_validates_tasks_without_calling_models(
         env=_session_env(tmp_path),
     )
     assert result.returncode == 0, result.stderr
-    assert "计划：3 任务 × 4 个 k × 1 次重复 = 12 条案例" in result.stdout
+    assert "计划：5 任务 × 4 个 k × 1 次重复 = 20 条案例" in result.stdout
     assert "001-audit-report" in result.stdout
     assert "dry-run" in result.stdout
     assert not (tmp_path / "evals" / "runs").exists()

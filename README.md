@@ -16,7 +16,7 @@ Everything the agent does — messages, tool calls, token usage, compactions, gu
 session file. The same record powers replay, billing, and evals.
 
 The differentiator is not the loop; that part is a commodity. It is the **measurement**: the repo ships a
-reproducible compaction regression suite with raw trajectories, a checked-in baseline, and a report that says
+reproducible specialized eval - compression regression v0 with raw trajectories, a checked-in baseline, and a report that says
 what the numbers do *not* prove. Evidence first, features second.
 
 ## 30-second demo
@@ -51,7 +51,7 @@ All tasks are complete: bug fixed, check passes, notes.txt written.
 
 ## Evidence
 
-### Compaction regression, v0 baseline (2026-10-17)
+### Specialized eval - compression regression v0 baseline (2026-10-17)
 
 Three deterministic tasks run with **forced** compaction `k = 0 / 1 / 3 / 5`; after every compaction the
 model is asked (out of band) what the goal, completed steps, and constraints are, and the answers are scored
@@ -76,7 +76,7 @@ is reproducible — not that compaction is lossless. The next experiment needs l
 
 - Report: [evals/runs/20261017T173510Z-037104e/report.md](evals/runs/20261017T173510Z-037104e/report.md)
 - 5-compaction sample trace: [HTML](docs/examples/session-001-audit-report-k5.html) · [Markdown](docs/examples/session-001-audit-report-k5.md)
-- Method and scoring caveats: [docs/tech/compaction-regression.md](docs/tech/compaction-regression.md)
+- Method and scoring caveats: [evals/compaction.md](evals/compaction.md)
 
 ## Architecture
 
@@ -163,11 +163,15 @@ The TUI asks for approval on tool calls. `-p` is headless and **fail-closed**: e
 Verify the evals wiring without spending on model calls:
 
 ```bash
-uv run codelotte eval compaction --dry-run
+uv run codelotte eval run --dry-run        # validate the general task suite
+uv run codelotte eval compaction --dry-run # validate the compression regression suite
 ```
 
-A full compaction run (12 cases) costs roughly ¥0.27 at the baseline prices. See
-[evals/README.md](evals/README.md) for adding tasks and reading reports.
+General eval (`eval run`) repeats every task 3 times and reports `pass^3`, per-task cost and
+duration; specialized eval - compression regression v0 (`eval compaction`) is the ticket-13
+experiment. The v0 baseline (12 cases) cost roughly ¥0.27 at the recorded prices; a full
+compaction run over the current five tasks is 20 cases. See [evals/run.md](evals/run.md) for
+adding tasks and reading reports.
 
 | Symptom | Fix |
 |---|---|
@@ -185,9 +189,9 @@ A full compaction run (12 cases) costs roughly ¥0.27 at the baseline prices. Se
 | [PLAN.md](PLAN.md) | Milestones, experiments, and portfolio positioning |
 | [docs/adr/](docs/adr/README.md) | Architecture decision records 0001–0005, with an index |
 | [docs/tickets/](docs/tickets/README.md) | 23 tracer-bullet tickets and their status |
-| [evals/README.md](evals/README.md) | How to add tasks, rerun the suite, and read reports |
-| [evals/tasks/README.md](evals/tasks/README.md) | Task TOML fields and a copy-paste template |
-| [docs/tech/compaction-regression.md](docs/tech/compaction-regression.md) | Compaction metrics, baseline reading, known limits |
+| [evals/run.md](evals/run.md) | General eval: both commands, task format, pass^k, CI smoke |
+| [evals/compaction.md](evals/compaction.md) | Specialized eval - compression regression v0: mechanism, scoring, baseline, annotations |
+| [evals/record.md](evals/record.md) | Eval run records: index, directory conventions, committed baselines |
 | [docs/tech/configuration.md](docs/tech/configuration.md) | Configuration cascade and every setting |
 | [docs/demo/](docs/demo/README.md) | 3-minute demo script and recording checklist |
 | [docs/dogfood/log.md](docs/dogfood/log.md) | Daily real-task log (from 2026-10-18) |
@@ -196,12 +200,15 @@ A full compaction run (12 cases) costs roughly ¥0.27 at the baseline prices. Se
 ## Status
 
 Tickets 01–13 are implemented: loop, four tools, session tree and fork, TUI, cost ledger, HTML export,
-permission layer, Docker sandbox, loop guardrails, compaction v1, and the compaction regression suite (the
+permission layer, Docker sandbox, loop guardrails, compaction v1, and the specialized eval -
+compression regression v0 (the
 ticket index notes the few manual-verification items still open). Ticket 14 (this README, ADR index, demo
-assets, dogfood log) is in progress; tickets 15–23 cover the general eval runner, baselines, failure
-attribution, the E1–E5 experiments, and the final materials pack.
+assets, dogfood log) is in progress. Ticket 15 adds the general eval runner (`codelotte eval run`, `pass^k`,
+repo snapshots, per-task cost/period reporting) and a B-bucket CI smoke job; the CI job runs only when a
+`DEEPSEEK_API_KEY` repository secret is configured. Tickets 16–23 cover baselines, failure attribution, the
+E1–E5 experiments, and the final materials pack.
 
-Engineering checks at the time of writing: `454 passed, 8 deselected` (Docker integration tests run with
+Engineering checks at the time of writing: `476 passed, 8 deselected` (Docker integration tests run with
 `pytest -m docker`), Ruff and Pyright clean, CI on Ubuntu and Windows.
 
 MIT licensed. Built as an agent-engineering portfolio project; issues and questions are welcome.

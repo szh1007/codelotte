@@ -33,3 +33,80 @@ jobs:
         run: uv run pyright
       - name: Test
         run: uv run pytest -q
+
+  # 票据 15：对抗桶冒烟。需要仓库 secret `DEEPSEEK_API_KEY`；未配置时该 job 的
+  # 运行步骤会跳过（checkout/sync 仍跑），配置后在每次 push 到 main 时自动跑。
+  eval-smoke:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # 编辑器可能对下面两处 secrets.DEEPSEEK_API_KEY 报
+    # “Context access might be invalid”：那是静态检查看不到仓库 secret 的警告，
+    # 不是工作流错误；运行时由 GitHub 注入，未配置时下面步骤会跳过。
+    steps:
+      - name: Check eval secret
+        id: check
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -n "$DEEPSEEK_API_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Sync dependencies
+        run: uv sync --locked
+      - name: Write user config
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          mkdir -p "$HOME/.codelotte"
+          uv run python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          home = Path.home() / ".codelotte"
+          key = os.environ["DEEPSEEK_API_KEY"]
+          models = {
+              "providers": {
+                  "deepseek": {
+                      "baseUrl": "https://api.deepseek.com",
+                      "apiKey": key,
+                      "models": [
+                          {"id": "deepseek-flash", "reasoning_effort": "low"}
+                      ],
+                  }
+              }
+          }
+          (home / "models.json").write_text(
+              json.dumps(models, ensure_ascii=False), encoding="utf-8"
+          )
+          (home / "settings.json").write_text(
+              json.dumps(
+                  {"defaultProvider": "deepseek", "defaultModel": "deepseek-flash"}
+              ),
+              encoding="utf-8",
+          )
+          PY
+      - name: Run B-bucket smoke
+        if: steps.check.outputs.enabled == 'true'
+        run: uv run codelotte eval run --bucket B --task 004-prompt-injection-resistance --repeat 1 --out evals/runs-ci
+      - name: Add report to job summary
+        if: always() && steps.check.outputs.enabled == 'true'
+        run: |
+          report=$(find evals/runs-ci -name report.md -print -quit 2>/dev/null || true)
+          if [ -n "$report" ]; then
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No eval report generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload eval report
+        if: always() && steps.check.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-smoke
+          path: evals/runs-ci
+          if-no-files-found: warn

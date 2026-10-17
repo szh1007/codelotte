@@ -192,6 +192,184 @@ def test_eval_compaction_command_writes_a_report_end_to_end(tmp_path: Path) -> N
     assert "compaction" in types
 
 
+def _write_general_task(directory: Path, *, checkpoints: bool = False) -> Path:
+    directory.mkdir()
+    checkpoint = (
+        """
+[[checkpoints]]
+question = "任务目标是什么？"
+facts = [["out.txt"]]
+"""
+        if checkpoints
+        else ""
+    )
+    (directory / "copy-file.toml").write_text(
+        f"""
+id = "copy-file"
+bucket = "A"
+instruction = "把 in.txt 的内容写到 out.txt"
+[setup.files]
+"in.txt" = "hello\\n"
+[verifier]
+[[verifier.files]]
+path = "out.txt"
+equals = "hello\\n"
+{checkpoint}
+""",
+        encoding="utf-8",
+    )
+    return directory
+
+
+def _serve_general_turns() -> tuple[ThreadingHTTPServer, list[dict[str, Any]]]:
+    received: list[dict[str, Any]] = []
+    responses = [
+        _tool_turn("write", {"path": "out.txt", "content": "hello\n"}, "call_write"),
+        _text_turn("done"),
+        _tool_turn("write", {"path": "out.txt", "content": "hello\n"}, "call_write"),
+        _text_turn("done"),
+    ]
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            index = len(received)
+            received.append(body)
+            payload = responses[min(index, len(responses) - 1)]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, received
+
+
+def test_eval_run_command_writes_a_pass_pow_k_report_end_to_end(tmp_path: Path) -> None:
+    tasks_dir = _write_general_task(tmp_path / "tasks")
+    server, received = _serve_general_turns()
+    port = server.server_address[1]
+    try:
+        home = write_user_config(
+            tmp_path / "home", base_url=f"http://127.0.0.1:{port}", api_key="test-key"
+        )
+        out = tmp_path / "runs"
+        result = run_cli(
+            "eval",
+            "run",
+            "--repeat",
+            "2",
+            "--task",
+            "copy-file",
+            "--tasks",
+            str(tasks_dir),
+            "--out",
+            str(out),
+            "--no-sandbox",
+            cwd=PROJECT_ROOT,
+            env=home_env(home),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    report_path = Path(result.stdout.strip())
+    assert report_path == out / report_path.parent.name / "report.md"
+    assert report_path.is_file()
+    markdown = report_path.read_text(encoding="utf-8")
+    assert "pass^2" in markdown
+    assert "copy-file" in markdown
+    assert "✅" in markdown
+
+    run_dir = report_path.parent
+    data = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    assert data["meta"]["repetitions"] == 2
+    assert len(data["cases"]) == 2
+    assert all(case["passed"] for case in data["cases"])
+    assert data["summaries"][0]["pass_pow_k"] is True
+    assert len(list((run_dir / "sessions").rglob("*.jsonl"))) == 2
+    assert len(received) == 4
+
+
+def test_eval_run_dry_run_does_not_require_a_model_or_create_a_run(
+    tmp_path: Path,
+) -> None:
+    tasks_dir = _write_general_task(tmp_path / "tasks")
+    home = write_user_config(
+        tmp_path / "home", base_url="http://127.0.0.1:1", api_key="test-key"
+    )
+
+    result = run_cli(
+        "eval",
+        "run",
+        "--repeat",
+        "3",
+        "--tasks",
+        str(tasks_dir),
+        "--out",
+        str(tmp_path / "runs"),
+        "--dry-run",
+        cwd=PROJECT_ROOT,
+        env=home_env(home),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "dry-run" in result.stdout
+    assert "pass^3" in result.stdout
+    assert not (tmp_path / "runs").exists()
+
+
+def test_eval_run_bucket_filter_only_prints_the_selected_bucket(tmp_path: Path) -> None:
+    home = write_user_config(
+        tmp_path / "home", base_url="http://127.0.0.1:1", api_key="test-key"
+    )
+
+    result = run_cli(
+        "eval",
+        "run",
+        "--dry-run",
+        "--bucket",
+        "B",
+        "--tasks",
+        str(PROJECT_ROOT / "evals" / "tasks"),
+        cwd=PROJECT_ROOT,
+        env=home_env(home),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "003-constrained-append" in result.stdout
+    assert "004-prompt-injection-resistance" in result.stdout
+    assert "005-scope-discipline" in result.stdout
+    assert "001-audit-report" not in result.stdout
+
+
+def test_eval_compaction_rejects_tasks_without_checkpoints(tmp_path: Path) -> None:
+    tasks_dir = _write_general_task(tmp_path / "tasks", checkpoints=False)
+    home = write_user_config(
+        tmp_path / "home", base_url="http://127.0.0.1:1", api_key="test-key"
+    )
+
+    result = run_cli(
+        "eval",
+        "compaction",
+        "--dry-run",
+        "--tasks",
+        str(tasks_dir),
+        cwd=PROJECT_ROOT,
+        env=home_env(home),
+    )
+
+    assert result.returncode == 2
+    assert "checkpoint" in result.stderr
+
+
 def test_relative_out_keeps_sessions_outside_the_agent_workspace(tmp_path: Path) -> None:
     """审查发现：相对 --out 曾在 chdir 后解析，会话落进工作区并污染被测环境。"""
     server, _received = _serve()

@@ -1,4 +1,4 @@
-# 13: 压缩回归套件 v0
+# 13: 专用测评 - 压缩回归 v0
 
 **What to build:** 给"记忆折叠"这件事建一套专门的考试：挑选 3 条可确定性验收的任务，每条分别以"强制压缩 k=1/3/5 次"运行，产出一张质量衰减报表——① 任务完成率随压缩次数如何变化；② **关键状态保留率**：每次压缩后注入 checkpoint 问题集（"任务目标是什么？已完成哪些步骤？有哪些约束？"），用确定性比对 + 人工标注评分。跑数与评分规则文档化，锁 git ref 与随机种子保证可复现。
 
@@ -16,9 +16,8 @@
 **实现记录**：`codelotte eval compaction --k 0,1,3,5`（`0` 为不压缩对照组）；
 基线 `evals/runs/20261017T173510Z-037104e/`（12 条案例全部有效，完成率 3/3 全 k，
 状态保留率 9/9 → 27/27 → 45/45，全部 100%；4 条为跨段命中，已在 `misplaced` 标出）。
-操作手册见 [evals/README.md](../../evals/README.md)；任务写法见
-[evals/tasks/README.md](../../evals/tasks/README.md)；方法与口径见
-[docs/tech/compaction-regression.md](../tech/compaction-regression.md)。
+操作手册见 [evals/compaction.md](../../evals/compaction.md)；
+任务写法与通用测评见 [evals/run.md](../../evals/run.md)。
 v0 任务偏短，完成率与保留率都存在天花板；E1 需扩任务长度、repeat ≥ 3、k 扩到 10（票据 20）。
 审查修复：Docker 模式下文件工具现在把 `/workspace/...` 映射回宿主工作区，避免容器路径
 被写成宿主绝对路径（此前的 k=5 完成失败由此而来，不是压缩丢失）。

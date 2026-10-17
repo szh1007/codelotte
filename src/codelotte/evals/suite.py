@@ -1,6 +1,6 @@
 """实验编排与可复现元数据（票据 13）。
 
-一轮跑数 = 3 条任务 × k 集合 × 重复次数。开始前锁定 git ref、依赖版本、模型参数与
+一轮跑数 = 任务 × k 集合 × 重复次数。开始前锁定 git ref、依赖版本、模型参数与
 任务指纹；结束后把每条案例的轨迹、checkpoint、验收结果写进同一个 run 目录。
 """
 
@@ -18,12 +18,10 @@ from codelotte.evals.meta import (
     RunMeta,
     TaskMeta,
     create_run_dir,
-    current_git_ref,
     make_run_id,
     now_iso,
+    prepare_run,
     task_fingerprint,
-    uv_lock_sha,
-    worktree_fingerprint,
 )
 from codelotte.evals.regression import CaseResult, run_case
 from codelotte.evals.report import write_report
@@ -73,22 +71,7 @@ async def run_suite(
     """
     random.seed(seed)
     started_at = now_iso()
-    # 所有落盘路径先钉成绝对路径：run_case 会 chdir 进工作区
-    runs_root = runs_root.resolve()
-    repo_root = repo_root.resolve()
-    run_dir = create_run_dir(runs_root, run_id)
-    workspace_root = run_dir / "workspaces"
-    session_root = run_dir / "sessions"
-    workspace_root.mkdir()
-    session_root.mkdir()
-    # 复现凭证在开跑前锁定（跑数期间工作区/会话目录会增长，不能事后取）
-    git_ref = current_git_ref(repo_root)
-    dirty, diff_sha = worktree_fingerprint(repo_root, exclude=run_dir)
-    lock_sha = uv_lock_sha(repo_root)
-    task_metas = tuple(
-        TaskMeta(id=task.id, bucket=task.bucket, sha256=task_fingerprint(task))
-        for task in tasks
-    )
+    context = prepare_run(tasks, runs_root=runs_root, repo_root=repo_root, run_id=run_id)
     cases: list[CaseResult] = []
     total = len(tasks) * len(k_values) * repetitions
     done = 0
@@ -103,8 +86,8 @@ async def run_suite(
                     task,
                     k=k,
                     repetition=repetition,
-                    workspace=workspace_root / case_name,
-                    session_root=session_root,
+                    workspace=context.workspace_root / case_name,
+                    session_root=context.session_root,
                     model=model,
                     catalog=catalog,
                     client=client_factory(),
@@ -113,20 +96,22 @@ async def run_suite(
                     context_window=context_window,
                     compaction_limits=compaction_limits,
                     guardrail_limits=guardrail_limits,
+                    repo_root=context.repo_root,
+                    snapshot_ref=context.snapshot_refs.get(task.id),
                 )
                 cases.append(result)
                 if progress is not None:
                     progress(_progress_line(result))
     meta = RunMeta(
-        run_id=run_dir.name,
+        run_id=context.run_dir.name,
         started_at=started_at,
         finished_at=now_iso(),
-        git_ref=git_ref,
-        git_dirty=dirty,
-        git_diff_sha=diff_sha,
+        git_ref=context.git_ref,
+        git_dirty=context.git_dirty,
+        git_diff_sha=context.git_diff_sha,
         python=sys.version.split()[0],
         codelotte_version=__version__,
-        uv_lock_sha=lock_sha,
+        uv_lock_sha=context.uv_lock_sha,
         model=model,
         reasoning_effort=reasoning_effort,
         context_window=context_window,
@@ -135,11 +120,11 @@ async def run_suite(
         k_values=tuple(sorted(k_values)),
         repetitions=repetitions,
         seed=seed,
-        tasks=task_metas,
+        tasks=context.task_metas,
         command=command,
         currency=catalog.currency,
     )
-    write_report(run_dir, meta, cases)
+    write_report(context.run_dir, meta, cases)
     return meta, cases
 
 

@@ -1,8 +1,8 @@
-"""评测任务定义（票据 13 v0）：TOML → Task。
+"""评测任务定义（票据 13 v0 → 票据 15 通用格式）：TOML → Task。
 
-任务格式刻意保持最小：初始文件、指令、确定性验收器、checkpoint 问题集。
-字段与 PLAN §3 的通用格式同向（id/bucket/instruction/verifier），但不做仓库快照、
-LLM judge 与预算——那些属于票据 15 的评测 runner。
+任务字段：id / bucket / instruction / setup（初始文件或仓库快照）/ verifier / 预算。
+checkpoints 是压缩回归的选配项（票据 13），通用测评 不需要；`eval compaction`
+会显式拒绝没有 checkpoint 的任务。
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from codelotte.config import ConfigError
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 DEFAULT_MAX_MODEL_CALLS = 40
+DEFAULT_SNAPSHOT_TIMEOUT_SECONDS = 120.0
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
 
 
 class TaskFileError(ConfigError):
@@ -49,23 +51,44 @@ class Checkpoint:
 
 
 @dataclass(frozen=True)
+class Snapshot:
+    """任务的可复现起点：从 git ref 抽出仓库快照，再跑可选初始化脚本。
+
+    repo 是相对评测仓库根的路径（默认就是评测仓库本身）；ref 可以是 commit/tag/
+    branch，runner 在开跑前会解析成 commit SHA 并记进 meta。
+    """
+
+    ref: str
+    repo: str | None = None
+    script: str | None = None
+    timeout_seconds: float = DEFAULT_SNAPSHOT_TIMEOUT_SECONDS
+
+
+@dataclass(frozen=True)
 class Verifier:
-    """确定性验收器：文件期望 +（可选）在工作区跑一段 Python。"""
+    """确定性验收器：命令、工作区 Python 检查、文件期望，全部通过才算完成。
+
+    命令是"验收命令"（如 pytest / python check.py），在任务工作区执行；不接受
+    shell 字符串，TOML 里写成字符串数组，避免隐式 shell 解析。
+    """
 
     files: tuple[FileExpectation, ...] = ()
     python: str | None = None
+    command: tuple[str, ...] = ()
+    command_timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
 class Task:
-    """一条可确定性验收的压缩回归任务。"""
+    """一条可确定性验收的评测任务。"""
 
     id: str
     bucket: str
     instruction: str
     setup: dict[str, str]
     verifier: Verifier
-    checkpoints: tuple[Checkpoint, ...]
+    checkpoints: tuple[Checkpoint, ...] = ()
+    snapshot: Snapshot | None = None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     max_model_calls: int = DEFAULT_MAX_MODEL_CALLS
 
@@ -92,19 +115,52 @@ def _relative_path(value: Any, field: str, where: str) -> str:
     return text
 
 
-def _setup(raw: Any, where: str) -> dict[str, str]:
+def _positive_number(value: Any, field: str, where: str, default: float) -> float:
+    number = default if value is None else value
+    if not isinstance(number, (int, float)) or isinstance(number, bool) or number <= 0:
+        raise TaskFileError(f"{where} 的 {field} 要是正数（给了 {number!r}）")
+    return float(number)
+
+
+def _snapshot(raw: Any, where: str) -> Snapshot:
+    label = f"{where} 的 setup.snapshot"
     if not isinstance(raw, dict):
-        raise TaskFileError(f"{where} 的 setup 应是对象（含 files 表）")
-    files = raw.get("files")
-    if not isinstance(files, dict) or not files:
-        raise TaskFileError(f"{where} 的 setup.files 不能为空")
-    result: dict[str, str] = {}
-    for path, content in files.items():
-        key = _relative_path(path, "setup.files 的路径", where)
-        if not isinstance(content, str):
-            raise TaskFileError(f"{where} 的 setup.files[{key!r}] 要是字符串")
-        result[key] = content
-    return result
+        raise TaskFileError(f"{label} 应是对象")
+    ref = _nonempty_str(_require(raw, "ref", label), "ref", label)
+    repo_raw = raw.get("repo")
+    repo = None
+    if repo_raw is not None:
+        repo = _relative_path(repo_raw, "repo", label)
+    script = raw.get("script")
+    if script is not None and (not isinstance(script, str) or not script.strip()):
+        raise TaskFileError(f"{label} 的 script 要是非空字符串")
+    timeout = _positive_number(
+        raw.get("timeout_seconds"),
+        "timeout_seconds",
+        label,
+        DEFAULT_SNAPSHOT_TIMEOUT_SECONDS,
+    )
+    return Snapshot(ref=ref, repo=repo, script=script, timeout_seconds=timeout)
+
+
+def _setup(raw: Any, where: str) -> tuple[dict[str, str], Snapshot | None]:
+    if not isinstance(raw, dict):
+        raise TaskFileError(f"{where} 的 setup 应是对象（含 files 或 snapshot）")
+    files_raw = raw.get("files")
+    files: dict[str, str] = {}
+    if files_raw is not None:
+        if not isinstance(files_raw, dict):
+            raise TaskFileError(f"{where} 的 setup.files 应是对象")
+        for path, content in files_raw.items():
+            key = _relative_path(path, "setup.files 的路径", where)
+            if not isinstance(content, str):
+                raise TaskFileError(f"{where} 的 setup.files[{key!r}] 要是字符串")
+            files[key] = content
+    snapshot_raw = raw.get("snapshot")
+    snapshot = _snapshot(snapshot_raw, where) if snapshot_raw is not None else None
+    if not files and snapshot is None:
+        raise TaskFileError(f"{where} 的 setup 至少要给 files 或 snapshot")
+    return files, snapshot
 
 
 def _file_expectation(raw: Any, where: str) -> FileExpectation:
@@ -141,15 +197,42 @@ def _verifier(raw: Any, where: str) -> Verifier:
     python = raw.get("python")
     if python is not None and (not isinstance(python, str) or not python.strip()):
         raise TaskFileError(f"{where} 的 verifier.python 要是非空字符串")
+    command_raw = raw.get("command")
+    command: tuple[str, ...] = ()
+    if command_raw is not None:
+        if not isinstance(command_raw, list) or not command_raw:
+            raise TaskFileError(
+                f"{where} 的 verifier.command 要是非空字符串数组"
+                "（如 [\"python\", \"check.py\"]）"
+            )
+        command = tuple(
+            _nonempty_str(item, "verifier.command 的参数", where) for item in command_raw
+        )
+    command_timeout = _positive_number(
+        raw.get("command_timeout"),
+        "command_timeout",
+        where,
+        DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    )
     files = tuple(_file_expectation(item, where) for item in entries)
-    if not files and python is None:
-        raise TaskFileError(f"{where} 缺少 verifier：至少给 files 期望或 python 检查")
-    return Verifier(files=files, python=python)
+    if not files and python is None and not command:
+        raise TaskFileError(
+            f"{where} 缺少 verifier：至少给 files 期望、python 检查或 command 命令"
+        )
+    return Verifier(
+        files=files,
+        python=python,
+        command=command,
+        command_timeout=command_timeout,
+    )
 
 
 def _checkpoints(raw: Any, where: str) -> tuple[Checkpoint, ...]:
-    if not isinstance(raw, list) or not raw:
-        raise TaskFileError(f"{where} 的 checkpoints 不能为空（至少一个问题）")
+    """压缩回归的问题集；通用测评 的任务可以完全不写。"""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise TaskFileError(f"{where} 的 checkpoints 应是数组")
     result: list[Checkpoint] = []
     for index, item in enumerate(raw, start=1):
         label = f"{where} 的第 {index} 个 checkpoint"
@@ -187,12 +270,15 @@ def load_task(path: Path) -> Task:
     instruction = _nonempty_str(
         _require(raw, "instruction", where), "instruction", where
     )
-    setup = _setup(_require(raw, "setup", where), where)
+    setup, snapshot = _setup(_require(raw, "setup", where), where)
     verifier = _verifier(_require(raw, "verifier", where), where)
-    checkpoints = _checkpoints(_require(raw, "checkpoints", where), where)
-    timeout = raw.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
-    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
-        raise TaskFileError(f"{where} 的 timeout_seconds 要是正数（给了 {timeout!r}）")
+    checkpoints = _checkpoints(raw.get("checkpoints"), where)
+    timeout = _positive_number(
+        raw.get("timeout_seconds"),
+        "timeout_seconds",
+        where,
+        DEFAULT_TIMEOUT_SECONDS,
+    )
     max_calls = raw.get("max_model_calls", DEFAULT_MAX_MODEL_CALLS)
     if not isinstance(max_calls, int) or isinstance(max_calls, bool) or max_calls <= 0:
         raise TaskFileError(f"{where} 的 max_model_calls 要是正整数（给了 {max_calls!r}）")
@@ -203,7 +289,8 @@ def load_task(path: Path) -> Task:
         setup=setup,
         verifier=verifier,
         checkpoints=checkpoints,
-        timeout_seconds=float(timeout),
+        snapshot=snapshot,
+        timeout_seconds=timeout,
         max_model_calls=max_calls,
     )
 

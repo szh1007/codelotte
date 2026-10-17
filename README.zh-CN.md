@@ -15,7 +15,8 @@ HTML / Markdown 会话导出。
 agent 做过的每件事——消息、工具调用、token 用量、压缩、防御拦截——都落在同一个会话文件里。
 同一份记录同时驱动回放、记账和评测。
 
-差异化不在循环本身（那部分已经被教程商品化），而在**测量**：仓库里有一套可复现的压缩回归套件，
+差异化不在循环本身（那部分已经被教程商品化），而在**测量**：仓库里有一套可复现的
+专用测评 - 压缩回归 v0，
 包含原始轨迹、已入库的基线，以及一份明确写出「这些数字不能证明什么」的报表。证据先于功能。
 
 ## 30 秒演示
@@ -49,7 +50,7 @@ All tasks are complete: bug fixed, check passes, notes.txt written.
 
 ## 证据
 
-### 压缩回归 v0 基线（2026-10-17）
+### 专用测评 - 压缩回归 v0 基线（2026-10-17）
 
 三条确定性任务，分别强制压缩 `k = 0 / 1 / 3 / 5` 次；每次压缩后带外询问模型「任务目标 / 已完成 /
 约束」，用事实清单确定性评分。
@@ -72,7 +73,7 @@ All tasks are complete: bug fixed, check passes, notes.txt written.
 
 - 报表：[evals/runs/20261017T173510Z-037104e/report.md](evals/runs/20261017T173510Z-037104e/report.md)
 - 压缩 5 次的样例轨迹：[HTML](docs/examples/session-001-audit-report-k5.html) · [Markdown](docs/examples/session-001-audit-report-k5.md)
-- 指标口径与局限：[docs/tech/compaction-regression.md](docs/tech/compaction-regression.md)
+- 指标口径与局限：[evals/compaction.md](evals/compaction.md)
 
 ## 架构
 
@@ -155,10 +156,13 @@ TUI 会在工具调用前弹审批。`-p` 是无头模式，**fail-closed**：�
 不花钱验证评测接线：
 
 ```bash
-uv run codelotte eval compaction --dry-run
+uv run codelotte eval run --dry-run        # 校验通用任务集
+uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v0 任务集
 ```
 
-完整压缩回归（12 条案例）按基线价格约 ¥0.27。加题与读报表见 [evals/README.md](evals/README.md)。
+`eval run` 每个任务重复 3 次，输出 `pass^3`、每任务成本与耗时；`eval compaction` 是票据 13 的
+专用测评 - 压缩回归 v0。v0 基线（12 条案例）当时约 ¥0.27；当前 5 条任务的压缩全量是
+20 条案例。加题与读报表见 [evals/run.md](evals/run.md)。
 
 | 现象 | 处理 |
 |---|---|
@@ -176,9 +180,9 @@ uv run codelotte eval compaction --dry-run
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 23 张曳光弹票据与状态 |
-| [evals/README.md](evals/README.md) | 加任务、重跑、读报表的操作手册 |
-| [evals/tasks/README.md](evals/tasks/README.md) | 任务 TOML 字段与可复制模板 |
-| [docs/tech/compaction-regression.md](docs/tech/compaction-regression.md) | 压缩指标口径、基线解读、已知局限 |
+| [evals/run.md](evals/run.md) | 通用测评：两个命令、任务格式、pass^k、CI 冒烟 |
+| [evals/compaction.md](evals/compaction.md) | 专用测评 - 压缩回归 v0：机制、评分、基线、人工标注 |
+| [evals/record.md](evals/record.md) | 评测跑数记录：索引、目录约定、已入库基线 |
 | [docs/tech/configuration.md](docs/tech/configuration.md) | 配置取值链与每个设置项 |
 | [docs/demo/](docs/demo/README.md) | 3 分钟演示脚本与拍摄清单 |
 | [docs/dogfood/log.md](docs/dogfood/log.md) | 每日真实使用日志（自 2026-10-18 起） |
@@ -187,10 +191,12 @@ uv run codelotte eval compaction --dry-run
 ## 状态
 
 票据 01–13 已实现：循环、四个工具、会话树与 fork、TUI、成本记账、HTML 导出、权限层、Docker 沙箱、
-死循环三层防御、压缩 v1、压缩回归套件（个别真机验证备注见票据索引）。票据 14（本 README、ADR 索引、
-演示材料、dogfood 日志）进行中；票据 15–23 覆盖通用评测 runner、对照组、失败归因、E1–E5 实验与最终材料包。
+死循环三层防御、压缩 v1、专用测评 - 压缩回归 v0（个别真机验证备注见票据索引）。票据 14（本 README、ADR 索引、
+演示材料、dogfood 日志）进行中。票据 15 已加入通用测评（`codelotte eval run`、`pass^k`、
+仓库快照、每任务成本/时段）与 B 桶 CI 冒烟；CI job 需要仓库 secret `DEEPSEEK_API_KEY` 才会执行。
+票据 16–23 覆盖对照组、失败归因、E1–E5 实验与最终材料包。
 
-当前工作树的工程检查：`454 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
+当前工作树的工程检查：`476 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。

@@ -1,4 +1,4 @@
-"""实验元数据与复现凭证（票据 13）。
+"""实验元数据与复现凭证（票据 13/15）。
 
 单独成模块是为了打断 report ↔ suite 的循环依赖：报表只读元数据，
 编排器同时依赖元数据与报表。
@@ -10,11 +10,12 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from codelotte.evals.tasks import Task
+from codelotte.evals.tasks import Task, TaskFileError
 
 
 @dataclass(frozen=True)
@@ -24,11 +25,12 @@ class TaskMeta:
     id: str
     bucket: str
     sha256: str
+    snapshot_ref: str | None = None  # 开跑前解析出的 commit SHA（任务自带仓库快照时）
 
 
 @dataclass(frozen=True)
 class RunMeta:
-    """一轮实验的复现凭证。"""
+    """一轮压缩实验的复现凭证。"""
 
     run_id: str
     started_at: str
@@ -53,12 +55,13 @@ class RunMeta:
 
 
 def task_fingerprint(task: Task) -> str:
-    """任务语义指纹：指令/初始文件/验收器/问题集逐字段序列化后取 SHA-256。"""
+    """任务语义指纹：指令/初始文件/验收器/问题集/快照逐字段序列化后取 SHA-256。"""
     payload = {
         "id": task.id,
         "bucket": task.bucket,
         "instruction": task.instruction,
         "setup": task.setup,
+        "snapshot": asdict(task.snapshot) if task.snapshot is not None else None,
         "verifier": asdict(task.verifier),
         "checkpoints": [asdict(checkpoint) for checkpoint in task.checkpoints],
         "timeout_seconds": task.timeout_seconds,
@@ -66,6 +69,45 @@ def task_fingerprint(task: Task) -> str:
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+@dataclass(frozen=True)
+class RunContext:
+    """一轮跑数的目录与开跑前锁定的复现凭证（两类 runner 共用）。"""
+
+    repo_root: Path
+    run_dir: Path
+    workspace_root: Path
+    session_root: Path
+    git_ref: str
+    git_dirty: bool | None
+    git_diff_sha: str | None
+    uv_lock_sha: str | None
+    snapshot_refs: dict[str, str]
+    task_metas: tuple[TaskMeta, ...]
+
+
+@dataclass(frozen=True)
+class EvalRunMeta:
+    """一轮通用测评的复现凭证（票据 15）：不含压缩实验的 soft/hard/k。"""
+
+    run_id: str
+    started_at: str
+    finished_at: str
+    git_ref: str
+    git_dirty: bool | None
+    git_diff_sha: str | None
+    python: str
+    codelotte_version: str
+    uv_lock_sha: str | None
+    model: str
+    reasoning_effort: str
+    context_window: int
+    repetitions: int
+    seed: int
+    tasks: tuple[TaskMeta, ...]
+    command: str
+    currency: str = "CNY"
 
 
 def _git(repo: Path, *args: str) -> str | None:
@@ -86,6 +128,27 @@ def _git(repo: Path, *args: str) -> str | None:
 
 def current_git_ref(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD") or "unknown"
+
+
+def resolve_git_ref(repo: Path, ref: str) -> str | None:
+    """把 branch/tag/HEAD 解析成 commit SHA；git 不可用或 ref 无效返回 None。"""
+    return _git(repo, "rev-parse", f"{ref}^{{commit}}")
+
+
+def resolve_task_snapshots(tasks: Sequence[Task], repo_root: Path) -> dict[str, str]:
+    """开跑前把所有任务的仓库快照 ref 解析成 SHA（同一轮所有重复共用一个 commit）。"""
+    refs: dict[str, str] = {}
+    for task in tasks:
+        if task.snapshot is None:
+            continue
+        repo = repo_root / task.snapshot.repo if task.snapshot.repo else repo_root
+        resolved = resolve_git_ref(repo.resolve(), task.snapshot.ref)
+        if resolved is None:
+            raise TaskFileError(
+                f"任务 {task.id} 的仓库快照 ref 解析失败：{repo} @ {task.snapshot.ref}"
+            )
+        refs[task.id] = resolved
+    return refs
 
 
 def find_repo_root(start: Path) -> Path:
@@ -179,3 +242,45 @@ def create_run_dir(base: Path, run_id: str) -> Path:
 
 def uv_lock_sha(repo: Path) -> str | None:
     return _sha256_file(repo / "uv.lock")
+
+
+def prepare_run(
+    tasks: Sequence[Task], *, runs_root: Path, repo_root: Path, run_id: str
+) -> RunContext:
+    """建 run 目录并在开跑前锁定 git ref/工作树/依赖/任务指纹/快照 SHA。
+
+    快照 ref 先解析：ref 无效属于配置错，不能留下一个空 run 目录。
+    """
+    runs_root = runs_root.resolve()
+    repo_root = repo_root.resolve()
+    snapshot_refs = resolve_task_snapshots(tasks, repo_root)
+    run_dir = create_run_dir(runs_root, run_id)
+    workspace_root = run_dir / "workspaces"
+    session_root = run_dir / "sessions"
+    workspace_root.mkdir()
+    session_root.mkdir()
+    # 跑数期间工作区/会话目录会增长，凭证必须在开跑前取
+    git_ref = current_git_ref(repo_root)
+    dirty, diff_sha = worktree_fingerprint(repo_root, exclude=run_dir)
+    lock_sha = uv_lock_sha(repo_root)
+    task_metas = tuple(
+        TaskMeta(
+            id=task.id,
+            bucket=task.bucket,
+            sha256=task_fingerprint(task),
+            snapshot_ref=snapshot_refs.get(task.id),
+        )
+        for task in tasks
+    )
+    return RunContext(
+        repo_root=repo_root,
+        run_dir=run_dir,
+        workspace_root=workspace_root,
+        session_root=session_root,
+        git_ref=git_ref,
+        git_dirty=dirty,
+        git_diff_sha=diff_sha,
+        uv_lock_sha=lock_sha,
+        snapshot_refs=snapshot_refs,
+        task_metas=task_metas,
+    )

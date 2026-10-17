@@ -5,8 +5,11 @@
 
 ## [Unreleased]
 
+- 通用测评：`codelotte eval run`（任务 × 重复次数、pass^k、每任务成本/耗时/计费时段）、TOML 仓库快照与命令验收器、`report.md/json` 与失败会话定位；新增 B 桶任务 004/005；`eval compaction` 明确拒绝无 checkpoint 的通用任务（票据 15）
+- CI 增加 B 桶冒烟 job（需 `DEEPSEEK_API_KEY` secret；未配置时跳过）
+- 重构：单任务执行核心抽到 `evals/execution.py`，压缩回归与通用测评共用（票据 15）
 - README v1：中英双语（英文主 + 中文镜像）、真实会话导出样例、v0 基线数据表、架构图与 30 秒演示；新增 ADR 索引 0001–0005、3 分钟演示脚本与示例工程、dogfood 使用日志脚手架（票据 14）
-- 压缩回归套件 v0：`codelotte eval compaction`（3 任务 × k=0/1/3/5）——强制压缩策略、压缩后 checkpoint 探针（确定性事实比对 + 人工标注表）、完成率/状态保留率报表；锁定 git ref / 种子 / 依赖版本 / 任务指纹，原始轨迹与工作区落盘（票据 13）
+- 专用测评 - 压缩回归 v0：`codelotte eval compaction`（3 任务 × k=0/1/3/5）——强制压缩策略、压缩后 checkpoint 探针（确定性事实比对 + 人工标注表）、完成率/状态保留率报表；锁定 git ref / 种子 / 依赖版本 / 任务指纹，原始轨迹与工作区落盘（票据 13）
 - 修复：settings.json 的压缩阈值此前没有真正传进触发判定（票据 13）
 - 修复：Docker 模式下文件工具不识别容器路径 `/workspace/...`，模型会把产物写到宿主工作区之外；现在映射回宿主 cwd（票据 13 审查）
 

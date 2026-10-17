@@ -6,7 +6,7 @@
 - 编号解析失败时整段答案作为兜底，并标记 structured=False——报表里保留这个事实，
   人工标注时优先复核这些行。
 
-这不是 LLM judge；它是可复现的代理指标，人工标注是补充（见 docs/tech/compaction-regression.md）。
+这不是 LLM judge；它是可复现的代理指标，人工标注是补充（见 evals/compaction.md）。
 """
 
 from __future__ import annotations

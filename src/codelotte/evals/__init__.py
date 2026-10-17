@@ -1,12 +1,13 @@
-"""压缩回归套件 v0（票据 13）：任务定义、强制压缩运行、checkpoint 评分与报表。
+"""评测设施：任务定义（票据 15 通用格式）、压缩回归（票据 13）与通用测评（票据 15）。
 
-这是实验设施，不是生产路径：任务文件来自仓库，运行在临时工作区，结果落
-`evals/runs/<run-id>/`。通用评测 runner 是票据 15；这里只做压缩质量这一条曲线。
+任务文件来自仓库，运行在临时工作区，结果落 `evals/runs/<run-id>/`。这是实验设施，
+不是生产路径；生产入口仍是 `codelotte` 的 TUI / `-p`。
 """
 
 from codelotte.evals.tasks import (
     Checkpoint,
     FileExpectation,
+    Snapshot,
     Task,
     TaskFileError,
     Verifier,
@@ -17,6 +18,7 @@ from codelotte.evals.tasks import (
 __all__ = [
     "Checkpoint",
     "FileExpectation",
+    "Snapshot",
     "Task",
     "TaskFileError",
     "Verifier",
