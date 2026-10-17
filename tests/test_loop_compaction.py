@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from codelotte.compaction import COMPACTION_CONSTRAINTS
+from codelotte.compaction import COMPACTION_CONSTRAINTS, CompactionLimits
 from codelotte.loop import AgentLoop, CompactionEvent, TextDelta, RunEnded
 from codelotte.permissions import allow_builtin_tools
 from codelotte.sandbox import LocalExecutor
@@ -58,6 +58,7 @@ def _loop(
     *,
     context_window: int,
     messages: list[dict] | None = None,
+    compaction_limits: CompactionLimits | None = None,
 ) -> AgentLoop:
     return AgentLoop(
         client=client,
@@ -68,6 +69,7 @@ def _loop(
         permissions=allow_builtin_tools(),
         messages=messages,
         context_window=context_window,
+        compaction_limits=compaction_limits,
     )
 
 
@@ -253,3 +255,26 @@ def test_window_smaller_than_the_minimum_keep_set_warns_and_still_compacts(
     assert event.warning is not None and "最小保留集" in event.warning
     entry = _compactions(loop)[0]
     assert entry["warning"] == event.warning
+
+
+def test_configured_thresholds_control_the_trigger(tmp_path: Path) -> None:
+    """settings.json 的 compaction*Threshold 必须真的进触发判定（票据 13 回归发现）。
+
+    600k / 1M = 60%：默认软阈值（60%）会压缩；用户把软阈值调到 70% 后不该压缩。
+    """
+    store = _store(tmp_path)
+    _seed_history(store, input_tokens=600_000)
+    messages = messages_from_entries(load_branch(store.path))
+    client = ScriptedClient([text_turn("继续")])
+    loop = _loop(
+        store,
+        client,
+        context_window=1_000_000,
+        messages=messages,
+        compaction_limits=CompactionLimits(soft=0.7, hard=0.9),
+    )
+
+    events = asyncio.run(_collect(loop, "新任务"))
+
+    assert not [event for event in events if isinstance(event, CompactionEvent)]
+    assert len(client.requests) == 1

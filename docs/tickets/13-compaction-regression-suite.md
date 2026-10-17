@@ -6,9 +6,19 @@
 
 **Blocked by:** 12（压缩 v1）
 
-**Status:** ready-for-agent
+**Status:** done（2026-10-18；自动化全绿，基线已入库）
 
-- [ ] 一条命令跑出 3 条任务 × k=1/3/5 的完整报表（含完成率与状态保留率）
-- [ ] checkpoint 问题集与评分规则文档化（确定性比对为主、人工标注补充）
-- [ ] 跑数可复现：锁定 git ref、随机种子、依赖版本；原始轨迹落盘
-- [ ] 至少跑出一版基线数据（作为 E1 正式实验的起点）
+- [x] 一条命令跑出 3 条任务 × k=1/3/5 的完整报表（含完成率与状态保留率）
+- [x] checkpoint 问题集与评分规则文档化（确定性比对为主、人工标注补充）
+- [x] 跑数可复现：锁定 git ref、随机种子、依赖版本；原始轨迹落盘
+- [x] 至少跑出一版基线数据（作为 E1 正式实验的起点）
+
+**实现记录**：`codelotte eval compaction --k 0,1,3,5`（`0` 为不压缩对照组）；
+基线 `evals/runs/20261017T173510Z-037104e/`（12 条案例全部有效，完成率 3/3 全 k，
+状态保留率 9/9 → 27/27 → 45/45，全部 100%；4 条为跨段命中，已在 `misplaced` 标出）。
+操作手册见 [evals/README.md](../../evals/README.md)；任务写法见
+[evals/tasks/README.md](../../evals/tasks/README.md)；方法与口径见
+[docs/tech/compaction-regression.md](../tech/compaction-regression.md)。
+v0 任务偏短，完成率与保留率都存在天花板；E1 需扩任务长度、repeat ≥ 3、k 扩到 10（票据 20）。
+审查修复：Docker 模式下文件工具现在把 `/workspace/...` 映射回宿主工作区，避免容器路径
+被写成宿主绝对路径（此前的 k=5 完成失败由此而来，不是压缩丢失）。

@@ -29,11 +29,12 @@ from codelotte.compaction import (
     COMPACTION_CONSTRAINTS,
     CompactionLimits,
     CompactionMode,
+    CompactionPolicy,
     build_compaction_messages,
     build_summary_messages,
     context_tokens_from_entries,
+    default_compaction_policy,
     estimate_tokens,
-    plan_compaction,
 )
 from codelotte.cost import CallRecord, Catalog, price_call
 from codelotte.guardrails import (
@@ -262,6 +263,7 @@ class AgentLoop:
         guardrail_limits: GuardrailLimits | None = None,
         compaction_limits: CompactionLimits | None = None,
         context_window: int | None = None,
+        compaction_policy: CompactionPolicy | None = None,
     ) -> None:
         self._client = client
         self._tools = tools
@@ -279,6 +281,12 @@ class AgentLoop:
         # 压缩双阈值（票据 12）：settings.json 可配，默认 0.60 / 0.85
         self._compaction_limits = (
             compaction_limits if compaction_limits is not None else CompactionLimits()
+        )
+        # 触发策略是实验缝（票据 13）：生产用双阈值，回归套件注入强制压缩
+        self._compaction_policy = (
+            compaction_policy
+            if compaction_policy is not None
+            else default_compaction_policy
         )
         # 压缩（票据 12）：分母是用户级生效窗口（与 TUI 状态栏同源，cli 传入）；
         # 分子优先用恢复会话里的最后一次 usage/压缩估算，否则从 0 开始。
@@ -436,10 +444,11 @@ class AgentLoop:
         if self._context_window is None:
             return
         entries = load_branch(self._store.path, self._store.leaf_id)
-        decision = plan_compaction(
+        decision = self._compaction_policy(
             entries,
             input_tokens=self._last_input_tokens,
             context_window=self._context_window,
+            limits=self._compaction_limits,
         )
         if decision is None:
             return

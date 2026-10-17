@@ -4,8 +4,14 @@
 工具层只依赖 Executor 协议——换实现时工具代码零改动。
 """
 
-from codelotte.sandbox.docker import DockerExecutor
+from codelotte.sandbox.docker import CONTAINER_WORKDIR, DockerExecutor
 from codelotte.sandbox.executor import ExecResult, Executor
 from codelotte.sandbox.local import LocalExecutor
 
-__all__ = ["DockerExecutor", "ExecResult", "Executor", "LocalExecutor"]
+__all__ = [
+    "CONTAINER_WORKDIR",
+    "DockerExecutor",
+    "ExecResult",
+    "Executor",
+    "LocalExecutor",
+]

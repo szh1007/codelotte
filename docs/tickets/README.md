@@ -47,7 +47,7 @@
 | [10](10-docker-sandbox.md) | Docker 沙箱 | 04 | ✅ done（真机 Docker Desktop 验证通过） |
 | [11](11-loop-guardrails.md) | 死循环三层防御 | 04 | ✅ done（自动化全绿；三层均有剧本化触发测试） |
 | [12](12-compaction-v1.md) | 压缩 v1（双触发 + 结构化摘要） | 06, 07 | ✅ done（自动化全绿；含压缩后续跑） |
-| [13](13-compaction-regression-suite.md) | 压缩回归套件 v0 | 12 | ready-for-agent |
+| [13](13-compaction-regression-suite.md) | 压缩回归套件 v0 | 12 | ✅ done（自动化全绿；基线 12 案例入库） |
 | [14](14-readme-and-dogfood.md) | README v1 + 演示材料 + dogfood 启动 | 08, 12 | ready-for-agent |
 | [15](15-eval-runner.md) | 评测 runner（任务格式 + pass^k + CI 冒烟） | 10, 12 | ready-for-agent |
 | [16](16-baselines-and-control-agents.md) | 对照组 + 控制 agent 自检 | 15 | ready-for-agent |

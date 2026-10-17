@@ -1,0 +1,226 @@
+"""评测任务定义（票据 13 v0）：TOML → Task。
+
+任务格式刻意保持最小：初始文件、指令、确定性验收器、checkpoint 问题集。
+字段与 PLAN §3 的通用格式同向（id/bucket/instruction/verifier），但不做仓库快照、
+LLM judge 与预算——那些属于票据 15 的评测 runner。
+"""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from codelotte.config import ConfigError
+
+DEFAULT_TIMEOUT_SECONDS = 300.0
+DEFAULT_MAX_MODEL_CALLS = 40
+
+
+class TaskFileError(ConfigError):
+    """任务文件不可用（缺字段、类型不对、路径越界等）——直接给实验者看。
+
+    继承 ConfigError：任务文件是实验配置，CLI 统一按"用法/配置错"返回退出码 2。
+    """
+
+
+@dataclass(frozen=True)
+class FileExpectation:
+    """验收器对工作区文件的一条期望：三种模式只能选一种。"""
+
+    path: str
+    equals: str | None = None
+    contains: str | None = None
+    unchanged: bool = False
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    """一个 checkpoint 问题与它的确定性事实组。
+
+    facts 是"事实组"列表：每组是一组可接受的替代表述（任一命中即可），
+    所有组都命中才算这个问题通过。例如：
+    [["report.txt"], ["TODO", "待办"], ["次数", "计数"]]。
+    """
+
+    question: str
+    facts: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class Verifier:
+    """确定性验收器：文件期望 +（可选）在工作区跑一段 Python。"""
+
+    files: tuple[FileExpectation, ...] = ()
+    python: str | None = None
+
+
+@dataclass(frozen=True)
+class Task:
+    """一条可确定性验收的压缩回归任务。"""
+
+    id: str
+    bucket: str
+    instruction: str
+    setup: dict[str, str]
+    verifier: Verifier
+    checkpoints: tuple[Checkpoint, ...]
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    max_model_calls: int = DEFAULT_MAX_MODEL_CALLS
+
+
+def _require(raw: dict[str, Any], key: str, where: str) -> Any:
+    if key not in raw:
+        raise TaskFileError(f"{where} 缺少字段 {key}")
+    return raw[key]
+
+
+def _nonempty_str(value: Any, field: str, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TaskFileError(f"{where} 的 {field} 要是非空字符串（给了 {value!r}）")
+    return value
+
+
+def _relative_path(value: Any, field: str, where: str) -> str:
+    """任务里的文件路径必须留在临时工作区内（`..` 与绝对路径一律拒绝）。"""
+    text = _nonempty_str(value, field, where)
+    path = Path(text)
+    # Windows 的 "C:foo" 既不是 is_absolute()，也会解析到工作区之外——必须看 drive。
+    if path.drive or path.is_absolute() or any(part == ".." for part in path.parts):
+        raise TaskFileError(f"{where} 的 {field} 必须是工作区内的相对路径（给了 {text!r}）")
+    return text
+
+
+def _setup(raw: Any, where: str) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise TaskFileError(f"{where} 的 setup 应是对象（含 files 表）")
+    files = raw.get("files")
+    if not isinstance(files, dict) or not files:
+        raise TaskFileError(f"{where} 的 setup.files 不能为空")
+    result: dict[str, str] = {}
+    for path, content in files.items():
+        key = _relative_path(path, "setup.files 的路径", where)
+        if not isinstance(content, str):
+            raise TaskFileError(f"{where} 的 setup.files[{key!r}] 要是字符串")
+        result[key] = content
+    return result
+
+
+def _file_expectation(raw: Any, where: str) -> FileExpectation:
+    if not isinstance(raw, dict):
+        raise TaskFileError(f"{where} 的 verifier.files 条目应是对象")
+    path = _relative_path(_require(raw, "path", where), "path", where)
+    modes = [name for name in ("equals", "contains", "unchanged") if name in raw]
+    if len(modes) != 1:
+        raise TaskFileError(
+            f"{where} 对 {path} 的验收要且只要 equals / contains / unchanged 之一"
+            f"（给了 {modes or '空'}）"
+        )
+    mode = modes[0]
+    if mode == "unchanged":
+        if raw[mode] is not True:
+            raise TaskFileError(f"{where} 的 unchanged 只能是 true")
+        return FileExpectation(path=path, unchanged=True)
+    value = raw[mode]
+    if not isinstance(value, str):
+        raise TaskFileError(f"{where} 的 {mode} 要是字符串")
+    if mode == "equals":
+        return FileExpectation(path=path, equals=value)
+    return FileExpectation(path=path, contains=value)
+
+
+def _verifier(raw: Any, where: str) -> Verifier:
+    if not isinstance(raw, dict):
+        raise TaskFileError(f"{where} 缺少 [verifier] 表")
+    entries = raw.get("files")
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list):
+        raise TaskFileError(f"{where} 的 verifier.files 应是数组")
+    python = raw.get("python")
+    if python is not None and (not isinstance(python, str) or not python.strip()):
+        raise TaskFileError(f"{where} 的 verifier.python 要是非空字符串")
+    files = tuple(_file_expectation(item, where) for item in entries)
+    if not files and python is None:
+        raise TaskFileError(f"{where} 缺少 verifier：至少给 files 期望或 python 检查")
+    return Verifier(files=files, python=python)
+
+
+def _checkpoints(raw: Any, where: str) -> tuple[Checkpoint, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise TaskFileError(f"{where} 的 checkpoints 不能为空（至少一个问题）")
+    result: list[Checkpoint] = []
+    for index, item in enumerate(raw, start=1):
+        label = f"{where} 的第 {index} 个 checkpoint"
+        if not isinstance(item, dict):
+            raise TaskFileError(f"{label} 应是对象")
+        question = _nonempty_str(_require(item, "question", label), "question", label)
+        facts_raw = _require(item, "facts", label)
+        if not isinstance(facts_raw, list) or not facts_raw:
+            raise TaskFileError(f"{label} 的 facts 不能为空")
+        facts: list[tuple[str, ...]] = []
+        for group in facts_raw:
+            if not isinstance(group, list) or not group:
+                raise TaskFileError(f"{label} 的每个事实组必须是非空数组")
+            alternatives = tuple(
+                _nonempty_str(value, "facts 的替代表述", label) for value in group
+            )
+            facts.append(alternatives)
+        result.append(Checkpoint(question=question, facts=tuple(facts)))
+    return tuple(result)
+
+
+def load_task(path: Path) -> Task:
+    """读一个任务文件；任何结构问题都以 TaskFileError 报出（不猜、不跳过）。"""
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise TaskFileError(f"任务文件读不动：{path}（{exc}）") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise TaskFileError(f"任务文件不是合法 TOML：{path}（{exc}）") from exc
+    where = str(path)
+    task_id = _nonempty_str(_require(raw, "id", where), "id", where)
+    bucket = _nonempty_str(_require(raw, "bucket", where), "bucket", where)
+    if bucket not in {"A", "B", "C"}:
+        raise TaskFileError(f"{where} 的 bucket 只能是 A/B/C（给了 {bucket!r}）")
+    instruction = _nonempty_str(
+        _require(raw, "instruction", where), "instruction", where
+    )
+    setup = _setup(_require(raw, "setup", where), where)
+    verifier = _verifier(_require(raw, "verifier", where), where)
+    checkpoints = _checkpoints(_require(raw, "checkpoints", where), where)
+    timeout = raw.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+        raise TaskFileError(f"{where} 的 timeout_seconds 要是正数（给了 {timeout!r}）")
+    max_calls = raw.get("max_model_calls", DEFAULT_MAX_MODEL_CALLS)
+    if not isinstance(max_calls, int) or isinstance(max_calls, bool) or max_calls <= 0:
+        raise TaskFileError(f"{where} 的 max_model_calls 要是正整数（给了 {max_calls!r}）")
+    return Task(
+        id=task_id,
+        bucket=bucket,
+        instruction=instruction,
+        setup=setup,
+        verifier=verifier,
+        checkpoints=checkpoints,
+        timeout_seconds=float(timeout),
+        max_model_calls=max_calls,
+    )
+
+
+def load_tasks(directory: Path) -> list[Task]:
+    """读目录下全部 *.toml（按文件名排序）；空目录与重复 id 都是错误。"""
+    if not directory.is_dir():
+        raise TaskFileError(f"任务目录不存在：{directory}")
+    paths = sorted(directory.glob("*.toml"))
+    if not paths:
+        raise TaskFileError(f"任务目录里没有 *.toml 任务：{directory}")
+    tasks = [load_task(path) for path in paths]
+    seen: dict[str, Path] = {}
+    for path, task in zip(paths, tasks):
+        if task.id in seen:
+            raise TaskFileError(
+                f"重复的任务 id {task.id!r}：{seen[task.id]} 与 {path}"
+            )
+        seen[task.id] = path
+    return tasks

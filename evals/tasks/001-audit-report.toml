@@ -1,0 +1,62 @@
+# 压缩回归任务 001（A 桶，dogfood 风格）：跨文件计数并写出固定格式的报告。
+# 设计要点：5 个工具 turn（3 次 read + 1 次 write + 1 次 read 验证），
+# 让 k=5 的强制压缩恰好都有新的 turn 可压——压缩次数与任务步骤一一对应。
+
+id = "001-audit-report"
+bucket = "A"
+timeout_seconds = 300
+max_model_calls = 30
+
+instruction = """
+统计 a.txt、b.txt、c.txt 各自包含多少个 "TODO"（大小写敏感，按子串计数）。把结果写到 report.txt：
+每行格式为 `<文件名>:<次数>`，顺序固定为 a.txt、b.txt、c.txt，不要写任何其他内容。
+
+执行纪律：必须逐文件处理，一次只做一个动作——先 read a.txt，再 read b.txt，再 read c.txt；
+然后用 write 一次性写入 report.txt；最后 read report.txt 确认。不要使用 bash。
+"""
+
+[setup.files]
+"a.txt" = """alpha
+TODO: write tests
+beta
+TODO: review docs
+gamma
+"""
+"b.txt" = """one
+TODO: update changelog
+two
+"""
+"c.txt" = """done
+finished
+"""
+
+[verifier]
+[[verifier.files]]
+path = "report.txt"
+equals = """a.txt:2
+b.txt:1
+c.txt:0
+"""
+
+[[checkpoints]]
+question = "任务目标是什么？"
+facts = [
+  ["report.txt"],
+  ["TODO"],
+  ["计数", "次数", "统计", "count"],
+]
+
+[[checkpoints]]
+question = "已经完成哪些步骤？（请带上涉及的文件名）"
+facts = [
+  ["read", "读取", "读了"],
+  ["a.txt"],
+]
+
+[[checkpoints]]
+question = "有哪些必须遵守的约束？"
+facts = [
+  ["report.txt"],
+  ["顺序", "依次", "a.txt、b.txt、c.txt"],
+  ["不要", "不得", "不能", "仅", "只能", "只写", "只含", "不写", "其他内容"],
+]

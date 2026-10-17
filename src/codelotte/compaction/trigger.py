@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:  # 只为类型标注：纯判定模块不依赖配置加载
     from codelotte.config import Settings
@@ -223,6 +223,40 @@ def plan_compaction(
         cut_index=cut_index,
         first_kept_entry_id=entry_id,
         utilization=utilization,
+    )
+
+
+class CompactionPolicy(Protocol):
+    """触发策略（票据 13 的实验缝）：给定当前记录与用量，决定是否压缩、切在哪。
+
+    默认实现是 `default_compaction_policy`（双阈值）；回归套件注入"强制压缩 k 次"
+    的策略来隔离变量。策略必须是纯函数，才能让同一份记录得到同一决定。
+    """
+
+    def __call__(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        input_tokens: int,
+        context_window: int,
+        limits: CompactionLimits,
+    ) -> CompactionDecision | None: ...
+
+
+def default_compaction_policy(
+    entries: list[dict[str, Any]],
+    *,
+    input_tokens: int,
+    context_window: int,
+    limits: CompactionLimits,
+) -> CompactionDecision | None:
+    """生产策略：soft / hard 来自 settings.json（票据 12 的配置必须真的生效）。"""
+    return plan_compaction(
+        entries,
+        input_tokens=input_tokens,
+        context_window=context_window,
+        soft=limits.soft,
+        hard=limits.hard,
     )
 
 

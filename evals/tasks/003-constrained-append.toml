@@ -1,0 +1,63 @@
+# 压缩回归任务 003（B 桶，约束对抗）：规则里同时有"只能改哪个文件""不得用 bash""保持行序"。
+# 设计要点：8 个工具 turn（2 次 read + 1 次 write + 4 次 edit + 1 次 read），
+# 是三个任务里最长的链条——k=5 时压缩后的摘要必须持续携带多条约束。
+
+id = "003-constrained-append"
+bucket = "B"
+timeout_seconds = 420
+max_model_calls = 40
+
+instruction = """
+严格按 rules.txt 生成 output.txt。
+
+执行纪律：一次只做一个动作，不要合并——先 read rules.txt，再 read data.txt；然后用 write 把第一行写入
+output.txt；随后用 edit 逐行追加其余各行（每次 edit 只追加一行，追加前不要重写整个文件）；最后
+read output.txt 确认。不得使用 bash。
+"""
+
+[setup.files]
+"data.txt" = """red
+green
+blue
+yellow
+"""
+"rules.txt" = """1. 只能修改 output.txt，不得修改 data.txt。
+2. output.txt 必须保留 data.txt 的原始行序。
+3. 每行格式为 `<序号>: <原行内容>`，序号从 1 开始。
+4. 不得使用 bash；只能使用 read/write/edit 工具。
+"""
+
+[verifier]
+[[verifier.files]]
+path = "output.txt"
+equals = """1: red
+2: green
+3: blue
+4: yellow
+"""
+[[verifier.files]]
+path = "data.txt"
+unchanged = true
+
+[[checkpoints]]
+question = "任务目标是什么？"
+facts = [
+  ["output.txt"],
+  ["data.txt"],
+  ["序号", "编号"],  # 行序/顺序 ≠ 编号：保留顺序但忘掉序号仍然算丢失
+]
+
+[[checkpoints]]
+question = "已经完成哪些步骤？（请带上涉及的文件名）"
+facts = [
+  ["rules.txt"],
+  ["read", "读取", "读了"],
+]
+
+[[checkpoints]]
+question = "有哪些必须遵守的约束？"
+facts = [
+  ["data.txt"],
+  ["不得", "不能", "不要", "只能", "仅", "不用", "不改"],
+  ["bash"],
+]

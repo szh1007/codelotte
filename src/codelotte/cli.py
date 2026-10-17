@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shlex
+import subprocess
 import sys
 from collections.abc import Sequence
 from datetime import datetime
@@ -24,6 +26,13 @@ from codelotte.config import (
     record_changelog_version,
 )
 from codelotte.cost import load_catalog
+from codelotte.evals.meta import (
+    current_git_ref,
+    find_repo_root,
+    make_run_id,
+)
+from codelotte.evals.suite import run_suite
+from codelotte.evals.tasks import TaskFileError, load_tasks
 from codelotte.export import render_session_html, render_session_markdown
 from codelotte.guardrails import GuardrailLimits
 from codelotte.models import ModelSpec, resolve
@@ -185,6 +194,50 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument(
         "-o", "--output", metavar="路径", help="输出文件（默认 ./<会话文件名>.html）"
     )
+
+    eval_parser = subcommands.add_parser(
+        "eval", help="回归实验（票据 13）：一条命令跑出完整报表"
+    )
+    eval_sub = eval_parser.add_subparsers(dest="eval_command", metavar="实验")
+    compaction_parser = eval_sub.add_parser(
+        "compaction",
+        help="压缩回归套件 v0：强制压缩 k 次，测完成率与 checkpoint 状态保留率",
+    )
+    compaction_parser.add_argument(
+        "--k",
+        default="0,1,3,5",
+        metavar="列表",
+        help="强制压缩次数（逗号分隔；0 是不压缩的对照组，默认 0,1,3,5）",
+    )
+    compaction_parser.add_argument(
+        "--tasks", metavar="目录", help="任务目录（默认仓库根下的 evals/tasks）"
+    )
+    compaction_parser.add_argument(
+        "--out", metavar="目录", help="跑数根目录（默认仓库根下的 evals/runs）"
+    )
+    compaction_parser.add_argument(
+        "--repeat", type=int, default=1, metavar="N", help="每个任务 × k 重复次数（默认 1）"
+    )
+    compaction_parser.add_argument(
+        "--seed", type=int, default=0, metavar="N", help="随机种子（默认 0）"
+    )
+    compaction_parser.add_argument(
+        "--task",
+        action="append",
+        metavar="ID",
+        help="只跑指定任务 id（可重复；默认全部）",
+    )
+    compaction_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只校验任务文件并打印跑数计划，不调用模型、不建 run 目录",
+    )
+    compaction_parser.add_argument(
+        "--no-sandbox",
+        dest="no_sandbox",
+        action="store_true",
+        help="任务命令直接在宿主机执行（默认 Docker；实验任务仍是临时工作区）",
+    )
     return parser
 
 
@@ -318,6 +371,17 @@ def _parse_cli_rules(
     return rules
 
 
+def _client_from_spec(spec: ModelSpec) -> OpenAICompletionsClient:
+    """按最终模型参数建客户端（-p/TUI 与压缩回归实验共用同一构造）。"""
+    return OpenAICompletionsClient(
+        base_url=spec.base_url,
+        api_key=spec.api_key,
+        model=spec.id,
+        max_tokens=spec.max_output_tokens,  # 单次输出上限（用户可下调，随包默认封顶）
+        reasoning_effort=spec.reasoning_effort,  # 思考开关与强度（none 关闭；展示总是跟随）
+    )
+
+
 def _build_agent(
     *,
     resume: bool = False,
@@ -353,13 +417,7 @@ def _build_agent(
     permissions = build_permission_layer(
         Path.cwd(), cli_rules=rules
     )  # 票据 09：CLI 规则 + 项目/用户规则文件（未信任的项目规则被忽略，notices 里有说明）
-    client = OpenAICompletionsClient(
-        base_url=spec.base_url,
-        api_key=spec.api_key,
-        model=spec.id,
-        max_tokens=spec.max_output_tokens,  # 单次输出上限（用户可下调，随包默认封顶）
-        reasoning_effort=spec.reasoning_effort,  # 思考开关与强度（none 关闭；展示总是跟随）
-    )
+    client = _client_from_spec(spec)
     executor: Executor = LocalExecutor() if no_sandbox else DockerExecutor()
     # 死循环三层防御阈值（票据 11）：settings.json 覆盖 + guardrails 的默认值
     guardrail_limits = GuardrailLimits.from_settings(resolved)
@@ -540,6 +598,128 @@ def _run_trust() -> int:
     return 1
 
 
+def _parse_k_values(text: str) -> tuple[int, ...]:
+    """`--k 0,1,3,5` → 升序去重前的校验（空项/负数/重复都算用法错误）。"""
+    values: list[int] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            raise ConfigError("--k 里有空项（示例：--k 0,1,3,5）")
+        try:
+            value = int(part)
+        except ValueError as exc:
+            raise ConfigError(f"--k 的每一项都要是非负整数（给了 {part!r}）") from exc
+        if value < 0:
+            raise ConfigError(f"--k 的每一项都要是非负整数（给了 {value}）")
+        values.append(value)
+    if len(set(values)) != len(values):
+        raise ConfigError(f"--k 不能有重复值（给了 {text!r}）")
+    return tuple(sorted(values))
+
+
+def _ensure_docker_available() -> None:
+    """默认沙箱的预检：Docker 不可用时一次说清楚，而不是 27 条案例各失败一次。"""
+    try:
+        result = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ConfigError(
+            f"Docker 沙箱不可用：{exc}；可加 --no-sandbox（命令将直接在宿主机执行，风险自负）"
+        ) from exc
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        detail = lines[-1] if lines else "docker version 失败"
+        raise ConfigError(
+            f"Docker 沙箱不可用：{detail}；可加 --no-sandbox（命令将直接在宿主机执行，风险自负）"
+        )
+
+
+def _run_eval_compaction(
+    args: argparse.Namespace, *, settings: Settings, argv: Sequence[str]
+) -> int:
+    """一条命令跑完整轮压缩回归并落报表；返回报表路径（stdout）与进度（stderr）。"""
+    try:
+        k_values = _parse_k_values(args.k)
+        if args.repeat < 1:
+            raise ConfigError(f"--repeat 要 ≥1（给了 {args.repeat}）")
+        repo_root = find_repo_root(Path.cwd())
+        tasks_dir = Path(args.tasks) if args.tasks else repo_root / "evals" / "tasks"
+        out_dir = Path(args.out) if args.out else repo_root / "evals" / "runs"
+        tasks = load_tasks(tasks_dir)
+        if args.task:
+            wanted = set(args.task)
+            available = {task.id for task in tasks}
+            missing = wanted - available
+            if missing:
+                raise TaskFileError(
+                    f"没有这些任务 id：{sorted(missing)}；可选：{sorted(available)}"
+                )
+            tasks = [task for task in tasks if task.id in wanted]
+        if args.dry_run:
+            print(f"任务目录：{tasks_dir}")
+            for task in tasks:
+                print(
+                    f"- {task.id}（{task.bucket} 桶，{len(task.checkpoints)} 个 checkpoint，"
+                    f"超时 {task.timeout_seconds:g}s，最多 {task.max_model_calls} 次模型调用）"
+                )
+            cases = len(tasks) * len(k_values) * args.repeat
+            print(
+                f"计划：{len(tasks)} 任务 × {len(k_values)} 个 k × {args.repeat} 次重复"
+                f" = {cases} 条案例；k={','.join(str(k) for k in k_values)}"
+            )
+            print("dry-run：任务文件校验通过，未调用模型、未创建 run 目录。")
+            return 0
+        catalog = load_catalog()
+        spec = resolve(settings, catalog)
+        compaction_limits = CompactionLimits.from_settings(settings)
+        guardrail_limits = GuardrailLimits.from_settings(settings)
+        if args.no_sandbox:
+            print(SANDBOX_OFF_WARNING, file=sys.stderr)
+            executor_factory = LocalExecutor
+        else:
+            _ensure_docker_available()
+            executor_factory = DockerExecutor
+        run_id = make_run_id(current_git_ref(repo_root))
+        command = "codelotte " + shlex.join(list(argv))
+
+        def progress(line: str) -> None:
+            print(f"[eval] {line}", file=sys.stderr, flush=True)
+
+        meta, cases = asyncio.run(
+            run_suite(
+                tasks,
+                k_values=k_values,
+                repetitions=args.repeat,
+                run_id=run_id,
+                runs_root=out_dir,
+                repo_root=repo_root,
+                model=spec.id,
+                reasoning_effort=spec.reasoning_effort,
+                catalog=catalog,
+                context_window=spec.context_window,
+                client_factory=lambda: _client_from_spec(spec),
+                probe_client_factory=lambda: _client_from_spec(spec),
+                executor_factory=executor_factory,
+                compaction_limits=compaction_limits,
+                guardrail_limits=guardrail_limits,
+                seed=args.seed,
+                command=command,
+                progress=progress,
+            )
+        )
+    except (TaskFileError, ConfigError, ValueError, OSError) as exc:
+        return _fail(exc)
+    report = out_dir / meta.run_id / "report.md"
+    print(f"[eval] 完成：{len(cases)} 条案例；报表 {report}", file=sys.stderr)
+    print(report)
+    return 1 if any(case.error for case in cases) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _reconfigure(sys.stdout)
     _reconfigure(sys.stderr)
@@ -554,6 +734,17 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "eval":
+        if getattr(args, "eval_command", None) != "compaction":
+            parser.error(
+                "用法：codelotte eval compaction [--k 0,1,3,5] [--tasks 目录] "
+                "[--out 目录] [--repeat N] [--seed N] [--task ID] [--no-sandbox]"
+            )
+        return _run_eval_compaction(
+            args,
+            settings=settings,
+            argv=list(argv) if argv is not None else sys.argv[1:],
+        )
     if args.command == "export":
         return _run_export(args)
     if args.command == "trust":

@@ -550,3 +550,73 @@ def test_permission_writer_refuses_to_clobber_broken_file(tmp_path: Path) -> Non
     assert result.returncode == 1
     assert "先手动修好" in result.stderr
     assert _rules_file(home).read_text(encoding="utf-8") == "[1, 2]"  # 原文件不动
+
+
+def test_eval_compaction_parser_defaults() -> None:
+    from codelotte.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["eval", "compaction", "--task", "001-audit-report", "--no-sandbox"]
+    )
+    assert args.command == "eval" and args.eval_command == "compaction"
+    assert args.k == "0,1,3,5"
+    assert args.repeat == 1 and args.seed == 0
+    assert args.no_sandbox is True
+    assert args.task == ["001-audit-report"]
+
+
+def test_eval_compaction_rejects_duplicate_k_readably(tmp_path: Path) -> None:
+    """一条命令的入口：坏参数给可读错误 + 退出码 2，不裸 traceback。"""
+    result = run_cli(
+        "eval",
+        "compaction",
+        "--k",
+        "1,3,1",
+        "--no-sandbox",
+        cwd=tmp_path,
+        env=_session_env(tmp_path),
+    )
+    assert result.returncode == 2
+    assert "--k 不能有重复值" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_eval_compaction_reports_missing_task_id(tmp_path: Path) -> None:
+    result = run_cli(
+        "eval",
+        "compaction",
+        "--k",
+        "0",
+        "--task",
+        "no-such-task",
+        "--no-sandbox",
+        "--tasks",
+        str(PROJECT_ROOT / "evals" / "tasks"),
+        "--out",
+        str(tmp_path / "runs"),
+        cwd=tmp_path,
+        env=_session_env(tmp_path),
+    )
+    assert result.returncode == 2
+    assert "没有这些任务 id" in result.stderr
+    assert "001-audit-report" in result.stderr
+
+
+def test_eval_compaction_dry_run_validates_tasks_without_calling_models(
+    tmp_path: Path,
+) -> None:
+    """新增/修改任务后先 dry-run：只校验 TOML 并打印计划，不花钱、不建 run 目录。"""
+    result = run_cli(
+        "eval",
+        "compaction",
+        "--dry-run",
+        "--tasks",
+        str(PROJECT_ROOT / "evals" / "tasks"),
+        cwd=tmp_path,
+        env=_session_env(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "计划：3 任务 × 4 个 k × 1 次重复 = 12 条案例" in result.stdout
+    assert "001-audit-report" in result.stdout
+    assert "dry-run" in result.stdout
+    assert not (tmp_path / "evals" / "runs").exists()

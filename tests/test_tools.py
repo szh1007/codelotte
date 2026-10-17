@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
-from codelotte.sandbox import LocalExecutor
+import pytest
+
+from codelotte.sandbox import DockerExecutor, LocalExecutor
 from codelotte.tools import default_tools, execute_tool, find_tool, wire_tools
 from codelotte.tools.base import Tool, ToolError, ToolOutcome
 
@@ -24,6 +27,28 @@ def test_bash_carries_the_executor_environment_into_audit_records() -> None:
 
     envs = {tool.name: tool.exec_env for tool in default_tools(DockerExecutor())}
     assert envs == {"read": "local", "write": "local", "edit": "local", "bash": "docker"}
+
+
+def test_docker_file_tools_map_the_container_workspace_to_the_host_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模型从 bash 看到 /workspace，文件工具却在宿主机跑——别名必须映射回 cwd。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    tools = default_tools(DockerExecutor())
+
+    read = asyncio.run(
+        execute_tool("read", {"path": "/workspace/a.txt"}, tools=tools)
+    )
+    write = asyncio.run(
+        execute_tool(
+            "write", {"path": "/workspace/out.txt", "content": "ok"}, tools=tools
+        )
+    )
+
+    assert read.ok is True and "hello" in read.content
+    assert write.ok is True
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "ok"
 
 
 def test_wire_schemas_are_openai_shaped() -> None:
