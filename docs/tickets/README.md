@@ -43,9 +43,9 @@
 | [06](06-session-tree-fork.md) | 会话树与分支 / fork | 03 | ✅ done（真机验证待做） |
 | [07](07-cost-ledger.md) | 成本记账与展示 | 05 | ✅ done（真机对账通过） |
 | [08](08-html-export-v1.md) | HTML 会话导出 v1 | 06, 07 | ✅ done（真机样例待做） |
-| [09](09-permission-layer.md) | 权限层（规则 + 审批 + trust） | 04 | ✅ done（真机 TUI 审批待做） |
-| [10](10-docker-sandbox.md) | Docker 沙箱 | 04 | ready-for-agent |
-| [11](11-loop-guardrails.md) | 死循环三层防御 | 04 | ✅ done（自动化全绿） |
+| [09](09-permission-layer.md) | 权限层（规则 + 审批 + trust） | 04 | ✅ done（真机 TUI 审批 + 与票据 10 沙箱联训均通过） |
+| [10](10-docker-sandbox.md) | Docker 沙箱 | 04 | ✅ done（真机 Docker Desktop 验证通过） |
+| [11](11-loop-guardrails.md) | 死循环三层防御 | 04 | ✅ done（自动化全绿；三层均有剧本化触发测试） |
 | [12](12-compaction-v1.md) | 压缩 v1（双触发 + 结构化摘要） | 06, 07 | ready-for-agent |
 | [13](13-compaction-regression-suite.md) | 压缩回归套件 v0 | 12 | ready-for-agent |
 | [14](14-readme-and-dogfood.md) | README v1 + 演示材料 + dogfood 启动 | 08, 12 | ready-for-agent |
