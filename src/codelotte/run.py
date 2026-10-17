@@ -17,10 +17,13 @@ import json
 import sys
 
 from codelotte.cost import Ledger, call_record_from_entry
+from codelotte.display import guardrail_notice
+from codelotte.guardrails import STOP_CIRCUIT, STOP_PLANNING
 from codelotte.loop import (
     MAX_ITERATIONS,
     AgentLoop,
     CostRecorded,
+    GuardrailTriggered,
     ToolFinished,
     ToolRequested,
     TurnEnded,
@@ -92,6 +95,11 @@ class _Presenter:
             )
         sys.stderr.flush()
 
+    def on_guardrail(self, event: GuardrailTriggered) -> None:
+        self._close_reasoning()
+        sys.stderr.write(f"[codelotte] {guardrail_notice(event.layer, event.message)}\n")
+        sys.stderr.flush()
+
     def on_turn_ended(self) -> None:
         self._close_reasoning()
         self._finish_text(intermediate=False)  # 终轮文本：答案
@@ -131,6 +139,7 @@ async def run_once(loop: AgentLoop, prompt: str) -> int:
     ledger = Ledger()
     stop_reason: str | None = None
     hit_cap = False
+    guardrail_stop: str | None = None
     calls_made = 0
     try:
         async for event in loop.run_turn(prompt):
@@ -144,10 +153,13 @@ async def run_once(loop: AgentLoop, prompt: str) -> int:
                 presenter.on_tool_requested(event)
             elif isinstance(event, ToolFinished):
                 presenter.on_tool_finished(event)
+            elif isinstance(event, GuardrailTriggered):
+                presenter.on_guardrail(event)
             elif isinstance(event, TurnEnded):
                 presenter.on_turn_ended()
                 stop_reason = event.stop_reason
                 hit_cap = event.hit_iteration_cap
+                guardrail_stop = event.guardrail_stop
                 calls_made = event.calls_made
     finally:
         presenter.close()  # 失败/中断路径：思考块与残留文本也要收尾
@@ -156,9 +168,10 @@ async def run_once(loop: AgentLoop, prompt: str) -> int:
             ledger,
             stop_reason=stop_reason,
             hit_cap=hit_cap,
+            guardrail_stop=guardrail_stop,
             calls_made=calls_made,
         )  # 账单是事实：失败/中断也照打（审查修正）
-    return 1 if hit_cap else 0
+    return 1 if (hit_cap or guardrail_stop is not None) else 0
 
 
 def _report(
@@ -167,10 +180,19 @@ def _report(
     *,
     stop_reason: str | None,
     hit_cap: bool,
+    guardrail_stop: str | None,
     calls_made: int,
 ) -> None:
     """收尾汇总：警告 + 本次运行的 token 行 + 会话累计分项账单。"""
-    if hit_cap:
+    if guardrail_stop == STOP_CIRCUIT:
+        sys.stderr.write(
+            "[codelotte] 警告：连续工具失败，已熔断本回合（模型已总结现状）\n"
+        )
+    elif guardrail_stop == STOP_PLANNING:
+        sys.stderr.write(
+            "[codelotte] 警告：重复操作未纠正，本回合已被规划层温和终止\n"
+        )
+    elif hit_cap:
         sys.stderr.write(
             f"[codelotte] 警告：已达迭代上限 {MAX_ITERATIONS} 轮，回合强制结束\n"
         )

@@ -22,10 +22,18 @@ from textual.widgets import Button, Collapsible, Input, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
 from codelotte.cost import Ledger, call_record_from_entry, format_money
-from codelotte.display import args_preview, duration_text, preview_text, tool_title
+from codelotte.display import (
+    args_preview,
+    duration_text,
+    guardrail_notice,
+    guardrail_stop_text,
+    preview_text,
+    tool_title,
+)
 from codelotte.loop import (
     AgentLoop,
     CostRecorded,
+    GuardrailTriggered,
     ToolFinished,
     ToolRequested,
     TurnEnded,
@@ -37,6 +45,7 @@ from codelotte.permissions import (
     DECISION_SESSION,
     PermissionRequest,
 )
+from codelotte.guardrails import EVENT_GUARDRAIL
 from codelotte.providers.base import ProviderError, ReasoningDelta, TextDelta
 from codelotte.session.context import INTERRUPTED_TOOL_NOTE
 
@@ -345,9 +354,17 @@ class TuiApp(App[None]):
                     ok=event.ok, content=event.content, duration_ms=event.duration_ms
                 )
                 self._scroll_end()
+        elif isinstance(event, GuardrailTriggered):
+            await self._mount_guardrail(event.layer, event.message)
         elif isinstance(event, TurnEnded):
             self._close_reasoning()
             await self._end_markdown()
+            if event.guardrail_stop is not None:
+                await self._mount_notice(
+                    f"⚠ 本回合已被死循环防御终止"
+                    f"（{guardrail_stop_text(event.guardrail_stop)}）——"
+                    "会话已保存，可继续输入或稍后 --continue"
+                )
             if event.hit_iteration_cap:
                 await self._mount_notice(
                     "⚠ 已达迭代上限，回合被强制结束（详见会话记录）"
@@ -379,6 +396,11 @@ class TuiApp(App[None]):
     async def _mount_notice(self, text: str) -> None:
         await self._end_markdown()
         await self._mount(Static(Text(text, style="yellow")))
+
+    async def _mount_guardrail(self, layer: str, message: str) -> None:
+        """死循环防御事件（票据 11）：比普通提示更醒目（加粗黄）；TUI 与导出口径一致。"""
+        await self._end_markdown()
+        await self._mount(Static(Text(guardrail_notice(layer, message), style="bold yellow")))
 
     async def _write_reasoning(self, text: str) -> None:
         """思考增量：懒建一块暗色 Static，随到随刷（正文/工具出现时收尾，见 _close_reasoning）。"""
@@ -443,6 +465,11 @@ class TuiApp(App[None]):
                         content=str(entry.get("content", "")),
                         duration_ms=int(entry.get("durationMs", 0)),
                     )
+            elif kind == "event" and entry.get("kind") == EVENT_GUARDRAIL:
+                # 回放历史拦截（票据 11）：与实时事件同一句话（display.guardrail_notice）
+                await self._mount_guardrail(
+                    str(entry.get("layer", "")), str(entry.get("message", ""))
+                )
             elif (
                 kind == "usage"
             ):  # 恢复会话后状态栏要把已有用量也带上（记录里有的，界面也要有）

@@ -25,7 +25,11 @@
   "lastChangelogVersion": "0.1.0",
   "defaultProvider": "deepseek",
   "defaultModel": "deepseek-flash",
-  "commandTimeoutSeconds": 120
+  "commandTimeoutSeconds": 120,
+  "guardrailRepeatLimit": 3,
+  "guardrailStagnationLimit": 2,
+  "guardrailFailureLimit": 3,
+  "guardrailPlanningLimit": 2
 }
 ```
 
@@ -35,8 +39,13 @@
 | `defaultProvider` | `default_provider` | 选用户级 models.json 里的 providers 条目 | **是** |
 | `defaultModel` | `default_model` | 选该 provider 的 models 条目（必须是随包目录里已适配的 id） | **是** |
 | `commandTimeoutSeconds` | `command_timeout` | bash 工具默认超时（**1–600 秒，超范围报错**） | 否（默认 120） |
+| `guardrailRepeatLimit` | `guardrail_repeat_limit` | 连续同名同参调用第 N 次被工具层拦截（**2–100**） | 否（默认 3） |
+| `guardrailStagnationLimit` | `guardrail_stagnation_limit` | 同名同参连续 N 次返回相同结果后，拦截下一次调用（**2–100**） | 否（默认 2） |
+| `guardrailFailureLimit` | `guardrail_failure_limit` | 连续 N 次工具失败（含权限拒绝/沙箱错误/参数畸形/工具层拦截）后熔断回合（**2–100**） | 否（默认 3） |
+| `guardrailPlanningLimit` | `guardrail_planning_limit` | 工具层累计拦截 N 次后，规划层温和终止回合（**2–100**；首次拦截批次总是先重注入任务目标与硬约束，之后的批次累计到 N 次才终止） | 否（默认 2） |
 
 - 未知键：忽略并在启动时提示（不静默）；已知键类型写错：直接报错退出。
+- 死循环三层防御（票据 11）：工具层（同名同参重复 / 结果无进展）→ 推理层（连续工具失败熔断，禁用工具请模型总结）→ 规划层（重注入任务目标与硬约束；累计拦截到阈值则温和终止）。每次拦截写一条 `event`（kind=guardrail）进会话，TUI 与导出高亮；四个阈值按**回合**计数，上一回合不牵连新任务。
 - 会话目录不在这里：固定为 `~/.codelotte/sessions`。
 - 权限规则、密钥、计费规则都不在这里（各归各的文件）。
 

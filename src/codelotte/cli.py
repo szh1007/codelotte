@@ -24,6 +24,7 @@ from codelotte.config import (
 )
 from codelotte.cost import load_catalog
 from codelotte.export import render_session_html, render_session_markdown
+from codelotte.guardrails import GuardrailLimits
 from codelotte.models import ModelSpec, resolve
 from codelotte.permissions import (
     ALLOW,
@@ -359,6 +360,8 @@ def _build_agent(
         reasoning_effort=spec.reasoning_effort,  # 思考开关与强度（none 关闭；展示总是跟随）
     )
     executor: Executor = LocalExecutor() if no_sandbox else DockerExecutor()
+    # 死循环三层防御阈值（票据 11）：settings.json 覆盖 + guardrails 的默认值
+    guardrail_limits = GuardrailLimits.from_settings(resolved)
     cwd = Path.cwd()
     if resume_index is not None:
         items, skipped = list_resumable(cwd)
@@ -387,6 +390,7 @@ def _build_agent(
         messages=messages,
         catalog=catalog,
         permissions=permissions,
+        guardrail_limits=guardrail_limits,
     )
     return loop, spec, executor
 

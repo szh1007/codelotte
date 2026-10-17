@@ -26,6 +26,21 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from codelotte.cost import CallRecord, Catalog, price_call
+from codelotte.guardrails import (
+    EVENT_GUARDRAIL,
+    GUARD_CIRCUIT,
+    GUARD_REINJECT,
+    LAYER_PLANNING,
+    LAYER_REASONING,
+    LAYER_TOOL,
+    STOP_CIRCUIT,
+    STOP_PLANNING,
+    GuardrailLimits,
+    GuardrailTracker,
+    circuit_reminder,
+    planning_reminder,
+    planning_terminate_message,
+)
 from codelotte.permissions import (
     ALLOW,
     ASK,
@@ -91,11 +106,28 @@ class ToolFinished:
 
 @dataclass(frozen=True)
 class TurnEnded:
-    """一个回合结束。stop_reason 是最后一次模型调用的结束原因。"""
+    """一个回合结束。stop_reason 是最后一次模型调用的结束原因。
+
+    guardrail_stop 非空表示回合被死循环防御终止（"circuitBreaker" / "planning"），
+    消费方据此给出明确原因（票据 11）。
+    """
 
     stop_reason: str | None
     hit_iteration_cap: bool
     calls_made: int
+    guardrail_stop: str | None = None
+
+
+@dataclass(frozen=True)
+class GuardrailTriggered:
+    """死循环防御的一次拦截/熔断/终止（事件记录已先落盘，票据 11）。
+
+    layer：tool（重复/无进展）/ reasoning（连续失败熔断）/ planning（重注入或温和终止）。
+    """
+
+    layer: str
+    guard: str
+    message: str
 
 
 @dataclass(frozen=True)
@@ -106,7 +138,13 @@ class CostRecorded:
 
 
 LoopEvent = (
-    TextDelta | ReasoningDelta | CostRecorded | ToolRequested | ToolFinished | TurnEnded
+    TextDelta
+    | ReasoningDelta
+    | CostRecorded
+    | ToolRequested
+    | ToolFinished
+    | GuardrailTriggered
+    | TurnEnded
 )
 
 
@@ -189,6 +227,7 @@ class AgentLoop:
         env: str = "local",  # 未知工具的兜底；已知工具按自己的 exec_env 标记（见 _tool_env）
         messages: list[dict[str, Any]] | None = None,
         approver: Approver | None = None,
+        guardrail_limits: GuardrailLimits | None = None,
     ) -> None:
         self._client = client
         self._tools = tools
@@ -197,6 +236,12 @@ class AgentLoop:
         self._env = env
         self._catalog = catalog
         self._permissions = permissions
+        # 死循环三层防御（票据 11）：阈值可配，计数按回合重置
+        self._guardrail_limits = (
+            guardrail_limits if guardrail_limits is not None else GuardrailLimits()
+        )
+        self._guardrails = GuardrailTracker(self._guardrail_limits)
+        self._turn_goal = ""
         # 审批者只在有交互面时注入（TUI）；无头上为 None——ask 一律 fail-closed（SPEC §G）
         self.approver = approver
         self._tool_schemas = wire_tools(tools)
@@ -228,6 +273,11 @@ class AgentLoop:
         """本次运行的权限层（notices 供展示层提示，票据 09）。"""
         return self._permissions
 
+    @property
+    def guardrail_limits(self) -> GuardrailLimits:
+        """本次运行的死循环防御阈值（配置透传结果，票据 11）。"""
+        return self._guardrail_limits
+
     async def run_turn(self, prompt: str) -> AsyncIterator[LoopEvent]:
         """跑一个完整回合并广播事件。工具失败不中断（错误文本回传模型自纠）。
 
@@ -235,6 +285,9 @@ class AgentLoop:
         """
         self._store.append("message", role="user", content=prompt)
         self.messages.append({"role": "user", "content": prompt})
+        # 死循环防御按回合计数：上一回合的重复/失败不牵连新任务（票据 11）
+        self._turn_goal = prompt
+        self._guardrails.reset()
 
         calls_made = 0
         stop_reason: str | None = None
@@ -258,9 +311,50 @@ class AgentLoop:
                 )
                 return
             self.messages.append(_assistant_message(turn))
+            self._guardrails.begin_batch()
             for call in turn.tool_calls:
                 async for call_event in self._run_call(call):
                     yield call_event
+
+            # 批结束统一结算：连续失败 → 熔断（禁工具请模型总结）；否则规划层处理拦截。
+            # 放在整批之后是为了不打断协议：每个 tool_call 都已有对应的 tool 应答。
+            if self._guardrails.should_break():
+                async for event in self._circuit_break(calls_made):
+                    yield event
+                return
+            action = self._guardrails.planning_after_batch()
+            if action is not None:
+                if action.kind == GUARD_REINJECT:
+                    reminder = planning_reminder(self._turn_goal, action.detail)
+                    message = f"工具层拦截重复操作：{action.detail}"
+                    event = self._record_guardrail(
+                        layer=LAYER_PLANNING,
+                        guard=action.kind,
+                        message=message,
+                        blocks=action.blocks,
+                        threshold=action.threshold,
+                        injected=reminder,
+                    )
+                    self.messages.append({"role": "user", "content": reminder})
+                    yield event
+                else:
+                    message = planning_terminate_message(
+                        action.blocks, action.threshold, action.detail
+                    )
+                    yield self._record_guardrail(
+                        layer=LAYER_PLANNING,
+                        guard=action.kind,
+                        message=message,
+                        blocks=action.blocks,
+                        threshold=action.threshold,
+                    )
+                    yield TurnEnded(
+                        stop_reason=stop_reason,
+                        hit_iteration_cap=False,
+                        calls_made=calls_made,
+                        guardrail_stop=STOP_PLANNING,
+                    )
+                    return
         else:
             self._store.append(
                 "event", kind="iterationLimit", iterations=MAX_ITERATIONS
@@ -269,18 +363,72 @@ class AgentLoop:
                 stop_reason=stop_reason, hit_iteration_cap=True, calls_made=calls_made
             )
 
-    async def _consume_stream(self, turn: _Turn) -> AsyncIterator[LoopEvent]:
+    async def _circuit_break(self, calls_made: int) -> AsyncIterator[LoopEvent]:
+        """推理层熔断：记录事件 → 重注入总结要求 → 禁用工具再请求一次 → 结束回合。
+
+        熔断不是异常：模型有一次机会在无工具条件下总结现状，总结照常落盘；
+        回合结束原因写进 TurnEnded.guardrail_stop，会话可继续（票据 11 验收）。
+        """
+        failures = self._guardrails.failure_streak
+        reminder = circuit_reminder(self._turn_goal, failures)
+        message = (
+            f"连续 {failures} 次工具调用失败，熔断当前回合"
+            "（工具已禁用，请模型总结现状）"
+        )
+        event = self._record_guardrail(
+            layer=LAYER_REASONING,
+            guard=GUARD_CIRCUIT,
+            message=message,
+            count=failures,
+            threshold=self.guardrail_limits.failure,
+            injected=reminder,
+        )
+        self.messages.append({"role": "user", "content": reminder})
+        yield event
+
+        summary = _Turn()
+        async for stream_event in self._consume_stream(summary, use_tools=False):
+            yield stream_event
+        if summary.failure is not None:
+            raise summary.failure
+        self.messages.append(_assistant_message(summary))
+        yield TurnEnded(
+            stop_reason=summary.stop_reason,
+            hit_iteration_cap=False,
+            calls_made=calls_made + 1,
+            guardrail_stop=STOP_CIRCUIT,
+        )
+
+    def _record_guardrail(
+        self, *, layer: str, guard: str, message: str, **fields: Any
+    ) -> GuardrailTriggered:
+        """落一条 guardrail 事件并返回广播用事件：记录先于呈现，字段形状只定义一次。"""
+        self._store.append(
+            "event",
+            kind=EVENT_GUARDRAIL,
+            layer=layer,
+            guard=guard,
+            message=message,
+            **fields,
+        )
+        return GuardrailTriggered(layer=layer, guard=guard, message=message)
+
+    async def _consume_stream(
+        self, turn: _Turn, *, use_tools: bool = True
+    ) -> AsyncIterator[LoopEvent]:
         """请求模型一次：边收边广播增量事件，收完落盘（turn 由调用方持有，回填收集结果）。
 
         增量（文本/思考/用量）是呈现用事件，随到随发；assistant 记录在流结束时一次性落盘
         （流式中途失败或被取消时，已看到的部分也落盘后再向上抛——记录是事实源）。
+        use_tools=False 用于熔断后的总结调用：请求不带工具定义，指纹也按无工具算。
         """
-        fingerprint = _request_fingerprint(self.messages, self._tool_schemas)
+        tool_schemas = self._tool_schemas if use_tools else None
+        fingerprint = _request_fingerprint(self.messages, tool_schemas or [])
         parts: list[str] = []
         reasoning_parts: list[str] = []
         try:
             async for event in self._client.stream_chat(
-                self.messages, tools=self._tool_schemas
+                self.messages, tools=tool_schemas
             ):
                 if isinstance(event, TextDelta):
                     parts.append(event.text)
@@ -289,7 +437,10 @@ class AgentLoop:
                     reasoning_parts.append(event.text)
                     yield event
                 elif isinstance(event, ToolCallsEvent):
-                    turn.tool_calls = event.calls
+                    if use_tools:
+                        turn.tool_calls = event.calls
+                    # use_tools=False（熔断总结）：即使端点硬塞回 tool_calls 也丢弃——
+                    # 没有工具应答的 assistant toolCalls 会让恢复后的请求非法（票据 11）
                 elif isinstance(event, UsageEvent):
                     turn.usage = (
                         event.usage
@@ -358,7 +509,9 @@ class AgentLoop:
         assistant 声明的每个 tool_call 仍各有一条 tool 应答——缺一个，下一次请求整个 400。
         """
         arguments: dict[str, Any] | None = None
+        block = None
         if call.parse_error is not None:
+            self._guardrails.record_malformed()  # 参数畸形也算一次连续失败（票据 11）
             self._store.append(
                 "tool_call",
                 toolCallId=call.id,
@@ -368,7 +521,8 @@ class AgentLoop:
                 env=self._tool_env(call.name),
             )
         else:
-            arguments = json.loads(call.arguments)  # 装配器已校验：合法 JSON 对象
+            parsed: dict[str, Any] = json.loads(call.arguments)  # 装配器已校验：合法 JSON 对象
+            arguments = parsed
             self._store.append(
                 "tool_call",
                 toolCallId=call.id,
@@ -376,6 +530,7 @@ class AgentLoop:
                 arguments=arguments,
                 env=self._tool_env(call.name),
             )
+            block = self._guardrails.check_call(call.name, parsed)
 
         reply: dict[str, Any] = {
             "role": "tool",
@@ -396,6 +551,9 @@ class AgentLoop:
                 ok=False,
                 duration_ms=0,
             )
+        elif block is not None:
+            # 工具层拦截：不执行、不经过权限层；拦截说明作为工具结果回传模型
+            result = ToolResult(content=block.message, ok=False, duration_ms=0)
         else:
             authorization = await self._authorize(call, arguments)
             if authorization.allowed:
@@ -411,6 +569,24 @@ class AgentLoop:
                     ok=False,
                     duration_ms=0,
                 )
+        if arguments is not None and block is None:
+            # 真正执行后的结果计入连续失败/无进展；工具层拦截不由推理层重复计数
+            self._guardrails.record_result(
+                call.name, arguments, result.content, ok=result.ok
+            )
+        block_event: GuardrailTriggered | None = None
+        if block is not None:
+            # 拦截事件先于工具结果落盘（记录是事实源，票据 11）
+            block_event = self._record_guardrail(
+                layer=LAYER_TOOL,
+                guard=block.guard,
+                message=block.message,
+                count=block.count,
+                threshold=block.threshold,
+                detail=block.detail,
+                tool=call.name,
+                toolCallId=call.id,
+            )
         reply["content"] = result.content  # 原地回填（同一条消息，取消也不会缺项）
         self._store.append(
             "tool_result",
@@ -428,6 +604,8 @@ class AgentLoop:
             content=result.content,
             duration_ms=result.duration_ms,
         )
+        if block_event is not None:
+            yield block_event
 
     def _tool_env(self, name: str) -> str:
         """一次工具调用的执行环境（审计字段）：按工具实现如实标记（bash 随执行器，

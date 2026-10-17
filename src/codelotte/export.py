@@ -30,7 +30,8 @@ from codelotte.cost import (
     call_record_from_entry,
     format_money,
 )
-from codelotte.display import args_preview, duration_text, tool_title
+from codelotte.display import args_preview, duration_text, guardrail_notice, tool_title
+from codelotte.guardrails import EVENT_GUARDRAIL
 from codelotte.session.context import INTERRUPTED_TOOL_NOTE
 
 _RESULT_LIMIT = 2000  # 摘要上限：与 TUI 同一纪律（超限截断并标注），数值按介质（终端窄、网页宽）
@@ -181,6 +182,11 @@ def _render_marker(entry: dict[str, Any]) -> str:
             f'<div class="marker warn">⚠ 达到迭代上限（{_esc(entry.get("iterations", "?"))} 轮），'
             "回合被强制结束</div>"
         )
+    if entry.get("type") == "event" and kind == EVENT_GUARDRAIL:
+        text = guardrail_notice(
+            str(entry.get("layer", "")), str(entry.get("message", ""))
+        )
+        return f'<div class="marker warn">{_esc(text)}</div>'
     typename = _esc(entry.get("type", "?"))
     detail = f"（kind={_esc(kind)}）" if kind else ""
     return f'<div class="marker">记录：{typename}{detail}</div>'
@@ -406,6 +412,11 @@ def _md_marker(entry: dict[str, Any]) -> str:
         return "> ⎇ 分支点：会话从此处 fork 出新分支"
     if entry.get("type") == "event" and kind == "iterationLimit":
         return f"> ⚠ 达到迭代上限（{_md_heading(entry.get('iterations', '?'))} 轮），回合被强制结束"
+    if entry.get("type") == "event" and kind == EVENT_GUARDRAIL:
+        text = guardrail_notice(
+            str(entry.get("layer", "")), str(entry.get("message", ""))
+        )
+        return f"> {_md_heading(text)}"
     typename = _md_heading(entry.get("type", "?"))
     detail = f"（kind={_md_heading(kind)}）" if kind else ""
     return f"> 记录：{typename}{detail}"

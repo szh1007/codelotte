@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from codelotte.guardrails import GuardrailLimits
 from codelotte.loop import AgentLoop
 from codelotte.permissions import allow_builtin_tools
 from codelotte.providers.base import ProviderError, StreamUsage, TextDelta, UsageEvent
@@ -14,10 +15,15 @@ from codelotte.run import print_session_invoice, run_once
 from codelotte.sandbox import LocalExecutor
 from codelotte.session.store import SessionStore, load_entries
 from codelotte.tools import default_tools
-from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn
+from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn, tool_turn
 
 
-def _loop(tmp_path: Path, client: ScriptedClient) -> AgentLoop:
+def _loop(
+    tmp_path: Path,
+    client: ScriptedClient,
+    *,
+    guardrail_limits: GuardrailLimits | None = None,
+) -> AgentLoop:
     path = tmp_path / "session.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():  # 同一路径再次构造 = 模拟 --continue（文件不重置）
@@ -29,6 +35,7 @@ def _loop(tmp_path: Path, client: ScriptedClient) -> AgentLoop:
         model="fake-model",
         catalog=fake_catalog(),
         permissions=allow_builtin_tools(),
+        guardrail_limits=guardrail_limits,
     )
 
 
@@ -88,3 +95,28 @@ def test_print_session_invoice_writes_nothing_for_empty_session(
     loop = _loop(tmp_path, ScriptedClient([[TextDelta("x")]]))
     print_session_invoice(loop)
     assert capsys.readouterr().err == ""
+
+
+def test_guardrail_circuit_break_reports_and_returns_nonzero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """票据 11：-p 模式要把守护事件与终止原因写进 stderr，并以非零退出码表示回合被强制结束。"""
+    turns = [
+        tool_turn("read", {"path": "no-such-guardrail-file.txt"}, call_id=f"c{index}")
+        for index in range(3)
+    ]
+    turns.append(text_turn("总结：文件读不到。"))
+    loop = _loop(
+        tmp_path,
+        ScriptedClient(turns),
+        guardrail_limits=GuardrailLimits(
+            repeat=99, stagnation=99, failure=3, planning=99
+        ),
+    )
+    code = asyncio.run(run_once(loop, "读文件"))
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "守护拦截（推理层）" in err
+    assert "熔断" in err
+    assert [e for e in load_entries(loop.session_path) if e.get("kind") == "guardrail"]

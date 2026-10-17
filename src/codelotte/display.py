@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+from codelotte.guardrails import STOP_CIRCUIT, STOP_PLANNING
+
 
 def preview_text(text: str, limit: int) -> str:
     """压成一行再截断加省略号（标题里的任何文本都先过这里）。"""
@@ -43,3 +45,20 @@ def tool_title(name: str, preview: str, status: str) -> str:
 def duration_text(duration_ms: int) -> str:
     """耗时显示（展开体开头）：`（123ms）`。"""
     return f"（{duration_ms}ms）"
+
+
+_GUARDRAIL_LAYER_LABELS = {"tool": "工具层", "reasoning": "推理层", "planning": "规划层"}
+
+
+def guardrail_notice(layer: str, message: str) -> str:
+    """死循环防御事件的一句话（TUI 对话流与 HTML/Markdown 导出共用，票据 11）。"""
+    label = _GUARDRAIL_LAYER_LABELS.get(layer, layer or "未知层")
+    return f"🛡 守护拦截（{label}）：{message}"
+
+
+_GUARDRAIL_STOP_LABELS = {STOP_CIRCUIT: "连续失败熔断", STOP_PLANNING: "规划层温和终止"}
+
+
+def guardrail_stop_text(stop: str) -> str:
+    """回合终止原因的中文说法（TUI 展示用；不把内部 token 直接给用户）。"""
+    return _GUARDRAIL_STOP_LABELS.get(stop, stop)

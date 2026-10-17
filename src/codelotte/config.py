@@ -21,6 +21,9 @@ from codelotte.changelog import should_record
 USER_CONFIG_DIR = ".codelotte"
 SETTINGS_FILE_NAME = "settings.json"
 COMMAND_TIMEOUT_MAX = 600  # 秒，与 tools/bash.py 的 MAX_TIMEOUT 对齐（有测试守卫）
+# 死循环三层防御阈值（票据 11）：2 是"拦截要连续两次"的下限，100 是防止把上限调得形同虚设
+GUARDRAIL_LIMIT_MIN = 2
+GUARDRAIL_LIMIT_MAX = 100
 
 
 class ConfigError(Exception):
@@ -39,14 +42,27 @@ class Settings:
     default_provider: str | None = None
     default_model: str | None = None
     command_timeout: int | None = None
+    # 死循环三层防御的阈值（票据 11；没写 = 用 guardrails.GuardrailLimits 的默认值）
+    guardrail_repeat_limit: int | None = None
+    guardrail_stagnation_limit: int | None = None
+    guardrail_failure_limit: int | None = None
+    guardrail_planning_limit: int | None = None
     notices: list[str] = field(default_factory=list)
 
+
+_GUARDRAIL_FIELDS = {
+    "guardrailRepeatLimit": "guardrail_repeat_limit",
+    "guardrailStagnationLimit": "guardrail_stagnation_limit",
+    "guardrailFailureLimit": "guardrail_failure_limit",
+    "guardrailPlanningLimit": "guardrail_planning_limit",
+}
 
 _KNOWN_SETTINGS = {
     "lastChangelogVersion": str,
     "defaultProvider": str,
     "defaultModel": str,
     "commandTimeoutSeconds": int,
+    **{key: int for key in _GUARDRAIL_FIELDS},  # 同一份键表，避免两处漂移
 }
 
 
@@ -89,6 +105,15 @@ def load_settings(home: Path | None = None) -> Settings:
                     f"秒之间（给了 {value}）"
                 )
             settings.command_timeout = value
+        elif key in _GUARDRAIL_FIELDS and isinstance(value, int) and not isinstance(
+            value, bool
+        ):
+            if not GUARDRAIL_LIMIT_MIN <= value <= GUARDRAIL_LIMIT_MAX:
+                raise ConfigError(
+                    f"settings.json 的 {key!r} 要在 {GUARDRAIL_LIMIT_MIN}–"
+                    f"{GUARDRAIL_LIMIT_MAX} 之间（给了 {value}）"
+                )
+            setattr(settings, _GUARDRAIL_FIELDS[key], value)
         else:
             expected = _KNOWN_SETTINGS[key].__name__
             raise ConfigError(

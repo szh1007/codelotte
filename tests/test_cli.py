@@ -247,6 +247,38 @@ def test_build_agent_defaults_to_docker_and_honors_no_sandbox(
     assert isinstance(local, LocalExecutor)
 
 
+def test_build_agent_applies_guardrail_limits_from_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """票据 11：settings.json 的四档阈值进 AgentLoop；没写用默认值。"""
+    from codelotte.cli import _build_agent
+    from codelotte.guardrails import GuardrailLimits
+
+    monkeypatch.chdir(tmp_path)
+    home = write_user_config(tmp_path / "home")
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+
+    loop, _spec, _executor = _build_agent()
+    assert loop.guardrail_limits == GuardrailLimits()
+
+    home = write_user_config(
+        tmp_path / "home2",
+        settings_extra={
+            "guardrailRepeatLimit": 5,
+            "guardrailStagnationLimit": 3,
+            "guardrailFailureLimit": 4,
+            "guardrailPlanningLimit": 2,
+        },
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    loop, _spec, _executor = _build_agent()
+    assert loop.guardrail_limits == GuardrailLimits(
+        repeat=5, stagnation=3, failure=4, planning=2
+    )
+
+
 def test_build_agent_history_follows_selected_branch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

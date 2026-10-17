@@ -194,6 +194,7 @@
   2. **推理层**：连续 M 次工具失败（含权限拒绝与沙箱错误）→ 熔断当前回合，请模型总结现状。
   3. **规划层**：上下文重注入（把任务目标与硬约束以系统级提醒重新插入）后继续，或温和终止并交还用户。
 - **所有拦截都是事件**：在 TUI 可见、被写进会话、可在 HTML 导出中高亮——它既是安全机制也是演示素材（面试考点："你的 agent 死循环了怎么办？"）。
+- **阈值与记录（v1 实现，票据 11）**：四个阈值可配（settings.json 的 `guardrail*` 键，默认：重复 3 / 无进展 2 / 连续失败 3 / 规划拦截 2），按**回合**计数。拦截写 `event`（kind=guardrail，带 layer/guard/计数/阈值），重注入文本随事件保存并在恢复时按原位置重建进上下文（live 与 `--continue` 请求一致）。推理层的"连续失败"只算真正执行后的失败（工具错误/权限拒绝/沙箱错误/参数畸形），工具层拦截不计入——三层各管各的。熔断后用**禁用工具的一次请求**请模型总结现状（伪造的 tool_calls 一律丢弃）；规划层首次拦截批次重注入目标与硬约束，之后累计到阈值则温和终止并交还用户。
 - 被否备选：仅靠提示词约束模型（不可靠）；仅设单一大上限（无法区分"正常长任务"与"打转"）。
 
 ### C. Provider 接入层（模型通信）
@@ -340,7 +341,7 @@
 - 配置取值链：**命令行参数（如 `--allow`）> 用户级 `~/.codelotte/settings.json`（选 provider/模型/超时）→ 用户级 `~/.codelotte/models.json`（端点/密钥/模型条目）> 随包默认值（窗口/输出上限/展示名/思考强度）> 必填报错指路**。**没有替你猜的默认，也没有任何环境变量来源**（`.env`、`env` 包层、`CODELOTTE_*` 变量均已移除）；用户级目录固定为系统家目录；不存在任何项目级配置文件。缺哪个就报错并指出去哪补。思考开关与强度统一在模型条目的 `reasoning_effort`（直接进请求体；`none` 关闭思考，其余档位开启并控制强度，照官方 thinking_mode 的档位表）：**展示总是跟随开关**——开启时思考内容既落盘又展示，没有单独的展示配置。
 - 三份配置分家（2026-10-17 v3）：随包 `src/codelotte/providers/models.json` 只用于**计费、展示与上限参考**（纯函数逻辑：价目/峰谷/节假日/官方端点提示/展示名/窗口与输出默认值）；用户级 `~/.codelotte/models.json` 是**运行参数的唯一来源**（provider 级 baseUrl/apiKey + models 清单）。随包文件不参与请求，密钥只进用户级文件。
 - 用户配置的模型 `id` 必须命中随包目录里**已适配**的模型（没适配的不给用）；`contextWindow`/`maxTokens` 可省（随包默认）、写了不能超过随包值；`name` 用户优先；`reasoning_effort` 可省（默认随包的 `high`），写在模型条目里直接进请求体；多写的字段（含计费字段）一律忽略——钱的事以随包文件为准。
-- `settings.json` 的文件键与 `Settings` 字段一一对应：`lastChangelogVersion`（更新提示水位，启动比对 `CHANGELOG.md` 并写回）、`defaultProvider`、`defaultModel`、`commandTimeoutSeconds`。会话目录固定为 `~/.codelotte/sessions`。
+- `settings.json` 的文件键与 `Settings` 字段一一对应：`lastChangelogVersion`（更新提示水位，启动比对 `CHANGELOG.md` 并写回）、`defaultProvider`、`defaultModel`、`commandTimeoutSeconds`、死循环防御的四个阈值 `guardrailRepeatLimit` / `guardrailStagnationLimit` / `guardrailFailureLimit` / `guardrailPlanningLimit`（票据 11）。会话目录固定为 `~/.codelotte/sessions`。
 - 权限规则走 `permissions.json` + 项目级信任门槛（票据 09）；**配置一律只从用户级目录读取**（固定的系统家目录下的 `~/.codelotte/`）：settings/models 能决定请求去向与所用密钥，放进项目目录等于让陌生仓库遥控你的请求；且没有任何开关能把这个目录重定位。
 - 完整键表与示例见 [docs/tech/configuration.md](docs/tech/configuration.md)。
 

@@ -57,12 +57,14 @@ class ScriptedClient:
     def __init__(self, turns: Sequence[Sequence[object]]) -> None:
         self._turns = [list(turn) for turn in turns]
         self.requests: list[list[dict[str, Any]]] = []  # 每次请求的消息数组快照（断言用）
+        self.tool_schemas: list[list[dict[str, Any]] | None] = []  # 每次请求的 tools（None=禁用）
         self.paused = asyncio.Event()  # 进入 PAUSE 时置位——测试据此确定"已卡住"
 
     async def stream_chat(
         self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None = None
     ) -> AsyncIterator[ProviderEvent]:
         self.requests.append([dict(message) for message in messages])
+        self.tool_schemas.append(tools)
         index = min(len(self.requests) - 1, len(self._turns) - 1)
         script = self._turns[index] if self._turns else []
         for item in script:

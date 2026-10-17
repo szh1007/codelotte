@@ -205,9 +205,13 @@ def test_cancellation_stores_partial_and_reraises(tmp_path: Path) -> None:
 
 
 def test_iteration_cap_ends_turn_with_event(tmp_path: Path) -> None:
-    target = tmp_path / "f.txt"
-    target.write_text("x\n", encoding="utf-8")
-    client = ScriptedClient([tool_turn("read", {"path": str(target)})])  # 永远请求工具（剧本复用）
+    """硬上限兜底：参数/结果都在变（不触发票据 11 的重复防御）但模型永不收手。"""
+    turns = []
+    for index in range(MAX_ITERATIONS):
+        target = tmp_path / f"f{index}.txt"
+        target.write_text(f"内容 {index}\n", encoding="utf-8")
+        turns.append(tool_turn("read", {"path": str(target)}, call_id=f"c{index}"))
+    client = ScriptedClient(turns)
     loop = _loop(tmp_path, client)
     events = asyncio.run(_collect(loop))
 

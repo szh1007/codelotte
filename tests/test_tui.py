@@ -19,6 +19,7 @@ from textual.pilot import Pilot
 from textual.widgets import Input, Markdown, Static
 
 from codelotte.cost import Catalog
+from codelotte.guardrails import GuardrailLimits
 from codelotte.loop import AgentLoop
 from codelotte.permissions import (
     PermissionLayer,
@@ -50,6 +51,7 @@ def _make(
     permissions: PermissionLayer | None = None,
     context_window: int | None = None,
     startup_notices: Sequence[str] = (),
+    guardrail_limits: GuardrailLimits | None = None,
 ) -> tuple[TuiApp, ScriptedClient, SessionStore]:
     path = tmp_path / SESSION_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,6 +66,7 @@ def _make(
         catalog=catalog if catalog is not None else fake_catalog(model),
         permissions=permissions if permissions is not None else allow_builtin_tools(),
         messages=messages,
+        guardrail_limits=guardrail_limits,
     )
     return (
         TuiApp(
@@ -669,5 +672,55 @@ def test_startup_notices_are_mounted(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(0.05)
             assert any("更新内容" in t and "首个版本" in t for t in _texts(app))
+
+    asyncio.run(scenario())
+
+
+def test_guardrail_notice_is_rendered_when_the_circuit_breaks(tmp_path: Path) -> None:
+    """票据 11：熔断事件在对话流里高亮可见；回合结束提示说明是守护机制终止的。"""
+
+    async def scenario() -> None:
+        turns = [tool_turn("read", {"path": "no-such-guardrail-file.txt"}, call_id=f"c{i}") for i in range(3)]
+        turns.append(text_turn("总结：文件一直读不到。"))
+        app, _client, _store = _make(
+            tmp_path,
+            turns,
+            guardrail_limits=GuardrailLimits(
+                repeat=99, stagnation=99, failure=3, planning=99
+            ),
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "读文件")
+            await _wait_idle(pilot)
+            joined = "".join(_texts(app))
+            assert "🛡 守护拦截（推理层）" in joined
+            assert "熔断" in joined
+            assert "已被死循环防御终止" in joined
+            assert "circuitBreaker" not in joined  # 不给用户看内部 token
+            assert any("总结：文件一直读不到。" in md.source for md in app.query(Markdown))
+
+    asyncio.run(scenario())
+
+
+def test_history_replays_guardrail_markers(tmp_path: Path) -> None:
+    """--continue 回放：历史里的拦截事件也要画出来（不能只画消息与工具块）。"""
+
+    async def scenario() -> None:
+        history = [
+            {"type": "message", "role": "user", "content": "上回的问题"},
+            {
+                "type": "event",
+                "kind": "guardrail",
+                "layer": "tool",
+                "guard": "repeat",
+                "message": "连续 3 次调用 bash 且参数相同",
+            },
+        ]
+        app, _client, _store = _make(tmp_path, [text_turn("x")], history=history)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(0.05)
+            joined = "".join(_texts(app))
+            assert "🛡 守护拦截（工具层）" in joined
+            assert "连续 3 次调用 bash" in joined
 
     asyncio.run(scenario())

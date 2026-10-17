@@ -378,3 +378,50 @@ def test_permission_entries_render_as_markers() -> None:
     md = render_session_markdown(entries, load_catalog(), session_name="s.jsonl")
     assert "> ⛔ 权限拒绝：bash(rm -rf ./build)" in md
     assert "> 🔓 权限放行：bash(git status)" in md
+
+
+def _guardrail_entries() -> list[dict]:
+    return [
+        {"type": "session", "schema": "session/v1", "cwd": "D:/proj", "version": "0.1.0"},
+        {"type": "message", "role": "user", "content": "修 bug"},
+        {
+            "type": "event",
+            "kind": "guardrail",
+            "layer": "tool",
+            "guard": "repeat",
+            "message": "连续 3 次调用 bash 且参数相同",
+            "count": 3,
+            "threshold": 3,
+        },
+        {
+            "type": "event",
+            "kind": "guardrail",
+            "layer": "reasoning",
+            "guard": "circuitBreaker",
+            "message": "连续 3 次工具调用失败，熔断当前回合（工具已禁用，请模型总结现状）",
+            "injected": "[codelotte 推理层熔断] 请总结现状",
+        },
+    ]
+
+
+def test_guardrail_markers_are_highlighted_in_html_and_markdown() -> None:
+    """票据 11：拦截/熔断在导出里高亮（marker warn），并写明是哪一层。"""
+    entries = _guardrail_entries()
+    html = render_session_html(entries, load_catalog(), session_name="s.jsonl")
+    assert 'class="marker warn"' in html
+    assert "🛡 守护拦截（工具层）" in html
+    assert "连续 3 次调用 bash 且参数相同" in html
+    assert "🛡 守护拦截（推理层）" in html and "熔断" in html
+
+    markdown = render_session_markdown(entries, load_catalog(), session_name="s.jsonl")
+    assert "> 🛡 守护拦截（工具层）：连续 3 次调用 bash 且参数相同" in markdown
+    assert "> 🛡 守护拦截（推理层）" in markdown
+
+
+def test_guardrail_marker_escapes_model_text() -> None:
+    entries = [
+        {"type": "event", "kind": "guardrail", "layer": "tool", "message": "<script>alert(1)</script>"}
+    ]
+    html = render_session_html(entries, load_catalog(), session_name="s.jsonl")
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html

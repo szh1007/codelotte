@@ -554,10 +554,21 @@ def test_tool_error_is_fed_back_and_loop_recovers(tmp_path: Path) -> None:
 
 
 def test_iteration_cap_forces_turn_end(tmp_path: Path) -> None:
-    """验收：迭代硬上限兜底——模型永远请求工具时，回合被强制结束并记为事件。"""
+    """验收：迭代硬上限兜底——模型永远请求工具时，回合被强制结束并记为事件。
+
+    每次读不同的文件（结果也在变），避开票据 11 的重复/无进展防御——这里测的是最后一道硬上限。
+    """
     from codelotte.loop import MAX_ITERATIONS
 
-    handler_cls, received = _scripted_handler([_tool_call_turn("read", {"path": "CONTEXT.md"})])
+    for index in range(MAX_ITERATIONS):
+        (tmp_path / f"f{index}.txt").write_text(f"内容 {index}\n", encoding="utf-8")
+    turns = [
+        _tool_call_turn(
+            "read", {"path": str(tmp_path / f"f{index}.txt")}, call_id=f"call_{index}"
+        )
+        for index in range(MAX_ITERATIONS)
+    ]
+    handler_cls, received = _scripted_handler(turns)
     server, port = _serve_once(b"", handler_cls=handler_cls)
     try:
         result = _run_cli_against(port, "无限读文件", tmp_path)

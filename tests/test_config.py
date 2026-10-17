@@ -124,6 +124,44 @@ def test_command_timeout_range_is_enforced(tmp_path: Path) -> None:
         assert load_settings(home).command_timeout == ok
 
 
+def test_guardrail_limits_are_read_from_settings(tmp_path: Path) -> None:
+    """票据 11：三层防御的四个阈值从 settings.json 读进字段。"""
+    home = tmp_path / "home"
+    _write_settings(
+        home,
+        {
+            "guardrailRepeatLimit": 4,
+            "guardrailStagnationLimit": 3,
+            "guardrailFailureLimit": 5,
+            "guardrailPlanningLimit": 2,
+        },
+    )
+    settings = load_settings(home)
+    assert settings.guardrail_repeat_limit == 4
+    assert settings.guardrail_stagnation_limit == 3
+    assert settings.guardrail_failure_limit == 5
+    assert settings.guardrail_planning_limit == 2
+
+
+def test_guardrail_limits_reject_out_of_range_and_bad_types(tmp_path: Path) -> None:
+    """阈值范围 2–100；字符串/布尔值都按类型错误报，且错误信息指明键名。"""
+    from codelotte.config import _GUARDRAIL_FIELDS
+
+    home = tmp_path / "home"
+    for key, field in _GUARDRAIL_FIELDS.items():
+        for bad in (1, 0, -5, 101):
+            _write_settings(home, {key: bad})
+            with pytest.raises(ConfigError, match=key):
+                load_settings(home)
+        for bad_type in ("3", True):
+            _write_settings(home, {key: bad_type})
+            with pytest.raises(ConfigError, match=key):
+                load_settings(home)
+        for ok in (2, 100):
+            _write_settings(home, {key: ok})
+            assert getattr(load_settings(home), field) == ok
+
+
 def test_command_timeout_max_matches_bash_tool() -> None:
     """守卫：settings 的上限与 bash 工具的上限是同一个数（防两处漂移）。"""
     from codelotte.config import COMMAND_TIMEOUT_MAX
