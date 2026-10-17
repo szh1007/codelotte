@@ -70,7 +70,7 @@ class ScriptedClient:
         for item in script:
             if item is PAUSE:
                 self.paused.set()
-                await asyncio.Event().wait()  # 直到整个回合被取消
+                await asyncio.Event().wait()  # 直到整个 run 被取消
             if isinstance(item, BaseException):
                 raise item
             yield item  # type: ignore[misc]  # 剧本只放 ProviderEvent 实例

@@ -8,9 +8,9 @@
 - 例外二：compaction 记录（票据 12）把保留边界之前的旧消息折叠成 system 摘要 +
   独立硬约束，再从 firstKeptEntryId 重放保留段；原始记录仍在文件里，只是不进请求。
 - assistant 的 toolCalls 用存储时的原始 arguments 文本回传——回传雷区与前缀缓存都要求逐字节一致。
-- stopReason=interrupted 的 assistant 记录跳过：原进程里它从未进入 messages（流中断后直接结束回合），
+- stopReason=interrupted 的 assistant 记录跳过：原进程里它从未进入 messages（流中断后直接结束 run），
   重建时必须保持同样的视图，否则模型会看到一段它"没说过的尾话"。
-- assistant 声明了 toolCalls、但某个调用没有落盘的 tool_result（回合在工具执行中被中断）：
+- assistant 声明了 toolCalls、但某个调用没有落盘的 tool_result（run 在工具执行中被中断）：
   补一条说明中断的 tool 消息——协议要求每个 tool_call 都有对应的 tool 消息，缺一个整个请求 400。
 """
 

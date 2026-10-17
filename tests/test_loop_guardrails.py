@@ -1,4 +1,4 @@
-"""死循环三层防御的回合级行为（票据 11）：拦截 → 记录 → 提醒模型 / 熔断 / 终止。
+"""死循环三层防御的 run 级行为（票据 11）：拦截 → 记录 → 提醒模型 / 熔断 / 终止。
 
 剧本化假 Provider 驱动真实 AgentLoop：断言事件流、会话记录、回传模型的消息与恢复一致性。
 纯状态机（阈值/计数/误报边界）在 test_guardrails.py。
@@ -18,7 +18,7 @@ from codelotte.guardrails import (
     GUARD_TERMINATE,
     GuardrailLimits,
 )
-from codelotte.loop import AgentLoop, GuardrailTriggered, ToolFinished, TurnEnded
+from codelotte.loop import AgentLoop, GuardrailTriggered, ToolFinished, RunEnded
 from codelotte.permissions import ALLOW, DENY, PermissionLayer, Rule
 from codelotte.providers.base import StreamEnd, StreamUsage, ToolCall, ToolCallsEvent, UsageEvent
 from codelotte.session.context import messages_from_entries
@@ -61,7 +61,7 @@ def _loop(
 
 
 async def _collect(loop: AgentLoop, prompt: str = "把计数器跑一遍") -> list[object]:
-    return [event async for event in loop.run_turn(prompt)]
+    return [event async for event in loop.run(prompt)]
 
 
 def _tool(name: str, handler: Any) -> Tool:
@@ -157,7 +157,7 @@ def test_repeat_interception_is_recorded_and_planning_reinjects_the_goal(
     assert "规划层提醒" in reinjected["content"] and "把计数器跑一遍" in reinjected["content"]
 
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.guardrail_stop is None
+    assert isinstance(ended, RunEnded) and ended.guardrail_stop is None
     # 恢复路径（--continue）重建的消息数组与实时逐条一致（注入的提醒不能丢）
     assert messages_from_entries(load_branch(loop.session_path)) == loop.messages
 
@@ -221,7 +221,7 @@ def test_consecutive_failures_circuit_break_with_a_summary_call(tmp_path: Path) 
     assert "把计数器跑一遍" in reminder["content"]
 
     ended = events[-1]
-    assert isinstance(ended, TurnEnded)
+    assert isinstance(ended, RunEnded)
     assert ended.guardrail_stop == GUARD_CIRCUIT
     assert ended.calls_made == 4
 
@@ -232,10 +232,10 @@ def test_consecutive_failures_circuit_break_with_a_summary_call(tmp_path: Path) 
     assert summary[-1]["role"] == "assistant"
     assert "总结：工具一直失败" in summary[-1]["content"]
 
-    # 会话状态完好：重建消息与实时一致；同一 loop 继续下一回合仍能正常跑
+    # 会话状态完好：重建消息与实时一致；同一 loop 继续下一个 run 仍能正常跑
     assert messages_from_entries(load_branch(loop.session_path)) == loop.messages
     follow_up = asyncio.run(_collect(loop, "继续"))
-    assert isinstance(follow_up[-1], TurnEnded) and follow_up[-1].guardrail_stop is None
+    assert isinstance(follow_up[-1], RunEnded) and follow_up[-1].guardrail_stop is None
     assert any(
         message.get("role") == "assistant" and "总结" in str(message.get("content"))
         for message in client.requests[4]
@@ -274,7 +274,7 @@ def test_permission_denials_count_toward_the_failure_circuit(tmp_path: Path) -> 
     triggered = [e for e in events if isinstance(e, GuardrailTriggered)]
     assert triggered and triggered[-1].guard == GUARD_CIRCUIT
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.guardrail_stop == GUARD_CIRCUIT
+    assert isinstance(ended, RunEnded) and ended.guardrail_stop == GUARD_CIRCUIT
 
 
 def test_planning_terminates_after_the_configured_number_of_interceptions(
@@ -308,7 +308,7 @@ def test_planning_terminates_after_the_configured_number_of_interceptions(
     assert "温和终止" in triggered[-1].message
 
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.guardrail_stop == "planning"
+    assert isinstance(ended, RunEnded) and ended.guardrail_stop == "planning"
     assert messages_from_entries(load_branch(loop.session_path)) == loop.messages
     entries = _guardrail_entries(loop)
     assert [e["guard"] for e in entries] == [
@@ -343,7 +343,7 @@ def test_malformed_calls_count_toward_the_failure_circuit(tmp_path: Path) -> Non
     finished = [e for e in events if isinstance(e, ToolFinished)]
     assert [e.ok for e in finished] == [False, False, False]
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.guardrail_stop == GUARD_CIRCUIT
+    assert isinstance(ended, RunEnded) and ended.guardrail_stop == GUARD_CIRCUIT
 
 
 def test_a_long_normal_task_is_never_intercepted(tmp_path: Path) -> None:
@@ -360,7 +360,7 @@ def test_a_long_normal_task_is_never_intercepted(tmp_path: Path) -> None:
     assert len(calls) == 40
     assert not [e for e in events if isinstance(e, GuardrailTriggered)]
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.guardrail_stop is None
+    assert isinstance(ended, RunEnded) and ended.guardrail_stop is None
     assert _guardrail_entries(loop) == []
 
 
@@ -399,7 +399,7 @@ def test_tool_layer_blocks_do_not_count_toward_the_failure_circuit(tmp_path: Pat
     ]
     assert not [e for e in triggered if e.guard == GUARD_CIRCUIT]
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.guardrail_stop is None
+    assert isinstance(ended, RunEnded) and ended.guardrail_stop is None
 
 
 def test_summary_call_tool_calls_are_ignored_when_tools_are_disabled(tmp_path: Path) -> None:
@@ -441,4 +441,4 @@ def test_summary_call_tool_calls_are_ignored_when_tools_are_disabled(tmp_path: P
     }
     assert messages_from_entries(load_branch(loop.session_path)) == loop.messages
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.guardrail_stop == GUARD_CIRCUIT
+    assert isinstance(ended, RunEnded) and ended.guardrail_stop == GUARD_CIRCUIT

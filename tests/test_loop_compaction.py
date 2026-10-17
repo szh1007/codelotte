@@ -1,4 +1,4 @@
-"""压缩 v1 的回合级行为（票据 12）：双触发、摘要调用、compaction 落盘、约束重注入与续跑。
+"""压缩 v1 的 run 级行为（票据 12）：双触发、摘要调用、compaction 落盘、约束重注入与续跑。
 
 剧本化假 Provider 驱动真实 AgentLoop + 真工具；触发用 API usage（第一次响应返回的 input
 tokens），窗口用测试注入的小值。纯判定逻辑在 test_compaction.py。
@@ -10,7 +10,7 @@ import asyncio
 from pathlib import Path
 
 from codelotte.compaction import COMPACTION_CONSTRAINTS
-from codelotte.loop import AgentLoop, CompactionEvent, TextDelta, TurnEnded
+from codelotte.loop import AgentLoop, CompactionEvent, TextDelta, RunEnded
 from codelotte.permissions import allow_builtin_tools
 from codelotte.sandbox import LocalExecutor
 from codelotte.session.context import messages_from_entries
@@ -72,7 +72,7 @@ def _loop(
 
 
 async def _collect(loop: AgentLoop, prompt: str) -> list[object]:
-    return [event async for event in loop.run_turn(prompt)]
+    return [event async for event in loop.run(prompt)]
 
 
 def _compactions(loop: AgentLoop) -> list[dict]:
@@ -139,7 +139,7 @@ def test_soft_trigger_before_a_turn_summarizes_old_history_and_keeps_the_new_pro
     assert messages_from_entries(load_branch(loop.session_path)) == loop.messages
 
     ended = events[-1]
-    assert isinstance(ended, TurnEnded)
+    assert isinstance(ended, RunEnded)
     assert ended.calls_made == 2  # 摘要调用 + 正常调用
     assert any(isinstance(event, TextDelta) and event.text == "继续完成" for event in events)
 
@@ -186,7 +186,7 @@ def test_hard_trigger_mid_turn_compacts_before_the_next_request_and_work_continu
     assert messages_from_entries(load_branch(loop.session_path)) == loop.messages
 
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.calls_made == 4  # 工具/摘要/工具/终答
+    assert isinstance(ended, RunEnded) and ended.calls_made == 4  # 工具/摘要/工具/终答
 
 
 def test_window_lowered_to_120_percent_still_hard_triggers(tmp_path: Path) -> None:
@@ -226,7 +226,7 @@ def test_below_soft_threshold_does_not_compact(tmp_path: Path) -> None:
     assert not [event for event in events if isinstance(event, CompactionEvent)]
     assert len(client.tool_schemas) == 1 and client.tool_schemas[0] is not None
     ended = events[-1]
-    assert isinstance(ended, TurnEnded) and ended.calls_made == 1
+    assert isinstance(ended, RunEnded) and ended.calls_made == 1
 
 
 def test_window_smaller_than_the_minimum_keep_set_warns_and_still_compacts(

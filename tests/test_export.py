@@ -303,7 +303,7 @@ def test_export_matches_tui_visible_content_and_ledger_numbers(tmp_path: Path) -
     )
 
     async def drain() -> None:
-        async for _event in loop.run_turn("读一下 note.txt"):
+        async for _event in loop.run("读一下 note.txt"):
             pass
 
     asyncio.run(drain())

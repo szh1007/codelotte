@@ -27,7 +27,7 @@ from codelotte.loop import (
     GuardrailTriggered,
     ToolFinished,
     ToolRequested,
-    TurnEnded,
+    RunEnded,
 )
 from codelotte.providers.base import ReasoningDelta, TextDelta
 from codelotte.session.store import load_branch
@@ -111,7 +111,7 @@ class _Presenter:
             sys.stderr.write(f"[codelotte] 警告：{event.warning}\n")
         sys.stderr.flush()
 
-    def on_turn_ended(self) -> None:
+    def on_run_ended(self) -> None:
         self._close_reasoning()
         self._finish_text(intermediate=False)  # 终轮文本：答案
 
@@ -145,7 +145,7 @@ class _Presenter:
 
 
 async def run_once(loop: AgentLoop, prompt: str) -> int:
-    """跑一个回合并按终端约定呈现。loop 由调用方装配（cli._build_agent）。"""
+    """跑一个 run 并按终端约定呈现。loop 由调用方装配（cli._build_agent）。"""
     presenter = _Presenter()
     ledger = Ledger()
     stop_reason: str | None = None
@@ -153,7 +153,7 @@ async def run_once(loop: AgentLoop, prompt: str) -> int:
     guardrail_stop: str | None = None
     calls_made = 0
     try:
-        async for event in loop.run_turn(prompt):
+        async for event in loop.run(prompt):
             if isinstance(event, TextDelta):
                 presenter.on_text(event.text)
             elif isinstance(event, ReasoningDelta):
@@ -168,8 +168,8 @@ async def run_once(loop: AgentLoop, prompt: str) -> int:
                 presenter.on_guardrail(event)
             elif isinstance(event, CompactionEvent):
                 presenter.on_compaction(event)
-            elif isinstance(event, TurnEnded):
-                presenter.on_turn_ended()
+            elif isinstance(event, RunEnded):
+                presenter.on_run_ended()
                 stop_reason = event.stop_reason
                 hit_cap = event.hit_iteration_cap
                 guardrail_stop = event.guardrail_stop

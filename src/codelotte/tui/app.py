@@ -1,7 +1,7 @@
 """Textual TUI（票据 05）：只消费 AgentLoop 的事件流，不做业务逻辑（SPEC §J）。
 
 架构纪律：界面所见 = 无头行为——同一套事件（loop.py），不同呈现；会话文件始终是唯一事实源。
-本模块负责：把事件渲染成对话流（流式 Markdown、可折叠工具块）、收集输入、Ctrl+C 中断当前回合。
+本模块负责：把事件渲染成对话流（流式 Markdown、可折叠工具块）、收集输入、Ctrl+C 中断当前 run。
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from codelotte.loop import (
     GuardrailTriggered,
     ToolFinished,
     ToolRequested,
-    TurnEnded,
+    RunEnded,
 )
 from codelotte.permissions import (
     DECISION_ALWAYS,
@@ -128,7 +128,7 @@ class ToolCallBlock(Collapsible):
         result.update(Text(head + body, style="" if ok else "red"))
 
     def mark_interrupted(self) -> None:
-        """回合被中断、这次调用没有结果：块停在"运行中…"会误导——给明确的收尾。"""
+        """run 被中断、这次调用没有结果：块停在"运行中…"会误导——给明确的收尾。"""
         if self.finished:
             return
         self.finished = True
@@ -247,8 +247,8 @@ class TuiApp(App[None]):
         self._context_window = context_window  # 上下文占用百分比的分母（state 栏）
         self._startup_notices = list(startup_notices)
         self._history = history or []
-        self._turn_task: asyncio.Task[None] | None = None
-        self._turn_active = False  # 显式状态位：任务自己的 finally 里刷新时，"任务还没正式结束"不算运行中
+        self._run_task: asyncio.Task[None] | None = None
+        self._run_active = False  # 显式状态位：任务自己的 finally 里刷新时，"任务还没正式结束"不算运行中
         self._interrupt_requested = False
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
@@ -292,8 +292,8 @@ class TuiApp(App[None]):
         return await future
 
     @property
-    def turn_running(self) -> bool:
-        return self._turn_active
+    def run_running(self) -> bool:
+        return self._run_active
 
     # ---- 输入 ----
 
@@ -302,13 +302,13 @@ class TuiApp(App[None]):
         prompt = event.value.strip()
         if not prompt:
             return
-        if self.turn_running:
+        if self.run_running:
             await self._mount_notice("（上一回合还在运行：Ctrl+C 可中断，然后再来）")
             return
         event.input.clear()
         await self._mount(self._user_widget(prompt))
-        self._turn_active = True
-        self._turn_task = asyncio.create_task(self._run_turn(prompt))
+        self._run_active = True
+        self._run_task = asyncio.create_task(self._run_agent(prompt))
 
     def _close_approval(self) -> None:
         """关掉还开着的审批弹层（None → 拒绝）；取消/中断路径收尾共用。"""
@@ -317,29 +317,29 @@ class TuiApp(App[None]):
 
     async def action_interrupt_or_quit(self) -> None:
         self._close_approval()  # 审批弹层里按 Ctrl+C：该调用按拒绝处理
-        if self.turn_running:
+        if self.run_running:
             self._interrupt_requested = True
-            assert self._turn_task is not None
-            self._turn_task.cancel()
+            assert self._run_task is not None
+            self._run_task.cancel()
             try:
-                await self._turn_task
+                await self._run_task
             except (
                 asyncio.CancelledError
-            ):  # pragma: no cover - 兜底，正常在 _run_turn 内消化
+            ):  # pragma: no cover - 兜底，正常在 _run_agent 内消化
                 pass
-            self._turn_task = None
+            self._run_task = None
             self.query_one(Input).focus()
             self._refresh_status()
             return
         self.exit()  # 空闲时 Ctrl+C = 退出（会话文件已落盘，可 --continue 回来）
 
-    # ---- 回合消费 ----
+    # ---- run 消费 ----
 
-    async def _run_turn(self, prompt: str) -> None:
+    async def _run_agent(self, prompt: str) -> None:
         self._interrupt_requested = False
         self._refresh_status()
         try:
-            async for event in self._agent.run_turn(prompt):
+            async for event in self._agent.run(prompt):
                 await self._handle(event)
         except asyncio.CancelledError:
             self._close_approval()  # 取消时弹层还开着：关掉（按拒绝）
@@ -354,10 +354,10 @@ class TuiApp(App[None]):
             await self._end_markdown()
             await self._mount_notice(f"⚠ 模型调用失败：{exc}")
         finally:
-            # 回合结束一律收掉思考块：失败/中断路径不收尾的话，下一回合的思考会拼进旧块（审查修正）
+            # run 结束一律收掉思考块：失败/中断路径不收尾的话，下一个 run 的思考会拼进旧块（审查修正）
             self._close_reasoning()
             await self._end_markdown()
-            self._turn_active = False
+            self._run_active = False
             self._refresh_status()
 
     async def _handle(self, event: object) -> None:
@@ -406,7 +406,7 @@ class TuiApp(App[None]):
                 )
             )
             self._refresh_status()
-        elif isinstance(event, TurnEnded):
+        elif isinstance(event, RunEnded):
             self._close_reasoning()
             await self._end_markdown()
             if event.guardrail_stop is not None:
@@ -551,7 +551,7 @@ class TuiApp(App[None]):
 
     def _status_text(self) -> Text:
         text = Text()
-        if self.turn_running:
+        if self.run_running:
             text.append("▶ 运行中", style="bold green")
         else:
             text.append("● 就绪", style="dim")

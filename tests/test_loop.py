@@ -18,7 +18,7 @@ from codelotte.loop import (
     CostRecorded,
     ToolFinished,
     ToolRequested,
-    TurnEnded,
+    RunEnded,
 )
 from codelotte.providers.base import ProviderError, StreamEnd, TextDelta, ToolCall, ToolCallsEvent
 from codelotte.sandbox import LocalExecutor
@@ -54,7 +54,7 @@ def _loop(
 
 
 async def _collect(loop: AgentLoop, prompt: str = "任务") -> list[object]:
-    return [event async for event in loop.run_turn(prompt)]
+    return [event async for event in loop.run(prompt)]
 
 
 def test_text_turn_streams_deltas_then_ends(tmp_path: Path) -> None:
@@ -64,7 +64,7 @@ def test_text_turn_streams_deltas_then_ends(tmp_path: Path) -> None:
 
     assert isinstance(events[0], TextDelta)
     assert events[0].text == "你好"
-    assert isinstance(events[-1], TurnEnded)
+    assert isinstance(events[-1], RunEnded)
     assert events[-1].stop_reason == "stop"
     assert events[-1].hit_iteration_cap is False
     assert events[-1].calls_made == 1
@@ -89,7 +89,7 @@ def test_tool_call_runs_real_tool_and_loops_back(tmp_path: Path) -> None:
     assert requested[0].name == "read"
     assert finished[0].ok is True
     assert "hello" in finished[0].content
-    assert isinstance(events[-1], TurnEnded)
+    assert isinstance(events[-1], RunEnded)
     assert events[-1].calls_made == 2
 
     # 第二次请求：assistant 回传 tool_calls（原始文本）+ tool 消息（真实工具结果）
@@ -152,13 +152,13 @@ def test_events_arrive_only_after_records_land(tmp_path: Path) -> None:
     loop = _loop(tmp_path, client)
 
     async def scenario() -> None:
-        async for event in loop.run_turn("任务"):
+        async for event in loop.run("任务"):
             kinds = [e["type"] for e in load_entries(loop.session_path)]
             if isinstance(event, ToolRequested):
                 assert "tool_call" in kinds
             elif isinstance(event, ToolFinished):
                 assert "tool_result" in kinds
-            elif isinstance(event, TurnEnded):
+            elif isinstance(event, RunEnded):
                 assert "usage" in kinds  # 终轮的 assistant + usage 已落盘
 
     asyncio.run(scenario())
@@ -171,7 +171,7 @@ def test_provider_failure_stores_partial_then_raises(tmp_path: Path) -> None:
     async def scenario() -> list[object]:
         collected: list[object] = []
         with pytest.raises(ProviderError):
-            async for event in loop.run_turn("任务"):
+            async for event in loop.run("任务"):
                 collected.append(event)
         return collected
 
@@ -204,7 +204,7 @@ def test_cancellation_stores_partial_and_reraises(tmp_path: Path) -> None:
     assert assistant["content"] == "已看到的"
 
 
-def test_iteration_cap_ends_turn_with_event(tmp_path: Path) -> None:
+def test_iteration_cap_ends_run_with_event(tmp_path: Path) -> None:
     """硬上限兜底：参数/结果都在变（不触发票据 11 的重复防御）但模型永不收手。"""
     turns = []
     for index in range(MAX_ITERATIONS):
@@ -216,7 +216,7 @@ def test_iteration_cap_ends_turn_with_event(tmp_path: Path) -> None:
     events = asyncio.run(_collect(loop))
 
     ended = events[-1]
-    assert isinstance(ended, TurnEnded)
+    assert isinstance(ended, RunEnded)
     assert ended.hit_iteration_cap is True
     assert ended.calls_made == MAX_ITERATIONS
     entries = load_entries(loop.session_path)

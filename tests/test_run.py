@@ -101,7 +101,7 @@ def test_print_session_invoice_writes_nothing_for_empty_session(
 def test_guardrail_circuit_break_reports_and_returns_nonzero(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """票据 11：-p 模式要把守护事件与终止原因写进 stderr，并以非零退出码表示回合被强制结束。"""
+    """票据 11：-p 模式要把守护事件与终止原因写进 stderr，并以非零退出码表示 run 被强制结束。"""
     turns = [
         tool_turn("read", {"path": "no-such-guardrail-file.txt"}, call_id=f"c{index}")
         for index in range(3)

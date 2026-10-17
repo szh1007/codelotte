@@ -129,7 +129,7 @@ def test_console_encoding_fallback_for_legacy_output(
 
 
 def test_cancellation_kills_whole_process_tree(tmp_path: Path) -> None:
-    """回合被中断（Ctrl+C → 协程取消）时也要收回子进程：不能让命令留在后台继续跑。"""
+    """run 被中断（Ctrl+C → 协程取消）时也要收回子进程：不能让命令留在后台继续跑。"""
     spawner = tmp_path / "spawner2.py"
     spawner.write_text(SPAWNER_SCRIPT, encoding="utf-8")
     beat = tmp_path / "beat_cancel.txt"

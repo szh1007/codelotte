@@ -60,7 +60,7 @@ _GUARDRAIL_STOP_LABELS = {STOP_CIRCUIT: "连续失败熔断", STOP_PLANNING: "�
 
 
 def guardrail_stop_text(stop: str) -> str:
-    """回合终止原因的中文说法（TUI 展示用；不把内部 token 直接给用户）。"""
+    """run 终止原因的中文说法（TUI 展示用；不把内部 token 直接给用户）。"""
     return _GUARDRAIL_STOP_LABELS.get(stop, stop)
 
 

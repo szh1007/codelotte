@@ -6,10 +6,10 @@
   `stagnation` 阈值 → 更早拦截（结果没变化是更强的打转信号）。被拦的调用不执行，
   拦截说明作为工具结果回给模型。
 - **推理层**：连续 `failure` 次**真正执行后失败**的工具调用（工具错误、权限拒绝、
-  沙箱错误、参数畸形）→ 熔断当前回合。工具层拦截本身不计入——那是层①的动作，
+  沙箱错误、参数畸形）→ 熔断当前 run。工具层拦截本身不计入——那是层①的动作，
   让层③去处理，三层保持独立。
 - **规划层**：工具层第一次拦截 → 把任务目标与硬约束重注入上下文后继续；累计拦截到
-  `planning` 阈值 → 温和终止回合、交还用户（重注入没救回来就不再无限重试）。
+  `planning` 阈值 → 温和终止 run、交还用户（重注入没救回来就不再无限重试）。
 
 ## 配置阈值 → 事件动作的对应关系
 
@@ -31,11 +31,11 @@
   硬约束，给模型一次改法机会），累计拦截数达到阈值写 `terminate`（温和终止、交还用户）。
 - 每条事件自带 `layer` / `guard` / `count`（规划层用 `blocks`）/ `threshold`，即使名字不同，
   记录本身也能自解释是哪一层、数到了什么、阈值多少、做了什么。
-- `TurnEnded.guardrail_stop` 用的是第三个视角"回合因哪一层结束"：熔断写 `circuitBreaker`，
+- `RunEnded.guardrail_stop` 用的是第三个视角"run 因哪一层结束"：熔断写 `circuitBreaker`，
   规划层终止写 `planning`（对应最后一条 `guard=terminate` 事件）。
 
 阈值全部来自 settings.json（默认值见 GuardrailLimits），本模块只做判定与计数。
-"连续"按**回合**计：每回合开始 reset，上一回合的重复/失败不牵连新任务。
+"连续"按 **run** 计：每个 run 开始 reset，上一个 run 的重复/失败不牵连新任务。
 """
 
 from __future__ import annotations
@@ -60,8 +60,8 @@ GUARD_CIRCUIT = "circuitBreaker"
 GUARD_REINJECT = "reinject"
 GUARD_TERMINATE = "terminate"
 
-# TurnEnded.guardrail_stop 的取值（消费方展示用；与事件里的 guard 分开命名：
-# guard 是"做了什么"，stop 是"回合为什么结束"）
+# RunEnded.guardrail_stop 的取值（消费方展示用；与事件里的 guard 分开命名：
+# guard 是"做了什么"，stop 是"run 为什么结束"）
 STOP_CIRCUIT = GUARD_CIRCUIT
 STOP_PLANNING = "planning"
 
@@ -182,14 +182,14 @@ def planning_terminate_message(blocks: int, threshold: int, detail: str) -> str:
 
 
 class GuardrailTracker:
-    """一个回合内的三层防御状态。loop 在每次工具调用前后喂它，按结论记录事件。"""
+    """一个 run 内的三层防御状态。loop 在每次工具调用前后喂它，按结论记录事件。"""
 
     def __init__(self, limits: GuardrailLimits) -> None:
         self.limits = limits
         self.reset()
 
     def reset(self) -> None:
-        """新回合：所有连续计数清零（上一回合的失败不牵连新任务）。"""
+        """新 run：所有连续计数清零（上一个 run 的失败不牵连新任务）。"""
         self._last_signature: str | None = None
         self._repeat_streak = 0
         self._last_executed_signature: str | None = None

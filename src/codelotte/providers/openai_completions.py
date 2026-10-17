@@ -14,7 +14,7 @@ wire protocol（anthropic-messages 为后续第二条）。
 - tool_calls 分片由 ToolCallAssembler 按 index 攒齐（每次尝试用新装配器，
   重试不会混入上一次的残片），流正常结束后统一产出 ToolCallsEvent；
   参数畸形的调用记入 ToolCall.parse_error（回传模型自纠），只有缺工具名
-  这种协议级缺陷才中止回合
+  这种协议级缺陷才中止 run
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ class OpenAICompletionsClient:
 
     @staticmethod
     def _assemble(assembler: ToolCallAssembler) -> tuple[ToolCall, ...]:
-        """装配分片。缺工具名是协议级缺陷（没有可回填的执行错误），中止本回合。"""
+        """装配分片。缺工具名是协议级缺陷（没有可回填的执行错误），中止本 run。"""
         try:
             return assembler.finish()
         except ToolCallAssemblyError as exc:

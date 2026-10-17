@@ -142,9 +142,9 @@ def task_boundaries(entries: list[dict[str, Any]]) -> list[int]:
 def minimum_keep_index(entries: list[dict[str, Any]]) -> int | None:
     """最小保留集的起点：run 的最后一个 turn（最后一条 assistant）或刚输入的用户消息。
 
-    术语：一个 run（`AgentLoop.run_turn`，用户一句话到最终回答）可以包含多个 turn
+    术语：一个 run（`AgentLoop.run`，用户一句话到最终回答）可以包含多个 turn
     （一次 assistant 回复 + 它声明的工具链）。这里只保留**最后一个 turn**，不是整个 run——
-    单回合长任务里更早的 turn 仍要能被摘要掉。
+    单 run 长任务里更早的 turn 仍要能被摘要掉。
 
     摘要 + 硬约束 + 这个 turn = 不可再压的下限。最后一条已是 compaction 时没有新 turn 可保留，
     返回 None（避免在同一份上下文上反复压缩）。

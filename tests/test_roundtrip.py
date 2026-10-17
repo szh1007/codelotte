@@ -572,8 +572,8 @@ def test_tool_error_is_fed_back_and_loop_recovers(tmp_path: Path) -> None:
     assert tool_result_entry["ok"] is False
 
 
-def test_iteration_cap_forces_turn_end(tmp_path: Path) -> None:
-    """验收：迭代硬上限兜底——模型永远请求工具时，回合被强制结束并记为事件。
+def test_iteration_cap_forces_run_end(tmp_path: Path) -> None:
+    """验收：迭代硬上限兜底——模型永远请求工具时，run 被强制结束并记为事件。
 
     每次读不同的文件（结果也在变），避开票据 11 的重复/无进展防御——这里测的是最后一道硬上限。
     """

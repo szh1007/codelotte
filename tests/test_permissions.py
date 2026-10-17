@@ -324,7 +324,7 @@ def _loop(tmp_path: Path, client: ScriptedClient, layer: PermissionLayer, approv
 
 def _drain(loop: AgentLoop, prompt: str = "任务") -> None:
     async def scenario() -> None:
-        async for _event in loop.run_turn(prompt):
+        async for _event in loop.run(prompt):
             pass
 
     asyncio.run(scenario())

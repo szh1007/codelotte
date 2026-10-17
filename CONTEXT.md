@@ -19,3 +19,11 @@ _Avoid_: 极简主义（作为卖点；调研结论：极简本身不构成差�
 **Session**:
 本项目的数据地基与记录单位：append-only JSONL 树（entry 带 id/parentId），消息、工具调用、用量、压缩、分支全部记录其中；上下文从活动分支确定性重建。一次任务执行的完整可回放记录。
 _Avoid_: 对话历史、聊天记录（指 UI 滚动日志时）
+
+**Run**:
+一次用户提示到最终回答的完整执行：`AgentLoop.run()`；内部可包含一个或多个模型 turn（工具调用循环）。中文里未特别说明的「回合」指 run；run 结束事件是 `RunEnded`。
+_Avoid_: 用 turn 指 run（本仓库的 turn 专指模型轮次）
+
+**Turn（模型轮次）**:
+一次 assistant 回复及其声明的 tool calls / tool results；收集结构是 `_ModelTurn`。一个 run 包含一到多个 turn。
+_Avoid_: 把 turn 当作“一次用户提问到回答”（那是 run）

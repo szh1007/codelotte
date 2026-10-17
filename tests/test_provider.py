@@ -370,7 +370,7 @@ def test_malformed_tool_arguments_are_reported_not_fatal() -> None:
 
 
 def test_missing_tool_name_aborts_stream() -> None:
-    """缺工具名是协议级缺陷：没有可回填的执行错误，中止本回合。"""
+    """缺工具名是协议级缺陷：没有可回填的执行错误，中止本 run。"""
     body = _sse_frames(
         {"tool_calls": [{"index": 0, "id": "c0", "function": {"arguments": "{}"}}]},
         finish_reason="tool_calls",

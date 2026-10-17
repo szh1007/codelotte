@@ -4,7 +4,7 @@
 edit 比对时把文件的 \r\n 看成 \n（只看不改；只替换命中段，新内容跟文件风格）。
 
 执行策略（SPEC §D）：**工具失败不是异常**——可预期失败（ToolError）与
-意外异常都转成错误文本作为结果回传模型自纠；只有系统级故障才中断回合。
+意外异常都转成错误文本作为结果回传模型自纠；只有系统级故障才中断 run。
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ async def execute_tool(
         outcome = await tool.handler(arguments)
     except ToolError as exc:
         return ToolResult(content=f"错误：{exc}", ok=False, duration_ms=elapsed_ms())
-    except Exception as exc:  # 工具 bug 不能杀死回合，转成错误文本让模型自纠
+    except Exception as exc:  # 工具 bug 不能杀死 run，转成错误文本让模型自纠
         logger.exception("工具 %s 执行时发生意外异常", name)
         return ToolResult(
             content=f"错误：工具内部异常（{type(exc).__name__}: {exc}）",

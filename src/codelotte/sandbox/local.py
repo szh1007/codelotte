@@ -58,7 +58,7 @@ class LocalExecutor:
             else:
                 out, err = drain.result()
         finally:
-            # 正常路径子进程已退出（kill 提前返回）；取消路径（回合中断）也在这里收回
+            # 正常路径子进程已退出（kill 提前返回）；取消路径（run 中断）也在这里收回
             # 子进程——不这么做，Ctrl+C 之后命令会作为孤儿继续跑
             drain.cancel()
             await self._kill_process_tree(proc)

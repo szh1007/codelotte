@@ -106,17 +106,17 @@ async def _submit(pilot: Pilot, text: str) -> None:
 
 async def _wait_idle(pilot: Pilot) -> None:
     for _ in range(500):
-        if not _as_tui(pilot).turn_running:
+        if not _as_tui(pilot).run_running:
             return
         await pilot.pause(0.02)
-    raise AssertionError("回合没有在预期时间内结束")
+    raise AssertionError("run 没有在预期时间内结束")
 
 
 def _texts(app: TuiApp) -> list[str]:
     return [str(widget.content) for widget in app.query(Static)]
 
 
-def test_turn_renders_user_tool_block_and_answer(tmp_path: Path) -> None:
+def test_run_renders_user_tool_block_and_answer(tmp_path: Path) -> None:
     target = tmp_path / "note.txt"
     target.write_text("hello\n", encoding="utf-8")
 
@@ -144,7 +144,7 @@ def test_turn_renders_user_tool_block_and_answer(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_ctrl_c_interrupts_turn_and_session_survives(tmp_path: Path) -> None:
+def test_ctrl_c_interrupts_run_and_session_survives(tmp_path: Path) -> None:
     async def scenario() -> None:
         app, client, store = _make(
             tmp_path, [[TextDelta("先说一半"), PAUSE], text_turn("第二答")]
@@ -154,11 +154,11 @@ def test_ctrl_c_interrupts_turn_and_session_survives(tmp_path: Path) -> None:
             await asyncio.wait_for(client.paused.wait(), 5)  # 已卡在流中间
             await pilot.press("ctrl+c")
             for _ in range(200):
-                if not app.turn_running:
+                if not app.run_running:
                     break
                 await pilot.pause(0.02)
             assert app.is_running  # 验收：中断不退出会话
-            assert not app.turn_running
+            assert not app.run_running
             assert any("已中断" in t for t in _texts(app))
 
             entries = load_entries(store.path)
@@ -199,7 +199,7 @@ def test_ctrl_c_during_tool_execution_keeps_context_valid(tmp_path: Path) -> Non
             await pilot.pause(0.2)
             await pilot.press("ctrl+c")
             for _ in range(500):
-                if not _as_tui(pilot).turn_running:
+                if not _as_tui(pilot).run_running:
                     break
                 await pilot.pause(0.02)
             assert app.is_running
@@ -245,7 +245,7 @@ def test_resume_replays_usage_into_status_bar(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_status_bar_shows_cost_after_turn(tmp_path: Path) -> None:
+def test_status_bar_shows_cost_after_run(tmp_path: Path) -> None:
     """票据 07 验收：状态栏实时显示累计花费（连同 token 与缓存命中率）。"""
 
     async def scenario() -> None:
@@ -311,7 +311,7 @@ def test_continue_renders_history_and_appends(tmp_path: Path) -> None:
         )
 
         async def drain() -> None:
-            async for _event in loop1.run_turn("上回的问题"):
+            async for _event in loop1.run("上回的问题"):
                 pass
 
         task = asyncio.create_task(drain())
@@ -374,7 +374,7 @@ def test_snapshot_tool_block(snap_compare: Any, tmp_path: Path) -> None:
     assert snap_compare(app, terminal_size=(92, 24), run_before=before)
 
 
-def test_snapshot_interrupted_turn(snap_compare: Any, tmp_path: Path) -> None:
+def test_snapshot_interrupted_run(snap_compare: Any, tmp_path: Path) -> None:
     app, client, _store = _make(tmp_path, [[TextDelta("我正在整理思路，先写下第一段……"), PAUSE]])
 
     async def before(pilot: Pilot) -> None:
@@ -382,7 +382,7 @@ def test_snapshot_interrupted_turn(snap_compare: Any, tmp_path: Path) -> None:
         await asyncio.wait_for(client.paused.wait(), 5)
         await pilot.press("ctrl+c")
         for _ in range(200):
-            if not _as_tui(pilot).turn_running:
+            if not _as_tui(pilot).run_running:
                 break
             await pilot.pause(0.02)
 
@@ -487,7 +487,7 @@ def test_approval_always_writes_user_file_never_project(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_approval_deny_feeds_error_back_and_turn_continues(tmp_path: Path) -> None:
+def test_approval_deny_feeds_error_back_and_run_continues(tmp_path: Path) -> None:
     async def scenario() -> None:
         target = tmp_path / "f.txt"
         target.write_text("x\n", encoding="utf-8")
@@ -565,9 +565,9 @@ def test_ctrl_c_during_approval_cancels_cleanly(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 30)) as pilot:
             await _submit(pilot, "读文件")
             await _wait_for_approval(pilot)
-            await pilot.press("ctrl+c")  # 弹层里 Ctrl+C：该调用按拒绝，回合取消
+            await pilot.press("ctrl+c")  # 弹层里 Ctrl+C：该调用按拒绝，run 取消
             for _ in range(300):
-                if not app.turn_running:
+                if not app.run_running:
                     break
                 await pilot.pause(0.02)
             assert app.is_running  # 界面还在
@@ -649,8 +649,8 @@ def test_reasoning_deltas_are_rendered_when_they_arrive(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_reasoning_blocks_do_not_merge_across_failed_turns(tmp_path: Path) -> None:
-    """回归（审查发现）：失败回合的思考块必须收尾——下一回合的思考不能被拼进旧块。"""
+def test_reasoning_blocks_do_not_merge_across_failed_runs(tmp_path: Path) -> None:
+    """回归（审查发现）：失败 run 的思考块必须收尾——下一个 run 的思考不能被拼进旧块。"""
     turns = [
         [ReasoningDelta("第一回合想一点"), ProviderError("boom")],
         [ReasoningDelta("第二回合才想的"), *text_turn("答案")],
@@ -688,7 +688,7 @@ def test_startup_notices_are_mounted(tmp_path: Path) -> None:
 
 
 def test_guardrail_notice_is_rendered_when_the_circuit_breaks(tmp_path: Path) -> None:
-    """票据 11：熔断事件在对话流里高亮可见；回合结束提示说明是守护机制终止的。"""
+    """票据 11：熔断事件在对话流里高亮可见；run 结束提示说明是守护机制终止的。"""
 
     async def scenario() -> None:
         turns = [tool_turn("read", {"path": "no-such-guardrail-file.txt"}, call_id=f"c{i}") for i in range(3)]

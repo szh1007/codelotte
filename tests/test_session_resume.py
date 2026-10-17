@@ -116,7 +116,7 @@ def test_interrupted_assistant_is_skipped() -> None:
 
 
 def test_missing_tool_result_gets_interrupted_note() -> None:
-    """回合在工具执行中被中断：协议要求每个 tool_call 都有 tool 消息，缺的补中断说明。"""
+    """run 在工具执行中被中断：协议要求每个 tool_call 都有 tool 消息，缺的补中断说明。"""
     entries = [
         {"type": "message", "role": "user", "content": "问题"},
         {
@@ -130,7 +130,7 @@ def test_missing_tool_result_gets_interrupted_note() -> None:
             ],
         },
         {"type": "tool_result", "toolCallId": "a", "name": "bash", "ok": True, "content": "输出"},
-        # b 没有结果：回合在这里被中断
+        # b 没有结果：run 在这里被中断
         {"type": "message", "role": "user", "content": "继续"},
     ]
     messages = messages_from_entries(entries)

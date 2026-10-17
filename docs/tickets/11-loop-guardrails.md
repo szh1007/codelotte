@@ -41,7 +41,7 @@ loop 在每次工具调用前后喂它，按结论记录事件；阈值来自 se
   熔断在**整批 tool_calls 处理完之后**检查——保证每个 tool_call 都有 tool 应答（协议不破）。
   熔断后追加一条"总结现状"提醒，用 `tools=None` 再请求一次；若端点仍硬塞回 tool_calls，
   一律丢弃（否则会落成没有 tool 应答的孤立调用，`--continue` 恢复时请求非法）。模型总结
-  照常落盘；`TurnEnded.guardrail_stop="circuitBreaker"`，`-p` 打印原因并退出码 1（与迭代
+  照常落盘；`RunEnded.guardrail_stop="circuitBreaker"`，`-p` 打印原因并退出码 1（与迭代
   硬上限同口径：回合被强制结束就不是成功退出）。
 - **规划层**：首次工具层拦截批次后，把**任务目标（本回合用户原话，≤1200 字符）+ 硬约束**
   作为提醒重注入后继续；之后累计拦截到 `planning` 阈值则温和终止（`guardrail_stop="planning"`）。

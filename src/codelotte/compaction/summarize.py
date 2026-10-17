@@ -32,7 +32,7 @@
 ```
 
 最小保留集 = run 的最后一个 turn；这个 turn 的 assistant/tool 链原样保留。
-注意 run / turn 两级：一个 run（`run_turn`）可含多个 turn（一次 assistant 回复 + 工具链）。
+注意 run / turn 两级：一个 run（`AgentLoop.run`）可含多个 turn（一次 assistant 回复 + 工具链）。
 
 ### 3. 软触发 @ git commit（默认 60% + 最新边界是声明 commit 的 assistant）
 

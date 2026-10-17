@@ -43,11 +43,12 @@
 | `commandTimeoutSeconds` | `command_timeout` | bash 工具默认超时（**1–600 秒，超范围报错**） | 否（默认 120） |
 | `guardrailRepeatLimit` | `guardrail_repeat_limit` | 连续同名同参调用第 N 次被工具层拦截（**2–100**） | 否（默认 3） |
 | `guardrailStagnationLimit` | `guardrail_stagnation_limit` | 同名同参连续 N 次返回相同结果后，拦截下一次调用（**2–100**） | 否（默认 2） |
-| `guardrailFailureLimit` | `guardrail_failure_limit` | 连续 N 次工具失败（含权限拒绝/沙箱错误/参数畸形/工具层拦截）后熔断回合（**2–100**） | 否（默认 3） |
-| `guardrailPlanningLimit` | `guardrail_planning_limit` | 工具层累计拦截 N 次后，规划层温和终止回合（**2–100**；首次拦截批次总是先重注入任务目标与硬约束，之后的批次累计到 N 次才终止） | 否（默认 2） |
+| `guardrailFailureLimit` | `guardrail_failure_limit` | 连续 N 次工具失败（含权限拒绝/沙箱错误/参数畸形/工具层拦截）后熔断当前 run（**2–100**） | 否（默认 3） |
+| `guardrailPlanningLimit` | `guardrail_planning_limit` | 工具层累计拦截 N 次后，规划层温和终止当前 run（**2–100**；首次拦截批次总是先重注入任务目标与硬约束，之后的批次累计到 N 次才终止） | 否（默认 2） |
 | `compactionSoftThreshold` | `compaction_soft_threshold` | 压缩软触发比例（**0.2–0.9**；与 hard 至少相差 0.2） | 否（默认 0.60） |
 | `compactionHardThreshold` | `compaction_hard_threshold` | 压缩硬触发比例（**0.2–0.9**；与 soft 至少相差 0.2） | 否（默认 0.85） |
 
+- 术语：**run** = 一次用户输入到最终回答（`AgentLoop.run()`）；**turn** = 一次 assistant 回复 + 工具链。一个 run 可含多个 turn；压缩的最小保留集是 run 的最后一个 turn。
 - 未知键：忽略并在启动时提示（不静默）；已知键类型写错：直接报错退出。
 - 死循环三层防御（票据 11）：工具层（同名同参重复 / 结果无进展）→ 推理层（连续工具失败熔断，禁用工具请模型总结）→ 规划层（重注入任务目标与硬约束；累计拦截到阈值则温和终止）。每次拦截写一条 `event`（kind=guardrail）进会话，TUI 与导出高亮；四个阈值按**run**计数，上一轮不牵连新任务。
 - 压缩双阈值（票据 12）：软/硬触发比例必须满足 **0.2 ≤ soft < hard ≤ 0.9** 且 **hard - soft ≥ 0.2**；只改一边时另一边用默认值，按生效值校验（例如只配 soft=0.75、默认 hard=0.85，差距只有 0.10，会直接报错）。硬触发直接压到最小保留集，软触发只在任务边界压。

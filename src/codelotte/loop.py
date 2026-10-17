@@ -3,11 +3,11 @@
 不变量：**记录是事实源**——凡广播出去的"事实"（工具调用/结果、assistant 回复、用量）
 都先落盘再广播；流式增量文本是呈现侧事件（随到随发），它在流结束时由 assistant 记录
 一次性落盘，失败或被中断（Ctrl+C）时已看到的部分同样落盘（stopReason=interrupted）——
-无论从哪条路径离开回合，界面看到的都有记录兜底，不出现"终端看到了、会话里没有"的悬空状态。
+无论从哪条路径离开 run，界面看到的都有记录兜底，不出现"终端看到了、会话里没有"的悬空状态。
 
 对外只有一条结构化事件流：文本/思考增量沿用 Provider 层事件；用量在流结束时计价、
 随 usage 记录落盘后以 CostRecorded 广播（计价是应用层事实，不放进 Provider 抽象）；
-工具调用与回合边界是本层事件。TUI、无头模式（-p）与后续的导出/评测都消费它——
+工具调用与 run 边界是本层事件。TUI、无头模式（-p）与后续的导出/评测都消费它——
 同一套事件、不同呈现，这是「界面所见」与「无头行为」一致的保证（SPEC §A）。
 
 deepseek 雷区：带 tools 的请求必须把历史 assistant 的 reasoning_content 原样回传，
@@ -115,7 +115,7 @@ class ToolFinished:
 
 
 @dataclass(frozen=True)
-class TurnEnded:
+class RunEnded:
     """一个 run（用户回合）结束。stop_reason 是最后一次模型调用的结束原因。
 
     guardrail_stop 非空表示这个 run 被死循环防御终止（"circuitBreaker" / "planning"），
@@ -173,7 +173,7 @@ LoopEvent = (
     | ToolFinished
     | GuardrailTriggered
     | CompactionEvent
-    | TurnEnded
+    | RunEnded
 )
 
 
@@ -199,8 +199,11 @@ class _Authorization:
 
 
 @dataclass
-class _Turn:
-    """一个 turn（一次模型回复）的收集结果（失败时 failure 非空，其余字段为已收集到的部分）。"""
+class _ModelTurn:
+    """一个 turn（一次 assistant 回复 + 它声明的 tool calls）的收集结果。
+
+    工具执行结果不属于它（见 _run_call）；失败时 failure 非空，其余字段为已收集到的部分。
+    """
 
     content: str = ""
     reasoning: str = ""
@@ -210,39 +213,39 @@ class _Turn:
     failure: ProviderError | None = None
 
 
-def _assistant_fields(turn: _Turn, model: str, *, interrupted: bool) -> dict[str, Any]:
-    """一轮回复的会话记录字段。toolCalls 存原始参数 JSON 文本（回放时逐字节重建请求）。"""
+def _assistant_fields(model_turn: _ModelTurn, model: str, *, interrupted: bool) -> dict[str, Any]:
+    """一个 turn 的会话记录字段。toolCalls 存原始参数 JSON 文本（回放时逐字节重建请求）。"""
     fields: dict[str, Any] = {
         "role": "assistant",
-        "content": turn.content,
+        "content": model_turn.content,
         "model": model,
-        "stopReason": "interrupted" if interrupted else turn.stop_reason,
+        "stopReason": "interrupted" if interrupted else model_turn.stop_reason,
     }
-    if turn.reasoning:
-        fields["reasoningContent"] = turn.reasoning
-    if turn.tool_calls:
+    if model_turn.reasoning:
+        fields["reasoningContent"] = model_turn.reasoning
+    if model_turn.tool_calls:
         fields["toolCalls"] = [
             {"id": call.id, "name": call.name, "arguments": call.arguments}
-            for call in turn.tool_calls
+            for call in model_turn.tool_calls
         ]
     return fields
 
 
-def _assistant_message(turn: _Turn) -> dict[str, Any]:
-    """一轮回复转成协议消息（形状在 providers.base.assistant_message，与恢复路径共用）。
+def _assistant_message(model_turn: _ModelTurn) -> dict[str, Any]:
+    """一个 turn 的回复转成协议消息（形状在 providers.base.assistant_message，与恢复路径共用）。
 
     reasoning_content 必须原样回传：带 tools 的请求缺它会 400（deepseek 雷区）。
     """
     return assistant_message(
-        content=turn.content,
-        reasoning=turn.reasoning or None,
-        tool_calls=[(call.id, call.name, call.arguments) for call in turn.tool_calls]
+        content=model_turn.content,
+        reasoning=model_turn.reasoning or None,
+        tool_calls=[(call.id, call.name, call.arguments) for call in model_turn.tool_calls]
         or None,
     )
 
 
 class AgentLoop:
-    """一次会话的循环与状态：消息数组与会话文件随对象走，跨回合累积（TUI 多轮对话）。"""
+    """一次会话的循环与状态：消息数组与会话文件随对象走，跨 run 累积（TUI 多轮对话）。"""
 
     def __init__(
         self,
@@ -267,12 +270,12 @@ class AgentLoop:
         self._env = env
         self._catalog = catalog
         self._permissions = permissions
-        # 死循环三层防御（票据 11）：阈值可配，计数按回合重置
+        # 死循环三层防御（票据 11）：阈值可配，计数按 run 重置
         self._guardrail_limits = (
             guardrail_limits if guardrail_limits is not None else GuardrailLimits()
         )
         self._guardrails = GuardrailTracker(self._guardrail_limits)
-        self._turn_goal = ""
+        self._run_goal = ""
         # 压缩双阈值（票据 12）：settings.json 可配，默认 0.60 / 0.85
         self._compaction_limits = (
             compaction_limits if compaction_limits is not None else CompactionLimits()
@@ -331,7 +334,7 @@ class AgentLoop:
         """本次运行的压缩双阈值（settings.json 透传结果，票据 12）。"""
         return self._compaction_limits
 
-    async def run_turn(self, prompt: str) -> AsyncIterator[LoopEvent]:
+    async def run(self, prompt: str) -> AsyncIterator[LoopEvent]:
         """跑一个 run（用户回合）并广播事件：用户一句话 → 多次模型 turn → 最终回答。
 
         一个 run 可以包含很多 turn（每次模型回复 + 工具链）；工具失败不中断
@@ -340,8 +343,8 @@ class AgentLoop:
         """
         self._store.append("message", role="user", content=prompt)
         self.messages.append({"role": "user", "content": prompt})
-        # 死循环防御按回合计数：上一回合的重复/失败不牵连新任务（票据 11）
-        self._turn_goal = prompt
+        # 死循环防御按 run 计数：上一个 run 的重复/失败不牵连新任务（票据 11）
+        self._run_goal = prompt
         self._guardrails.reset()
 
         calls_made = 0
@@ -353,26 +356,26 @@ class AgentLoop:
                     calls_made += 1  # 摘要本身也是一次真实模型调用
                 yield event
             calls_made += 1
-            turn = _Turn()
-            async for event in self._consume_stream(turn):
+            model_turn = _ModelTurn()
+            async for event in self._consume_stream(model_turn):
                 yield event
-            if turn.failure is not None:
-                raise turn.failure
-            stop_reason = turn.stop_reason
-            if not turn.tool_calls:
+            if model_turn.failure is not None:
+                raise model_turn.failure
+            stop_reason = model_turn.stop_reason
+            if not model_turn.tool_calls:
                 # 答案也要进上下文（审查修正：原来只有带工具调用的 assistant 进 messages，
                 # 同进程下一轮请求会缺上一条回答，与 --continue 重建的请求不一致——
                 # 缓存前缀与请求指纹都会因此错位）。
-                self.messages.append(_assistant_message(turn))
-                yield TurnEnded(
+                self.messages.append(_assistant_message(model_turn))
+                yield RunEnded(
                     stop_reason=stop_reason,
                     hit_iteration_cap=False,
                     calls_made=calls_made,
                 )
                 return
-            self.messages.append(_assistant_message(turn))
+            self.messages.append(_assistant_message(model_turn))
             self._guardrails.begin_batch()
-            for call in turn.tool_calls:
+            for call in model_turn.tool_calls:
                 async for call_event in self._run_call(call):
                     yield call_event
 
@@ -385,7 +388,7 @@ class AgentLoop:
             action = self._guardrails.planning_after_batch()
             if action is not None:
                 if action.kind == GUARD_REINJECT:
-                    reminder = planning_reminder(self._turn_goal, action.detail)
+                    reminder = planning_reminder(self._run_goal, action.detail)
                     message = f"工具层拦截重复操作：{action.detail}"
                     event = self._record_guardrail(
                         layer=LAYER_PLANNING,
@@ -408,7 +411,7 @@ class AgentLoop:
                         blocks=action.blocks,
                         threshold=action.threshold,
                     )
-                    yield TurnEnded(
+                    yield RunEnded(
                         stop_reason=stop_reason,
                         hit_iteration_cap=False,
                         calls_made=calls_made,
@@ -419,7 +422,7 @@ class AgentLoop:
             self._store.append(
                 "event", kind="iterationLimit", iterations=MAX_ITERATIONS
             )
-            yield TurnEnded(
+            yield RunEnded(
                 stop_reason=stop_reason, hit_iteration_cap=True, calls_made=calls_made
             )
 
@@ -445,7 +448,7 @@ class AgentLoop:
             return
 
         before_tokens = self._last_input_tokens
-        summary_turn = _Turn()
+        summary_turn = _ModelTurn()
         cost_events: list[CostRecorded] = []
         async for event in self._consume_stream(
             summary_turn,
@@ -473,7 +476,7 @@ class AgentLoop:
             firstKeptEntryId=decision.first_kept_entry_id,
             constraints=COMPACTION_CONSTRAINTS,  # 独立于摘要，恢复时原样重注入
             mode=decision.mode,
-            # 不落百分比（票据 12 预置决策：百分比每回合现算）；展示由 beforeTokens/window 现算
+            # 不落百分比（票据 12 预置决策：百分比每次请求现算）；展示由 beforeTokens/window 现算
             window=self._context_window,
             beforeTokens=before_tokens,
             estimatedAfterTokens=after_tokens,
@@ -516,13 +519,13 @@ class AgentLoop:
         return None
 
     async def _circuit_break(self, calls_made: int) -> AsyncIterator[LoopEvent]:
-        """推理层熔断：记录事件 → 重注入总结要求 → 禁用工具再请求一次 → 结束回合。
+        """推理层熔断：记录事件 → 重注入总结要求 → 禁用工具再请求一次 → 结束 run。
 
         熔断不是异常：模型有一次机会在无工具条件下总结现状，总结照常落盘；
-        回合结束原因写进 TurnEnded.guardrail_stop，会话可继续（票据 11 验收）。
+        run 结束原因写进 RunEnded.guardrail_stop，会话可继续（票据 11 验收）。
         """
         failures = self._guardrails.failure_streak
-        reminder = circuit_reminder(self._turn_goal, failures)
+        reminder = circuit_reminder(self._run_goal, failures)
         message = (
             f"连续 {failures} 次工具调用失败，熔断当前回合"
             "（工具已禁用，请模型总结现状）"
@@ -538,13 +541,13 @@ class AgentLoop:
         self.messages.append({"role": "user", "content": reminder})
         yield event
 
-        summary = _Turn()
+        summary = _ModelTurn()
         async for stream_event in self._consume_stream(summary, use_tools=False):
             yield stream_event
         if summary.failure is not None:
             raise summary.failure
         self.messages.append(_assistant_message(summary))
-        yield TurnEnded(
+        yield RunEnded(
             stop_reason=summary.stop_reason,
             hit_iteration_cap=False,
             calls_made=calls_made + 1,
@@ -567,13 +570,13 @@ class AgentLoop:
 
     async def _consume_stream(
         self,
-        turn: _Turn,
+        model_turn: _ModelTurn,
         *,
         use_tools: bool = True,
         messages: list[dict[str, Any]] | None = None,
         record_message: bool = True,
     ) -> AsyncIterator[LoopEvent]:
-        """请求模型一次：边收边广播增量事件，收完落盘（turn 由调用方持有，回填收集结果）。
+        """请求模型一次：边收边广播增量事件，收完落盘（收集结构由调用方持有，回填结果）。
 
         增量（文本/思考/用量）是呈现用事件，随到随发；assistant 记录在流结束时一次性落盘
         （流式中途失败或被取消时，已看到的部分也落盘后再向上抛——记录是事实源）。
@@ -598,40 +601,40 @@ class AgentLoop:
                     yield event
                 elif isinstance(event, ToolCallsEvent):
                     if use_tools:
-                        turn.tool_calls = event.calls
+                        model_turn.tool_calls = event.calls
                     # use_tools=False（熔断总结）：即使端点硬塞回 tool_calls 也丢弃——
                     # 没有工具应答的 assistant toolCalls 会让恢复后的请求非法（票据 11）
                 elif isinstance(event, UsageEvent):
-                    turn.usage = (
+                    model_turn.usage = (
                         event.usage
                     )  # 收下备用；对外的用量事件是计价后的 CostRecorded
                 elif isinstance(event, StreamEnd):
-                    turn.stop_reason = event.reason
+                    model_turn.stop_reason = event.reason
         except ProviderError as exc:
-            turn.failure = exc
+            model_turn.failure = exc
         except asyncio.CancelledError:
             # 中断（Ctrl+C）：已经看到的文本也要落盘，再放行取消让执行器清理子进程
-            turn.content = "".join(parts)
-            turn.reasoning = "".join(reasoning_parts)
-            if record_message and (turn.content or turn.reasoning or turn.tool_calls):
+            model_turn.content = "".join(parts)
+            model_turn.reasoning = "".join(reasoning_parts)
+            if record_message and (model_turn.content or model_turn.reasoning or model_turn.tool_calls):
                 self._store.append(
-                    "message", **_assistant_fields(turn, self._model, interrupted=True)
+                    "message", **_assistant_fields(model_turn, self._model, interrupted=True)
                 )
-            if turn.usage is not None:
+            if model_turn.usage is not None:
                 # 用量已经收到 = 这次调用已经在计费了：取消也不能丢账（审查修正）
-                self._record_usage(turn.usage, fingerprint)
+                self._record_usage(model_turn.usage, fingerprint)
             raise
-        turn.content = "".join(parts)
-        turn.reasoning = "".join(reasoning_parts)
+        model_turn.content = "".join(parts)
+        model_turn.reasoning = "".join(reasoning_parts)
         if record_message:
             self._store.append(
                 "message",
                 **_assistant_fields(
-                    turn, self._model, interrupted=turn.failure is not None
+                    model_turn, self._model, interrupted=model_turn.failure is not None
                 ),
             )
-        if turn.usage is not None:
-            yield self._record_usage(turn.usage, fingerprint)
+        if model_turn.usage is not None:
+            yield self._record_usage(model_turn.usage, fingerprint)
 
     def _record_usage(self, usage: StreamUsage, fingerprint: str) -> CostRecorded:
         """计价 + 落盘 usage 记录（SPEC §I「每次模型调用记录一条 usage」），返回广播用事件。"""
@@ -667,7 +670,7 @@ class AgentLoop:
         """一次工具调用：记录 → 占位应答 →（广播）→ 执行 → 原地回填 → 结果记录 →（广播）。
 
         参数畸形（模型输出缺陷）不执行：错误作为工具结果回传让它自纠（SPEC §D）。
-        占位应答先于一切挂起点落进 messages：回合在任何时刻被取消（如工具执行中 Ctrl+C），
+        占位应答先于一切挂起点落进 messages：run 在任何时刻被取消（如工具执行中 Ctrl+C），
         assistant 声明的每个 tool_call 仍各有一条 tool 应答——缺一个，下一次请求整个 400。
         """
         arguments: dict[str, Any] | None = None
