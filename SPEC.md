@@ -233,7 +233,7 @@
 - **append-only JSONL**：一行一条记录（entry），永不改写。entry 公共字段：`type`（类型）/ `id` / `parentId`（父条目，构成树）/ `timestamp`；典型类型与独有字段：
   - `session`：会话头（schema 版本、工作目录、创建时间）；
   - `message`：role（user/assistant/tool）、内容、模型标识；
-  - `tool_call` / `tool_result`：工具名、参数、结果、耗时、执行环境（sandbox/local）；
+  - `tool_call` / `tool_result`：工具名、参数、结果、耗时、执行环境（执行器实现 id：`docker` / `local`；文件工具始终 `local`，bash 随执行器）；
   - `usage`：每次模型调用的 token（输入/输出/缓存命中/未命中）、时段档、估算费用（人民币元）与货币标识；
   - `compaction`：摘要文本 + **保留边界指针**（firstKeptEntryId）——压缩不是删除，而是插入一条"从这里重新开始"的记录；
   - `permission`：规则判定与审批结果；
@@ -280,8 +280,8 @@
 **决策**（依据 [ADR-0005](docs/adr/0005-two-layer-execution-security.md)）：
 
 - **每会话一个长驻 Docker 容器**，命令通过 `docker exec` 复用（避免"每条命令冷启动一个容器"的秒级开销）。容器生命周期 = 会话生命周期。
-- **挂载**：工作目录读写挂载进容器（路径映射约定固定）；其余文件系统只读；家目录不挂载（**宿主机的密钥、`.ssh`、`.env` 永远不在容器里**）。
-- **网络**：默认 **deny-all**（`--network none`）。可选白名单档：允许指定域名 —— v1 实现为两种档位（全禁 / 放行常见包管理域名，经容器内代理配置）。被拦网络请求以明确错误回传模型。
+- **挂载**：工作目录读写挂载进容器（v1 固定映射到 `/workspace`）；其余文件系统只读；家目录不自动挂载（**宿主机的密钥、`.ssh`、`.env` 不在任何挂载里**）。注意工作区挂载的是启动目录整棵树——从家目录启动时家目录就是工作区，应始终在项目子目录里启动。
+- **网络**：v1 只实现 **deny-all**（`--network none`，票据 10）。可选白名单档（容器内代理放行常见包管理域名）推迟——需要额外代理进程与证书信任，另立工作项。被拦网络请求以明确错误回传模型。
 - **资源限额**：CPU、内存上限 + 单命令超时（默认 120s，可配置）。超时进程组整体杀死。
 - **`--no-sandbox` 逃生门**：显式指定时在宿主机直接执行（用于 CI/完全可信场景），启动时打印醒目警告，且该回合的每一次工具执行都在会话中标记 `env=local`——可审计。
 - **Windows 特别说明**：开发机为 Windows 11，OS 级隔离（macOS seatbelt / Linux bubblewrap）不可用，Docker Desktop 是唯一能落地的强隔离路径；Docker CLI 由 asyncio 子进程调用，在 Windows 默认事件循环下工作正常（TUI 选型 Textual 已规避相关事件循环冲突，见 K）。

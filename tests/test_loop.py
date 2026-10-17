@@ -109,6 +109,41 @@ def test_tool_call_runs_real_tool_and_loops_back(tmp_path: Path) -> None:
     assert assistant_with_call["toolCalls"][0]["arguments"] == json.dumps({"path": str(target)})
 
 
+def test_tool_records_carry_each_tools_own_execution_env(tmp_path: Path) -> None:
+    """审计口径：env 跟着工具实现走（bash=docker、文件工具=local），不是整条会话一个值。"""
+    from typing import Any
+
+    from codelotte.tools.base import Tool
+
+    async def handler(args: dict[str, Any]) -> str:
+        return "ok"
+
+    docker_bash = Tool(
+        name="bash",
+        description="",
+        parameters={"type": "object"},
+        handler=handler,
+        exec_env="docker",
+    )
+    client = ScriptedClient([tool_turn("bash", {"command": "echo hi"}), text_turn("完成")])
+    loop = AgentLoop(
+        client=client,
+        tools=(docker_bash,),
+        store=_store(tmp_path),
+        model="fake-model",
+        catalog=fake_catalog(),
+        permissions=allow_builtin_tools(),
+    )
+    asyncio.run(_collect(loop))
+
+    records = [
+        entry
+        for entry in load_entries(loop.session_path)
+        if entry["type"] in ("tool_call", "tool_result")
+    ]
+    assert [record["env"] for record in records] == ["docker", "docker"]
+
+
 def test_events_arrive_only_after_records_land(tmp_path: Path) -> None:
     """记录是事实源：事件到达时，对应的记录已经在文件里。"""
     target = tmp_path / "f.txt"

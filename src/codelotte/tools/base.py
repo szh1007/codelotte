@@ -46,6 +46,8 @@ class Tool:
     description: str
     parameters: dict[str, Any]
     handler: ToolHandler
+    # 该工具真实执行的环境（会话审计字段）：文件工具在宿主上跑，bash 随执行器（docker/local）
+    exec_env: str = "local"
 
 
 def wire_schema(tool: Tool) -> dict[str, Any]:

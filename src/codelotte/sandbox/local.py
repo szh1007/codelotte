@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-import locale
 import os
 import shutil
 import signal
@@ -16,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from codelotte.sandbox.executor import ExecResult
+from codelotte.sandbox.executor import ExecResult, decode_output
 
 _DRAIN_TIMEOUT = 10.0  # 杀死后回收残余输出的兜底时限
 
@@ -37,6 +36,9 @@ class LocalExecutor:
     模型按 bash 语法写命令——`;`、`cd /d/...` 这些 cmd 会误解），找不到才退回 cmd.exe /c。"""
 
     env = "local"
+
+    async def close(self) -> None:
+        """本地执行器没有长驻资源；接口要求有 close（Docker 版在这里清理容器）。"""
 
     async def run(self, command: str, *, cwd: Path, timeout: float) -> ExecResult:
         proc = await self._create_process(command, cwd)
@@ -62,8 +64,8 @@ class LocalExecutor:
             await self._kill_process_tree(proc)
         return ExecResult(
             exit_code=proc.returncode if proc.returncode is not None else -1,
-            stdout=_decode(out),
-            stderr=_decode(err),
+            stdout=decode_output(out),
+            stderr=decode_output(err),
             timed_out=timed_out,
         )
 
@@ -111,12 +113,3 @@ class LocalExecutor:
             await asyncio.wait_for(proc.wait(), _DRAIN_TIMEOUT)
         except TimeoutError:
             proc.kill()
-
-
-def _decode(data: bytes) -> str:
-    """命令输出解码：优先 UTF-8；Windows 原生工具（cmd 报错等）按系统 ANSI 代码页输出，
-    退一步用 locale.getencoding() 解——它不受 UTF-8 模式影响，正是控制台本地编码。"""
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode(locale.getencoding(), errors="replace")

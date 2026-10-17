@@ -18,6 +18,14 @@ def test_default_tools_has_all_four_in_order() -> None:
     assert [t.name for t in _tools()] == ["read", "write", "edit", "bash"]
 
 
+def test_bash_carries_the_executor_environment_into_audit_records() -> None:
+    """bash 跟执行器走（docker / local）；文件工具永远在宿主上执行——审计标记要如实。"""
+    from codelotte.sandbox import DockerExecutor
+
+    envs = {tool.name: tool.exec_env for tool in default_tools(DockerExecutor())}
+    assert envs == {"read": "local", "write": "local", "edit": "local", "bash": "docker"}
+
+
 def test_wire_schemas_are_openai_shaped() -> None:
     schemas = wire_tools(_tools())
     assert [s["function"]["name"] for s in schemas] == ["read", "write", "edit", "bash"]

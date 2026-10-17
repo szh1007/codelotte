@@ -114,9 +114,10 @@ def test_console_encoding_fallback_for_legacy_output(
     通过 run() 的可观察行为断言（不直接测私有函数）：控制台编码固定为 cp936，
     子进程吐出 cp936 字节，结果应能正确解码。
     """
-    from codelotte.sandbox import local as local_module
+    from codelotte.sandbox import executor as executor_module
 
-    monkeypatch.setattr(local_module.locale, "getencoding", lambda: "cp936")
+    # 解码逻辑与 Docker 执行器共用（sandbox.executor.decode_output），这里替换它的代码页来源
+    monkeypatch.setattr(executor_module.locale, "getencoding", lambda: "cp936")
     script = tmp_path / "emit_gbk.py"
     script.write_text(
         "import sys" + chr(10) + "sys.stdout.buffer.write('你好'.encode('cp936'))" + chr(10),

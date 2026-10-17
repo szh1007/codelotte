@@ -1,10 +1,11 @@
 """Sandbox 组件（SPEC §A）：命令执行的统一接口与实现。
 
-本票只有本地执行器；Docker 实现是票据 10——届时新增一个实现模块并在装配处替换，
-协议本身也要扩展（长驻容器随会话起停的生命周期，SPEC §H），工具层代码不变。
+默认 DockerExecutor（票据 10：每会话一个长驻容器；--no-sandbox 时退回 LocalExecutor）。
+工具层只依赖 Executor 协议——换实现时工具代码零改动。
 """
 
+from codelotte.sandbox.docker import DockerExecutor
 from codelotte.sandbox.executor import ExecResult, Executor
 from codelotte.sandbox.local import LocalExecutor
 
-__all__ = ["ExecResult", "Executor", "LocalExecutor"]
+__all__ = ["DockerExecutor", "ExecResult", "Executor", "LocalExecutor"]

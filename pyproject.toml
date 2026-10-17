@@ -26,6 +26,11 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Docker 集成套件是独立组：默认冒烟不跑（不阻塞、也不需要 daemon）；要跑用 `pytest -m docker`
+addopts = "-m 'not docker'"
+markers = [
+    "docker: 需要本机 Docker daemon 的集成测试（可选执行，不阻塞冒烟；票据 10）",
+]
 
 [tool.ruff]
 line-length = 120

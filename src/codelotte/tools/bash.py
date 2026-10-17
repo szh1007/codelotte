@@ -67,6 +67,7 @@ def bash_tool(executor: Executor, *, default_timeout: int = DEFAULT_TIMEOUT) -> 
             "required": ["command"],
         },
         handler=handler,
+        exec_env=executor.env,  # 审计记录如实标记（docker / local）
     )
 
 

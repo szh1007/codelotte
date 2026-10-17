@@ -140,7 +140,8 @@ def _run_cli_against(
     allow_tools: bool = True,
     reasoning_effort: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    args = ["-p", prompt, *extra_args]
+    # --no-sandbox：冒烟套件不依赖 Docker daemon（SPEC §K）；Docker 行为由独立套件覆盖
+    args = ["-p", prompt, *extra_args, "--no-sandbox"]
     if allow_tools:  # 大部分 e2e 关心的是循环本身：把四个内置工具直接放行（权限层另有专测）
         for tool in ("read", "write", "edit", "bash"):
             args += ["--allow", tool]
@@ -809,6 +810,7 @@ def test_agent_writes_edits_and_verifies_with_bash(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "已完成\n"
+    assert "警告：--no-sandbox" in result.stderr  # 逃生门要显式提示风险
     assert (project / "hello.txt").read_text(encoding="utf-8") == "你好，世界\n"
     # 第四次请求里：bash 的真实输出被回填（验证链路闭环）
     assert len(received) == 4

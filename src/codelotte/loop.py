@@ -52,7 +52,7 @@ from codelotte.providers.base import (
 )
 from codelotte.session.context import INTERRUPTED_TOOL_NOTE
 from codelotte.session.store import SessionStore
-from codelotte.tools import Tool, ToolResult, execute_tool, wire_tools
+from codelotte.tools import Tool, ToolResult, execute_tool, find_tool, wire_tools
 
 MAX_ITERATIONS = 50  # 迭代硬上限兜底（死循环三层防御是票据 11）
 
@@ -186,7 +186,7 @@ class AgentLoop:
         model: str,
         catalog: Catalog,
         permissions: PermissionLayer,
-        env: str = "local",
+        env: str = "local",  # 未知工具的兜底；已知工具按自己的 exec_env 标记（见 _tool_env）
         messages: list[dict[str, Any]] | None = None,
         approver: Approver | None = None,
     ) -> None:
@@ -365,7 +365,7 @@ class AgentLoop:
                 name=call.name,
                 arguments=call.arguments,  # 无法解析时记原始文本，parseError 说明原因
                 parseError=call.parse_error,
-                env=self._env,
+                env=self._tool_env(call.name),
             )
         else:
             arguments = json.loads(call.arguments)  # 装配器已校验：合法 JSON 对象
@@ -374,7 +374,7 @@ class AgentLoop:
                 toolCallId=call.id,
                 name=call.name,
                 arguments=arguments,
-                env=self._env,
+                env=self._tool_env(call.name),
             )
 
         reply: dict[str, Any] = {
@@ -419,7 +419,7 @@ class AgentLoop:
             ok=result.ok,
             content=result.content,
             durationMs=result.duration_ms,
-            env=self._env,
+            env=self._tool_env(call.name),
         )
         yield ToolFinished(
             call_id=call.id,
@@ -428,6 +428,12 @@ class AgentLoop:
             content=result.content,
             duration_ms=result.duration_ms,
         )
+
+    def _tool_env(self, name: str) -> str:
+        """一次工具调用的执行环境（审计字段）：按工具实现如实标记（bash 随执行器，
+        文件工具在宿主上跑）；未知工具尚未执行，退回会话默认值。"""
+        tool = find_tool(name, self._tools)
+        return tool.exec_env if tool is not None else self._env
 
     async def _authorize(self, call: ToolCall, arguments: dict[str, Any]) -> _Authorization:
         """权限判定 →（ask 时）审批 → 落 permission 记录（审计，SPEC §G）。

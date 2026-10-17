@@ -42,7 +42,7 @@ from codelotte.loop import AgentLoop
 from codelotte.providers.base import ProviderError
 from codelotte.providers.openai_completions import OpenAICompletionsClient
 from codelotte.run import print_session_invoice, run_once
-from codelotte.sandbox import LocalExecutor
+from codelotte.sandbox import DockerExecutor, Executor, LocalExecutor
 from codelotte.session.store import (
     SessionError,
     fork_at,
@@ -54,6 +54,12 @@ from codelotte.session.store import (
     open_session,
 )
 from codelotte.tools import default_tools
+
+# --no-sandbox 的启动警告（-p 打 stderr；TUI 进启动提示）：风险必须显式可见
+SANDBOX_OFF_WARNING = (
+    "警告：--no-sandbox 已开启——命令将直接在宿主机执行，宿主文件与密钥对 agent 可见；"
+    "权限层是唯一防线。本次会话的工具执行会在记录中标记 env=local。"
+)
 
 
 def _reconfigure(stream: object) -> None:
@@ -108,6 +114,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="从会话活动分支的倒数第 N 条消息处创建新分支（N=1 即最后一条），后续对话写在新分支上；"
         "默认对最近会话，可与 --resume <序号> 组合指定别的分支",
+    )
+
+    sandbox_group = parser.add_argument_group("沙箱（票据 10）")
+    sandbox_group.add_argument(
+        "--no-sandbox",
+        dest="no_sandbox",
+        action="store_true",
+        help="逃生门：命令直接在宿主机执行（默认在 Docker 容器里）。启动时打印风险警告，"
+        "本次会话的执行记录标记 env=local",
     )
 
     permission_group = parser.add_argument_group("权限规则（票据 09）")
@@ -308,14 +323,19 @@ def _build_agent(
     fork_from_end: int | None = None,
     rules: Sequence[Rule] = (),
     settings: Settings | None = None,
-) -> tuple[AgentLoop, ModelSpec]:
-    """装配一次真实运行的循环——无头与 TUI 共用这一处（票据 10 在这里换 Docker 执行器）。
+    no_sandbox: bool = False,
+) -> tuple[AgentLoop, ModelSpec, Executor]:
+    """装配一次真实运行的循环——无头与 TUI 共用这一处。
+
+    执行器按 --no-sandbox 选择：默认 DockerExecutor（每会话一个长驻容器），
+    显式逃生门才退回 LocalExecutor；调用方负责在会话结束时 close 执行器。
 
     先读配置、后建会话文件：配置缺失（如没密钥）不得留下"只有会话头的空文件"，
     否则 --continue 按 mtime 会挑中它，把真实历史跳过。
 
     运行参数（端点/密钥/模型）只从用户级 models.json 读（models.resolve）；
-    随包目录只出计费事实与展示/上限默认值。返回循环与最终采用的模型参数（TUI 用展示名/窗口）。
+    随包目录只出计费事实与展示/上限默认值。返回循环、最终采用的模型参数（TUI 用展示名/窗口）
+    与执行器（生命周期由调用方收尾）。
 
     resume_index 给出时恢复指定分支；fork_from_end 可与其组合（在选中的分支上再分岔）。
     """
@@ -338,7 +358,7 @@ def _build_agent(
         max_tokens=spec.max_output_tokens,  # 单次输出上限（用户可下调，随包默认封顶）
         reasoning_effort=spec.reasoning_effort,  # 思考开关与强度（none 关闭；展示总是跟随）
     )
-    executor = LocalExecutor()
+    executor: Executor = LocalExecutor() if no_sandbox else DockerExecutor()
     cwd = Path.cwd()
     if resume_index is not None:
         items, skipped = list_resumable(cwd)
@@ -358,19 +378,17 @@ def _build_agent(
         store, messages = fork_session(cwd, from_end=fork_from_end)
     else:
         store, messages = open_session(cwd, resume=resume)
-    return (
-        AgentLoop(
-            client=client,
-            tools=default_tools(executor, command_timeout=resolved.command_timeout),
-            store=store,
-            model=spec.id,
-            env=executor.env,
-            messages=messages,
-            catalog=catalog,
-            permissions=permissions,
-        ),
-        spec,
+    loop = AgentLoop(
+        client=client,
+        tools=default_tools(executor, command_timeout=resolved.command_timeout),
+        store=store,
+        model=spec.id,
+        env=executor.env,  # 未知工具的兜底；bash 自己带执行器 env（见 Tool.exec_env）
+        messages=messages,
+        catalog=catalog,
+        permissions=permissions,
     )
+    return loop, spec, executor
 
 
 def _run_prompt(
@@ -381,22 +399,27 @@ def _run_prompt(
     fork_from_end: int | None = None,
     rules: Sequence[Rule] = (),
     settings: Settings | None = None,
+    no_sandbox: bool = False,
 ) -> int:
     """一次性执行。思考由模型条目的 reasoning_effort 决定：none 关闭（无思考内容、无展示），
     其余档位开启——开启时思考内容总是既落盘又展示（走 stderr），没有单独的展示开关。"""
     try:
-        loop, spec = _build_agent(
+        loop, _spec, executor = _build_agent(
             resume=resume,
             resume_index=resume_index,
             fork_from_end=fork_from_end,
             rules=rules,
             settings=settings,
+            no_sandbox=no_sandbox,
         )
         for (
             note
         ) in loop.permissions.notices:  # 权限层加载提示（含未信任项目规则被忽略）
             print(f"提示：{note}", file=sys.stderr)
-        return asyncio.run(run_once(loop, prompt))
+        try:
+            return asyncio.run(run_once(loop, prompt))
+        finally:
+            asyncio.run(executor.close())  # 容器生命周期跟随会话：跑完就清
     except KeyboardInterrupt:
         print("已中断（会话已保存，可 --continue 恢复）", file=sys.stderr)
         return 130
@@ -413,6 +436,7 @@ def _run_tui(
     rules: Sequence[Rule] = (),
     notices: Sequence[str] = (),
     settings: Settings | None = None,
+    no_sandbox: bool = False,
 ) -> int:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(
@@ -424,21 +448,25 @@ def _run_tui(
     try:
         from codelotte.tui import TuiApp  # 延迟导入：无头模式不必加载 Textual
 
-        loop, spec = _build_agent(
+        loop, spec, executor = _build_agent(
             resume=resume,
             resume_index=resume_index,
             fork_from_end=fork_from_end,
             rules=rules,
             settings=settings,
+            no_sandbox=no_sandbox,
         )
         history = load_branch(loop.session_path, loop.leaf_id)  # 只回放活动分支
-        TuiApp(
-            agent=loop,
-            model=spec.name,  # 展示名（随包目录给的名字，用户级可覆盖）
-            context_window=spec.context_window,  # 状态栏上下文占用百分比的分母
-            startup_notices=notices,  # 启动提示（如更新内容）
-            history=history,
-        ).run()
+        try:
+            TuiApp(
+                agent=loop,
+                model=spec.name,  # 展示名（随包目录给的名字，用户级可覆盖）
+                context_window=spec.context_window,  # 状态栏上下文占用百分比的分母
+                startup_notices=notices,  # 启动提示（如更新内容）
+                history=history,
+            ).run()
+        finally:
+            asyncio.run(executor.close())  # 容器生命周期跟随会话：退出就清
         print_session_invoice(loop)  # 会话结束汇总：与 -p 同一口径（票据 07）
         return 0
     except (ConfigError, SessionError, OSError) as exc:
@@ -560,6 +588,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.prompt is not None:
         if notice:
             print(notice, file=sys.stderr)  # 更新提示：-p 打 stderr（TUI 里进对话流）
+        if args.no_sandbox:
+            print(SANDBOX_OFF_WARNING, file=sys.stderr)  # 逃生门：风险必须显式可见
         return _run_prompt(
             args.prompt,
             resume=args.continue_,
@@ -567,13 +597,18 @@ def main(argv: list[str] | None = None) -> int:
             fork_from_end=args.fork,
             rules=rules,
             settings=settings,
+            no_sandbox=args.no_sandbox,
         )
 
+    startup_notices = [notice] if notice else []
+    if args.no_sandbox:
+        startup_notices.append(SANDBOX_OFF_WARNING)
     return _run_tui(
         resume=args.continue_,
         resume_index=resume_index,
         fork_from_end=args.fork,
         rules=rules,
-        notices=[notice] if notice else [],
+        notices=startup_notices,
         settings=settings,
+        no_sandbox=args.no_sandbox,
     )

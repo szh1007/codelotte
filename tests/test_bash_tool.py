@@ -27,6 +27,9 @@ class _RecordingExecutor:
         self.calls.append((command, cwd, timeout))
         return self.result
 
+    async def close(self) -> None:
+        pass
+
 
 def _result(
     stdout: str = "", stderr: str = "", exit_code: int = 0, timed_out: bool = False

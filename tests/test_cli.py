@@ -70,6 +70,14 @@ def test_continue_without_any_session_fails_readably(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr
 
 
+def test_no_sandbox_flag_parses() -> None:
+    from codelotte.cli import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args([]).no_sandbox is False
+    assert parser.parse_args(["--no-sandbox"]).no_sandbox is True
+
+
 def test_continue_flags_parse() -> None:
     from codelotte.cli import build_parser
 
@@ -221,6 +229,24 @@ def test_resume_list_warns_about_damaged_and_lists_healthy(tmp_path: Path) -> No
     assert "好的会话" in result.stdout
 
 
+def test_build_agent_defaults_to_docker_and_honors_no_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """默认沙箱是 Docker；显式 --no-sandbox 才换成本地执行器（票据 10）。"""
+    from codelotte.cli import _build_agent
+    from codelotte.sandbox import DockerExecutor, LocalExecutor
+
+    monkeypatch.chdir(tmp_path)
+    home = write_user_config(tmp_path / "home")
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+
+    _loop, _spec, sandboxed = _build_agent()
+    assert isinstance(sandboxed, DockerExecutor)
+    _loop, _spec, local = _build_agent(no_sandbox=True)
+    assert isinstance(local, LocalExecutor)
+
+
 def test_build_agent_history_follows_selected_branch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -237,7 +263,7 @@ def test_build_agent_history_follows_selected_branch(
     store.append("message", role="assistant", content="第一答", model="m", stopReason="stop")
     store.append("message", role="user", content="第二问")
 
-    loop, _spec = _build_agent(fork_from_end=2)  # 在"第一答"处分岔
+    loop, _spec, _executor = _build_agent(fork_from_end=2)  # 在"第一答"处分岔
     history = load_branch(loop.session_path, loop.leaf_id)  # _run_tui 的真实取数路径
     contents = [e.get("content") for e in history if e.get("type") == "message"]
     assert contents == ["第一问", "第一答"]  # 老的叶子"第二问"不在新分支的可见记录里
@@ -260,7 +286,7 @@ def test_build_agent_resume_ignores_damaged_neighbour(
         '{"id": "x", "parentId": "zzz", "type": "session"}\n', encoding="utf-8"
     )
 
-    loop, _spec = _build_agent(resume_index=1)
+    loop, _spec, _executor = _build_agent(resume_index=1)
     assert loop.session_path == store.path
     assert [m["content"] for m in loop.messages] == ["好的会话"]
 

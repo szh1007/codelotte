@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import locale
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -25,8 +26,23 @@ class ExecResult:
 
 
 class Executor(Protocol):
-    """命令执行器。实现可抛 OSError 表示命令无法启动（shell 缺失、cwd 不存在等）。"""
+    """命令执行器。实现可抛 OSError 表示命令无法启动（shell 缺失、cwd 不存在等）。
+
+    close 回收长驻资源：本地执行器无事可做，Docker 执行器在这里清理容器。
+    会话结束时调用方必须关一次（票据 10：容器生命周期跟随会话）。
+    """
 
     env: str
 
     async def run(self, command: str, *, cwd: Path, timeout: float) -> "ExecResult": ...
+
+    async def close(self) -> None: ...
+
+
+def decode_output(data: bytes) -> str:
+    """命令输出解码：优先 UTF-8；Windows 原生工具（cmd 报错等）按系统 ANSI 代码页输出，
+    退一步用 locale.getencoding() 解——它不受 UTF-8 模式影响，正是控制台本地编码。"""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(locale.getencoding(), errors="replace")
