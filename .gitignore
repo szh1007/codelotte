@@ -14,6 +14,9 @@ build/
 snapshot_report.html
 .playwright-mcp/
 
+# 演示录屏的临时导出（录完删；不提交）
+docs/demo/sample/demo-export.html
+
 # 环境与凭据（绝不提交）
 .env
 .env.*
