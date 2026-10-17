@@ -4,7 +4,7 @@
 > 以及「压缩后还记得任务」这件事是怎么被量化出来的。
 >
 > **状态：脚本与演示工程已就绪，录屏待作者完成。** 录好后把链接填进
-> [README.md](../../README.md) 与 [README.zh-CN.md](../../README.zh-CN.md) 的演示段。
+> [README.md](../../README.md) 的演示段。
 > 快速开始的实测记录见 [quickstart-validation.md](quickstart-validation.md)（本地 clone 17 秒；热缓存 + 作者配置）。
 
 ## 1. 录制前准备
@@ -100,7 +100,7 @@ uv run codelotte export --html -o demo-export.html
 ## 3. 录完做什么
 
 1. 上传到 Bilibili / YouTube / GitHub Release（不要把视频提交进仓库）。
-2. 把链接填进两版 README 的 "30-second demo / 30 秒演示" 段。
+2. 把链接填进 README 的“30 秒演示”段。
 3. 删除临时导出：`rm -f docs/demo/sample/demo-export.html`。
 4. 还原演示工程：`git checkout -- docs/demo/sample && rm -f docs/demo/sample/notes.txt`。
 5. 如果要展示**实时**压缩而不是回放样例：把用户级 `models.json` 的 `contextWindow`

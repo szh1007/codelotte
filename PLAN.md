@@ -20,7 +20,7 @@
 
 ```
 codelotte/
-├── PLAN.md（本文件）/ CONTEXT.md / README.md / README.zh-CN.md / LICENSE(MIT)
+├── PLAN.md（本文件）/ CONTEXT.md / README.md / LICENSE(MIT)
 ├── pyproject.toml            # uv_build 后端 + [project.scripts] codelotte=...
 ├── uv.lock
 ├── docs/                     # adr/ · research/ · tech/ · experiments/(W5)
@@ -60,7 +60,7 @@ codelotte/
                           evals（直接读 Session 作为轨迹）
 ```
 
-**关键不变量**：一切经过 Session——消息、工具调用、usage、压缩、分支。评测与归因共用同一数据源（[ADR-0003](adr/0003-session-model.md)）。
+**关键不变量**：一切经过 Session——消息、工具调用、usage、压缩、分支。评测与归因共用同一数据源（[ADR-0003](docs/adr/0003-session-model.md)）。
 
 ## 2. 核心机制（第 3 轮定案）
 
