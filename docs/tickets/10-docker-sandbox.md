@@ -50,6 +50,10 @@ TUI 进启动提示。
   Docker 组是独立套件，默认不跑、也不付探测 daemon 的时间）。
 - 真机命令：`uv run pytest -q -m docker tests/test_docker_sandbox.py` → `8 passed`
   （默认镜像 `python:3.13-slim`，2026-10-17 本机 Docker Desktop 实测）。
+- **与票据 09 权限层联训（2026-10-17 真机）**：真实 TUI 会话
+  `20261017T095217Z_9534b0a6.jsonl` 中，用户级 `bash(ls*)` 规则放行 `ls -la` →
+  `tool_call`/`tool_result` 均 `env=docker`、`ok=true`；退出后按标签查询无遗留容器。
+  权限判定、Docker 执行、审计与生命周期清理四段在同一会话中对齐。
 
 **已知边界**：
 - 域名白名单档未实现，本票只做默认 deny-all；SPEC §H 已同步改为"v1 只做 deny-all"。

@@ -6,7 +6,7 @@
 
 **Blocked by:** 04（write / edit / bash 工具 + 本地执行器）
 
-**Status:** done（2026-10-16；自动化全绿；真机 TUI 审批交互 2026-10-17 已验，见文末）
+**Status:** done（2026-10-16；自动化全绿；真机 TUI 审批交互 2026-10-17 已验，含同日与票据 10 Docker 沙箱联训，见文末）
 
 - [x] 规则匹配单元测试完整：三档优先级、通配与精确规则、破坏性动词不被通配放行
 - [x] TUI 审批四档交互可用；「始终允许」写入用户级规则文件（有测试证明不写项目文件）
@@ -51,4 +51,17 @@
 - **ask 弹层「拒绝」**：`read CONTEXT.md` 被拒（`decision=deny, allowed=false`），以工具错误回传模型、回合继续，审计无断链。
 - 两个会话的 `permission` 记录数 = `tool_call` 记录数（3/3、4/4）：**记录先于执行**在真机无遗漏。
 
-与票据 10 的 Docker 沙箱联训时再复核。
+**与票据 10 的 Docker 沙箱联训（2026-10-17 真机已验）**：真实 TUI 会话
+`~/.codelotte/sessions/--D--__WorkSpace__-codelotte--/20261017T095217Z_9534b0a6.jsonl`
+覆盖了「权限判定 → Docker 执行 → 审计 → 清理」整链——
+
+- 用户级规则 `bash(ls*)` 命中直通：`permission` 记录 `verdict=allow, allowed=true,
+  source=user, rule="bash(ls*)"`，reason 为「规则放行（bash(ls*)）」。
+- 同一次调用在 Docker 沙箱执行：`tool_call` 与 `tool_result` 均为 `env=docker`，
+  `ls -la` 结果 `ok=true`——权限层放行的对象和实际执行环境在审计里对得上。
+- 会话退出后 `docker ps -a --filter label=codelotte.sandbox=true` 为空：容器随会话清理，
+  权限审计没有跟着留下长驻容器。
+
+本轮实测的是「规则 allow 直通 Docker」；ask 弹层与 deny 两档沿用同日此前的 TUI 真机记录
+（上文 3/3、4/4 审计链）与自动化覆盖，未在本轮重放。结论：票据 09 的判定/审批与票据 10
+的执行/清理在同一真实会话中无断链。
