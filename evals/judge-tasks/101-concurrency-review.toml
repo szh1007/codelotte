@@ -1,0 +1,84 @@
+# LLM judge 任务（票据 18/19）：并发 bug 的 review 没有唯一字符串，靠评分卡判质量。
+# 确定性兜底只确认 review 引用了 counter 且给出 Lock；真正的“是否解释了竞态”由 judge 判。
+# 放在单独目录：eval controls 必须离线零成本，不会加载这里的 judge 任务。
+
+id = "101-concurrency-review"
+bucket = "A"
+timeout_seconds = 300
+max_model_calls = 20
+
+instruction = '''
+Read worker.py and write review.md with exactly three second-level sections:
+
+## Bug
+## Why
+## Fix
+
+Requirements:
+- In ## Bug, quote the exact lines that cause the race condition.
+- In ## Why, explain the lost-update interleaving with two threads and state whether the
+  GIL makes read-modify-write atomic.
+- In ## Fix, show the corrected increment using threading.Lock, and say where the
+  lock lives.
+Do not modify worker.py. Be concise.
+'''
+
+[setup.files]
+"worker.py" = '''
+import threading
+
+counter = 0
+
+
+def increment():
+    global counter
+    value = counter
+    value += 1
+    counter = value
+
+
+def run(threads):
+    workers = [threading.Thread(target=increment) for _ in range(threads)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    return counter
+
+
+if __name__ == "__main__":
+    print(run(8))
+'''
+
+[verifier]
+[[verifier.files]]
+path = "review.md"
+contains = "counter"
+[[verifier.files]]
+path = "review.md"
+contains = "Lock"
+[[verifier.files]]
+path = "worker.py"
+unchanged = true
+
+[verifier.judge]
+dimensions = ["correctness", "specificity", "clarity"]
+pass_threshold = 0.7
+kappa_threshold = 0.6
+samples = "evals/judges/101-concurrency-review/samples.jsonl"
+calibration = "evals/judges/101-concurrency-review/calibration.json"
+rubric = '''
+Score each dimension from 0.0 to 1.0:
+
+- correctness: 1.0 if the review identifies the lost update in `value = counter` /
+  `counter = value`, explains that two threads can read the same old value, and fixes it
+  with a lock (or equivalent atomic operation). 0.0 if it claims the GIL makes the code
+  safe, or proposes a fix that still performs an unsynchronized read-modify-write.
+- specificity: 1.0 if it quotes the exact racy lines, walks through a concrete two-thread
+  interleaving, and names the shared state. 0.0 if it only says "race condition" without
+  evidence or a concrete schedule.
+- clarity: 1.0 if it uses exactly the three requested sections, stays on topic, and is
+  concise. 0.0 if sections are missing or the answer rambles.
+
+Judge the submission against this rubric only. Do not reward extra prose.
+'''

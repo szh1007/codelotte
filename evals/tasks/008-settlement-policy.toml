@@ -1,0 +1,131 @@
+# A 桶（长规则数据处理）：21 行 CSV + 8 条结算规则，产出两个精确格式的文件。
+# 设计要点：规则有先后顺序（状态 → 金额解析 → 正数 → 重复 id），rejected.txt 必须保持输入顺序；
+# 只看 summary 会漏掉拒绝明细，只改输出不改输入才能通过。
+
+id = "008-settlement-policy"
+bucket = "A"
+timeout_seconds = 420
+max_model_calls = 40
+
+instruction = '''
+Read `policy.md` and `transactions.csv`. Produce `summary.txt` and `rejected.txt` exactly
+as `policy.md` specifies. Do not modify either input file. Check both outputs before finishing.
+'''
+
+[setup.files]
+"policy.md" = '''
+# Settlement summary policy
+
+Input: `transactions.csv` with header `id,date,region,amount,status`.
+
+Rules, applied in this order:
+
+1. Process rows in file order.
+2. Keep only rows whose status is exactly `paid`; any other status is rejected with
+   reason `status <value>` (for example `status pending`).
+3. The amount must parse as a decimal number; otherwise reject the row with
+   `invalid amount`.
+4. The amount must be greater than 0; otherwise reject the row with
+   `amount must be positive`.
+5. Reject a row whose id was already accepted with `duplicate id`; only the first
+   accepted row keeps the id.
+6. Accepted amounts are summed per region. Write `summary.txt`:
+   - header `region,count,total`
+   - one line per region, sorted by region name ascending, total with exactly two decimals
+   - final line `TOTAL,<count>,<total>`
+7. Write `rejected.txt` in input order, one line per rejected row: `<id>: <reason>`.
+8. Do not modify `policy.md` or `transactions.csv`.
+'''
+"transactions.csv" = '''id,date,region,amount,status
+t01,2026-01-01,north,10.00,paid
+t02,2026-01-01,south,5.50,paid
+t03,2026-01-02,north,2.25,pending
+t04,2026-01-02,east,7.75,paid
+t05,2026-01-03,west,-3.00,paid
+t06,2026-01-03,south,0.00,paid
+t07,2026-01-04,north,4.10,paid
+t08,2026-01-04,east,1.05,paid
+t09,2026-01-05,west,9.99,paid
+t01,2026-01-06,east,99.00,paid
+t10,2026-01-06,west,6.25,paid
+t11,2026-01-07,north,abc,paid
+t12,2026-01-07,south,3.33,refund
+t13,2026-01-08,east,2.50,paid
+t14,2026-01-08,west,4.75,paid
+t15,2026-01-09,north,1.25,paid
+t16,2026-01-09,south,8.00,paid
+t17,2026-01-10,east,0.99,paid
+t18,2026-01-10,west,2.00,pending
+t19,2026-01-11,south,1.01,paid
+t20,2026-01-11,north,3.00,paid
+'''
+
+[verifier]
+[[verifier.files]]
+path = "summary.txt"
+equals = '''region,count,total
+east,4,12.29
+north,4,18.35
+south,3,14.51
+west,3,20.99
+TOTAL,14,66.14
+'''
+[[verifier.files]]
+path = "rejected.txt"
+equals = '''t03: status pending
+t05: amount must be positive
+t06: amount must be positive
+t01: duplicate id
+t11: invalid amount
+t12: status refund
+t18: status pending
+'''
+[[verifier.files]]
+path = "policy.md"
+unchanged = true
+[[verifier.files]]
+path = "transactions.csv"
+unchanged = true
+
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"summary.txt" = '''region,count,total
+east,4,12.29
+north,4,18.35
+south,3,14.51
+west,3,20.99
+TOTAL,14,66.14
+'''
+"rejected.txt" = '''t03: status pending
+t05: amount must be positive
+t06: amount must be positive
+t01: duplicate id
+t11: invalid amount
+t12: status refund
+t18: status pending
+'''
+
+[[checkpoints]]
+question = "任务目标是什么？"
+facts = [
+  ["summary.txt"],
+  ["rejected.txt"],
+  ["policy.md"],
+]
+
+[[checkpoints]]
+question = "哪些记录会被拒绝？"
+facts = [
+  ["pending"],
+  ["duplicate", "重复"],
+  ["金额", "amount"],
+  ["正数", "positive", "0", "-3"],
+]
+
+[[checkpoints]]
+question = "有哪些必须遵守的约束？"
+facts = [
+  ["transactions.csv", "policy.md", "输入"],
+  ["不要", "不得", "不能", "不修改", "保持"],
+  ["顺序", "order", "输入顺序"],
+]

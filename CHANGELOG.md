@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+- E4 scaffolding tax 实验：任务集从 5 条扩到 9 条（多文件调试、规格重构、长规则结算、边界条件），新增 2 条主观 judge 任务（并发 review / API 设计取舍，各 20 条 `author-draft` 样本 κ=1.000）；三组 repeat 2 对照：codelotte 18/18、mini-swe-agent 18/18、裸 API 0/18；成功率打平，codelotte 成本 +15.4%、调用 +26.3%、耗时 −33.5%；实验报告 `docs/experiments/e4-scaffolding-tax.md`（票据 19）
+- 修复：mini-swe-agent 适配器的 `--mini-python` 相对路径在子进程工作区下找不到，启动前统一转绝对路径；独立 venv 需补装 litellm 启动期依赖 `mcp`，否则 mini 以 `calls=0` 启动失败
+- 修复：Windows 上 mini-swe-agent 的 `LocalEnvironment` 落到 `cmd.exe`（与它假设的 bash 不符），适配器在 Windows 上改用 Git Bash 执行命令，避免命令语义失真导致的假失败
+- 修复：`007-refactor-tokenizer` 的 `notes.md` 验收要求从“必须出现 spec.md 字面量”改为“必须提到 tokenize”，避免正确实现因措辞被判失败
 - 失败归因与回归任务：失败案例自动归入五类病位（模型误判/工具 schema/上下文丢失/循环/环境），带证据与置信度进 `report.md`“失败归因”段与 `report.json` 的 `failure_*` 字段；`codelotte eval attribute` 用标注语料算准确率/混淆矩阵；`codelotte eval regression` 把失败案例转成可直接跑的回归任务（保留原 setup/verifier，只换 id）；规则见 `evals/attribution.md`（票据 18）
 - LLM judge 兜底与 κ 校准：任务可声明 `[verifier.judge]` 评分卡（维度分数 + 理由）；确定性检查优先，确定性失败不调用 judge；`codelotte eval judge` 用 ≥20 条人工标注样本算 Cohen's κ，低 κ/样本不足/校准缺失在报表标 ⚠；judge 成本/分数/理由进报表（票据 17）
 - 对照组与控制 agent 自检：`codelotte eval compare`（codelotte / mini-swe-agent / 裸单轮 API 同任务集并列对比，任务级成功率/成本/耗时）与 `codelotte eval controls`（oracle 应 100%、no-op 应 0%、cheating 应 0% 且被标记；离线零成本）；抽出 harness 协议，mini-swe-agent 走独立解释器 + 本地录制代理（假 key、真实 usage），任务增加 `[control.oracle.files]` 参考解与只读输入 `unchanged` 保护（票据 16）

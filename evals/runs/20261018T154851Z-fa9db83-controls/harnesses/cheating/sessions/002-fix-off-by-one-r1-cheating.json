@@ -1,0 +1,10 @@
+{
+  "harness": "cheating",
+  "kind": "control",
+  "writes": [
+    "notes.txt"
+  ],
+  "tampered": [
+    "check.py"
+  ]
+}

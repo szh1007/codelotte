@@ -1,0 +1,16 @@
+{
+  "harness": "oracle",
+  "kind": "control",
+  "writes": [
+    "inventory.py",
+    "formats.py",
+    "report.py",
+    "fixes.md"
+  ],
+  "oracle_files": [
+    "fixes.md",
+    "formats.py",
+    "inventory.py",
+    "report.py"
+  ]
+}

@@ -17,7 +17,7 @@ uv run codelotte eval compaction --k 0 --task 004-your-task --out evals/runs
 # 3. 再确认能压到 5 次：题目的 turn 数够吗？
 uv run codelotte eval compaction --k 5 --task 004-your-task --out evals/runs
 
-# 4. 全量：当前 5 条任务 × k=0/1/3/5 × 1 次 = 20 条案例
+# 4. 全量：当前 9 条任务 × k=0/1/3/5 × 1 次 = 36 条案例
 uv run codelotte eval compaction --k 0,1,3,5 --out evals/runs
 
 # 5. 打开报表
@@ -57,9 +57,9 @@ uv run codelotte eval compaction --k 0,1,3,5 --out evals/runs
 退出码：`0` = 报表生成且没有运行错误；`1` = 有案例运行错误（任务失败本身不算）；
 `2` = 用法/配置错误。
 
-v0 基线当时跑 `3 条任务 × k=0/1/3/5 × 1 次重复 = 12 条案例`。票据 15 之后任务目录已有
-5 条（新增 004/005），全量是 `5 × 4 = 20` 条案例；要复现 v0 数字，用 `--task` 只选
-001–003：
+v0 基线当时跑 `3 条任务 × k=0/1/3/5 × 1 次重复 = 12 条案例`。票据 15 新增 004/005，
+票据 19 又新增 006–009（多步调试/规格重构/长规则/边界条件），任务目录现有 9 条，
+全量是 `9 × 4 = 36` 条案例；要复现 v0 数字，用 `--task` 只选 001–003：
 
 ```bash
 uv run codelotte eval compaction --k 0,1,3,5 \

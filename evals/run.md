@@ -1,6 +1,7 @@
 # 通用测评：操作手册
 
 > 给未来的我和接手的人。想加题、重跑、看报表、交接，从这里开始。
+> 评估体系总览（目录、七个命令、跑数产物）见 [README.md](README.md)。
 >
 > - 专用测评 - 压缩回归 v0（强制压缩 k 次、checkpoint 保留率、v0 基线）：
 >   [compaction.md](compaction.md)
@@ -159,10 +160,12 @@ facts = [
 ]
 ```
 
-五条任务的实际例子：`001-audit-report.toml`（文件计数）、`002-fix-off-by-one.toml`
+九条任务的实际例子：`001-audit-report.toml`（文件计数）、`002-fix-off-by-one.toml`
 （修 bug + 复跑）、`003-constrained-append.toml`（多约束 + 长操作链）、
 `004-prompt-injection-resistance.toml`（注入数据）、`005-scope-discipline.toml`
-（受保护文件 + 范围纪律）。
+（受保护文件 + 范围纪律）；票据 19 新增 `006-multi-bug-pipeline.toml`（三模块多 bug）、
+`007-refactor-tokenizer.toml`（按 spec 重构）、`008-settlement-policy.toml`
+（长规则 + 精确输出）、`009-buffer-edge-cases.toml`（误导测试 + 边界条件）。
 
 ### 3.2 字段速查
 
@@ -460,14 +463,18 @@ mini-swe-agent 不在项目依赖里（它带 litellm/datasets 等重依赖）�
 ```bash
 # Windows
 uv venv .mini-venv
-uv pip install --python .mini-venv/Scripts/python.exe mini-swe-agent==2.4.6
+uv pip install --python .mini-venv/Scripts/python.exe mini-swe-agent==2.4.6 mcp
 uv run codelotte eval compare --mini-python .mini-venv/Scripts/python.exe --repeat 1 --no-sandbox
 
 # macOS / Linux
 uv venv .mini-venv
-uv pip install --python .mini-venv/bin/python mini-swe-agent==2.4.6
+uv pip install --python .mini-venv/bin/python mini-swe-agent==2.4.6 mcp
 uv run codelotte eval compare --mini-python .mini-venv/bin/python --repeat 1 --no-sandbox
 ```
+
+`mcp` 是 litellm 的启动期可选依赖：不装会在 mini 进程里报 `ModuleNotFoundError: mcp`，
+表现为 `calls=0` 的启动失败（票据 19 实测）。`--mini-python` 的相对路径会在启动前转成
+绝对路径（子进程 cwd 是临时工作区）。
 
 - 不写 `--mini-python` 时，依次尝试：PATH 上的 `mini`（推同环境解释器）→ 当前解释器
   （能 `import minisweagent`）→ 报错并给安装命令。
@@ -478,6 +485,10 @@ uv run codelotte eval compare --mini-python .mini-venv/bin/python --repeat 1 --n
 - **公平性限制**：任务里的“执行纪律”（必须用 read/write、不得用 bash）不在验收范围内，
   只看最终状态；mini 只有 bash，所以别把三组当成同一策略。耗时对比请让 codelotte
   也用 `--no-sandbox`（与 mini 的本地环境对齐）。
+- **E4 正式结果**（9 任务 × 2 次）：codelotte 18/18、mini 18/18、raw 0/18；
+  成功率打平，codelotte 成本 +15.4%、调用 +26.3%、耗时 −33.5%。任务集说明、逐任务数据、
+  轨迹样本与复现命令见
+  [docs/experiments/e4-scaffolding-tax.md](../docs/experiments/e4-scaffolding-tax.md)。
 
 ### 4.6 控制 agent 自检（`eval controls`）
 
@@ -502,7 +513,8 @@ uv run codelotte eval controls --dry-run    # 只校验任务/快照
   `protected.txt`）加 `unchanged = true`。
 - 新增任务时至少给 oracle 一个参考解，并至少留一个 `unchanged` 只读保护文件；
   `tests/test_eval_tasks.py` 会检查 shipped 任务两者都有。没有保护文件时，cheating
-  仍会因内容不对记 0，但不会产生“篡改”标记。
+  仍会因内容不对记 0，但不会产生“篡改”标记。**judge 任务例外**：`eval controls`
+  跳过它们，因此不要求 oracle；但仍保留 `unchanged` 文件作为防篡改检查。
 
 ### 4.7 LLM judge 与 κ 校准（`eval judge`）
 
@@ -532,10 +544,16 @@ uv run codelotte eval judge
 - 评测运行时只读 `calibration.json`，不会为每条案例重跑 20 条校准样本。
 - κ 缺失、样本 <20、或 κ 低于 `kappa_threshold`：报表标 ⚠，但**仍保留 judge 分数**，
   不静默丢弃；这正是“承认验收器不可靠”而不是装作没看见。
-- 当前示例：`006-code-review` 的 20 条样本由实现者草拟（`labeler=author-draft`），
-  κ=1.000（20 样本，一致率 100%）。因为标注尚未复核，**报表会把这次校准标为
+- 当前三个 judge 任务：`006-code-review`（代码 review，κ=1.000，¥0.033613）、
+  `101-concurrency-review`（并发 lost-update review，κ=1.000，¥0.071073）、
+  `102-api-design-tradeoffs`（批量支付 API 取舍，κ=1.000，¥0.083567）。各 20 条样本
+  都由实现者草拟（`labeler=author-draft`）。因为标注尚未复核，**报表会把这次校准标为
   ⚠ 草稿值**；样本刻意清晰，**κ=1.0 还有天花板效应**。作者复核后应把 `labeler`
   改成真实标注者并重跑校准，下一批加入 borderline 样本。
+- 新增 judge 任务的跑法：`uv run codelotte eval judge --task 101-concurrency-review
+  --task 102-api-design-tradeoffs`，再 `eval run --tasks evals/judge-tasks --repeat 1`。
+  2026-10-18 的结果：3/3 通过，三条 overall 均 1.00，17 次模型调用（含 3 次 judge），
+  ¥0.041690；报表均标 ⚠ 草稿。
 - judge 任务放在 `evals/judge-tasks/`；`eval controls` 会跳过 judge 任务并提示，
   因为控制组必须离线零成本。`eval run` / `eval compare` 会配置 judge 模型；
   `eval compaction` 是确定性压缩套件，不配置 judge（`judge-tasks` 不要拿去跑 compaction）。
@@ -574,7 +592,9 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
   κ=1.0 是清晰样本上的天花板，不代表 judge 在模糊样本上也可靠。
 - judge 只看最终工作区文本，不读完整轨迹；“过程是否合规”仍由确定性检查覆盖。
 - pass^k 是严格口径；不提供 pass@k（至少一次通过）的并列指标。
-- 首批任务只有 5 条，B 桶 3 条；任务集扩大与 E1/E2 正式实验在票据 20。
+- 任务集 9 条（A 5 / B 4），其中 4 条是票据 19 新增的多步任务；E4 对照结论见
+  [docs/experiments/e4-scaffolding-tax.md](../docs/experiments/e4-scaffolding-tax.md)，
+  E1/E2 正式实验在票据 20。
 - 任务的初始化脚本按平台 shell 语义执行；跨平台任务应优先用 Python 或 `python -c`。
 - `eval compare` 的三组不是同一策略：codelotte 有四个工具与压缩/防线，mini 只有 bash，
   raw 没有工具；对照回答的是“最终状态 + 成本/耗时”，不是同策略 A/B。

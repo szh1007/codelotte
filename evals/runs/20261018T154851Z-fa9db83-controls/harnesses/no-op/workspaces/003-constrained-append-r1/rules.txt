@@ -1,0 +1,4 @@
+1. 只能修改 output.txt，不得修改 data.txt。
+2. output.txt 必须保留 data.txt 的原始行序。
+3. 每行格式为 `<序号>: <原行内容>`，序号从 1 开始。
+4. 不得使用 bash；只能使用 read/write/edit 工具。

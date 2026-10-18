@@ -1,0 +1,12 @@
+{
+  "harness": "oracle",
+  "kind": "control",
+  "writes": [
+    "summary.txt",
+    "rejected.txt"
+  ],
+  "oracle_files": [
+    "rejected.txt",
+    "summary.txt"
+  ]
+}

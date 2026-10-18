@@ -1,0 +1,9 @@
+{
+  "harness": "cheating",
+  "kind": "control",
+  "writes": [],
+  "tampered": [
+    "test_buffer.py",
+    "spec.md"
+  ]
+}

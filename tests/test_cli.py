@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import codelotte
+from codelotte.evals.tasks import load_tasks
 from tests.support import (
     PROJECT_ROOT,
     TIMEOUT_SECONDS,
@@ -637,7 +638,11 @@ def test_eval_compaction_dry_run_validates_tasks_without_calling_models(
         env=_session_env(tmp_path),
     )
     assert result.returncode == 0, result.stderr
-    assert "计划：5 任务 × 4 个 k × 1 次重复 = 20 条案例" in result.stdout
+    task_count = len(load_tasks(PROJECT_ROOT / "evals" / "tasks"))
+    assert (
+        f"计划：{task_count} 任务 × 4 个 k × 1 次重复 = {task_count * 4} 条案例"
+        in result.stdout
+    )
     assert "001-audit-report" in result.stdout
     assert "dry-run" in result.stdout
     assert not (tmp_path / "evals" / "runs").exists()

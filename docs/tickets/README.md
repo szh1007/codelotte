@@ -53,7 +53,7 @@
 | [16](16-baselines-and-control-agents.md) | 对照组 + 控制 agent 自检 | 15 | ✅ done（2026-10-18；三组对照与 oracle/no-op/cheating 自检均跑通） |
 | [17](17-llm-judge-kappa.md) | LLM judge 兜底（κ 校准） | 15 | ✅ done（2026-10-18；20 条 `author-draft` 样本 κ=1.000，待作者复核标注后重跑） |
 | [18](18-failure-attribution.md) | 失败归因分类器（D5） | 15 | ✅ done（2026-10-18；五类规则 + 失败分布进报表 + 失败 → 回归任务；15 条 `author-draft` 语料 15/15，待复核真实失败） |
-| [19](19-experiment-e4-scaffolding-tax.md) | 实验 E4：scaffolding tax 对照 | 16 | ready-for-agent |
+| [19](19-experiment-e4-scaffolding-tax.md) | 实验 E4：scaffolding tax 对照 | 16 | ✅ done（2026-10-18；任务集扩到 9 条、新增 2 条 judge 任务；三组 repeat 2：codelotte 18/18、mini 18/18、raw 0/18；成功率打平，成本 +15.4%、耗时 −33.5%） |
 | [20](20-experiment-e1-e2-compaction-cost.md) | 实验 E1+E2：压缩回归 + 成本曲线 | 13, 15 | ready-for-agent |
 | [21](21-experiment-e3-e5-attribution-defense.md) | 实验 E3+E5：归因准确率 + 防御有效性 | 18, 11 | ready-for-agent |
 | [22](22-materials-pack.md) | 材料包：治理文档 + 面试脚本 + 数据刷新 | 14, 19, 20, 21 | ready-for-agent |

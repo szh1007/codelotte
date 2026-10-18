@@ -1,0 +1,153 @@
+# A 桶（多文件真实调试）：一次修三个模块的 bug，再用 fixes.md 记录证据。
+# 设计要点：必须真正运行 check.py、读多个文件、做三处精确修改；只看单个文件会漏 bug。
+# 复杂度：3 个症状（top_n 长度、金额两位小数、汇总口径）分布在 3 个文件。
+
+id = "006-multi-bug-pipeline"
+bucket = "A"
+timeout_seconds = 600
+max_model_calls = 60
+
+instruction = '''
+`python check.py` currently fails. Find and fix every bug in the Python modules so that
+`python check.py` prints `ok`.
+
+Then write `fixes.md` with exactly one line per bug, in this format:
+
+`<file> | <original line> | <fixed line>`
+
+- Use the exact trimmed source line for the original; use the exact replacement line for the fix.
+- Do not modify check.py.
+- Do not change the public function names.
+'''
+
+[setup.files]
+"inventory.py" = '''
+def top_n(items, n):
+    """Return the n highest (name, qty) pairs, descending by qty."""
+    ordered = sorted(items, key=lambda item: item[1], reverse=True)
+    return ordered[: n + 1]
+'''
+"formats.py" = '''
+def money(cents):
+    """Format an integer number of cents as $D.CC."""
+    dollars = cents // 100
+    remainder = cents % 100
+    return f"${dollars}.{remainder}"
+'''
+"report.py" = '''
+from formats import money
+from inventory import top_n
+
+
+def build_report(items, n):
+    top = top_n(items, n)
+    total = sum(qty for _, qty in top)
+    lines = [f"total={money(total)}"]
+    for name, qty in top:
+        lines.append(f"{name}:{money(qty)}")
+    return "\n".join(lines)
+'''
+"check.py" = '''
+from formats import money
+from inventory import top_n
+from report import build_report
+
+DATA = [
+    ("apple", 300),
+    ("banana", 500),
+    ("cherry", 200),
+    ("date", 400),
+]
+
+assert money(150) == "$1.50", money(150)
+assert money(5) == "$0.05", money(5)
+assert top_n(DATA, 2) == [("banana", 500), ("date", 400)], top_n(DATA, 2)
+
+report = build_report(DATA, 2)
+expected = "total=$14.00\nbanana:$5.00\ndate:$4.00"
+assert report == expected, report
+print("ok")
+'''
+
+[verifier]
+python = '''
+import runpy
+
+runpy.run_path("check.py", run_name="__main__")
+'''
+[[verifier.files]]
+path = "fixes.md"
+contains = "inventory.py"
+[[verifier.files]]
+path = "fixes.md"
+contains = "formats.py"
+[[verifier.files]]
+path = "fixes.md"
+contains = "report.py"
+[[verifier.files]]
+path = "fixes.md"
+contains = "ordered[: n + 1]"
+[[verifier.files]]
+path = "fixes.md"
+contains = "remainder:02d"
+[[verifier.files]]
+path = "fixes.md"
+contains = "sum(qty for _, qty in items)"
+[[verifier.files]]
+path = "check.py"
+unchanged = true
+
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"inventory.py" = '''
+def top_n(items, n):
+    """Return the n highest (name, qty) pairs, descending by qty."""
+    ordered = sorted(items, key=lambda item: item[1], reverse=True)
+    return ordered[:n]
+'''
+"formats.py" = '''
+def money(cents):
+    """Format an integer number of cents as $D.CC."""
+    dollars = cents // 100
+    remainder = cents % 100
+    return f"${dollars}.{remainder:02d}"
+'''
+"report.py" = '''
+from formats import money
+from inventory import top_n
+
+
+def build_report(items, n):
+    top = top_n(items, n)
+    total = sum(qty for _, qty in items)
+    lines = [f"total={money(total)}"]
+    for name, qty in top:
+        lines.append(f"{name}:{money(qty)}")
+    return "\n".join(lines)
+'''
+"fixes.md" = '''inventory.py | return ordered[: n + 1] | return ordered[:n]
+formats.py | return f"${dollars}.{remainder}" | return f"${dollars}.{remainder:02d}"
+report.py | total = sum(qty for _, qty in top) | total = sum(qty for _, qty in items)
+'''
+
+[[checkpoints]]
+question = "任务目标是什么？"
+facts = [
+  ["check.py"],
+  ["fix", "修复", "修好", "通过"],
+]
+
+[[checkpoints]]
+question = "发现了哪些 bug？（请带上文件名）"
+facts = [
+  ["inventory.py"],
+  ["formats.py"],
+  ["report.py"],
+]
+
+[[checkpoints]]
+question = "有哪些必须遵守的约束？"
+facts = [
+  ["check.py"],
+  ["不要", "不得", "不能", "不修改", "保持"],
+]

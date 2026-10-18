@@ -10,17 +10,26 @@ from pathlib import Path
 
 import pytest
 
+from codelotte.evals.judge import load_calibration, load_samples
 from codelotte.evals.tasks import TaskFileError, load_task, load_tasks
 
-TASKS_DIR = Path(__file__).resolve().parents[1] / "evals" / "tasks"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TASKS_DIR = REPO_ROOT / "evals" / "tasks"
+JUDGE_TASKS_DIR = REPO_ROOT / "evals" / "judge-tasks"
 
 
 def test_shipped_suite_covers_the_required_buckets() -> None:
     """票据 15：A 桶 ≥2、B 桶 ≥3；压缩回归需要的 checkpoint 仍然齐备。"""
     tasks = load_tasks(TASKS_DIR)
 
-    assert len(tasks) >= 5
+    assert len(tasks) >= 9
     assert len({task.id for task in tasks}) == len(tasks)
+    assert {
+        "006-multi-bug-pipeline",
+        "007-refactor-tokenizer",
+        "008-settlement-policy",
+        "009-buffer-edge-cases",
+    } <= {task.id for task in tasks}
     buckets = {task.bucket for task in tasks}
     assert {"A", "B"} <= buckets
     assert sum(1 for task in tasks if task.bucket == "A") >= 2
@@ -355,3 +364,23 @@ facts = [["x"]]
 
     with pytest.raises(TaskFileError, match="equals"):
         load_task(path)
+
+
+def test_shipped_judge_tasks_have_samples_and_calibration() -> None:
+    """judge 任务必须有可复现的样本与校准文件（票据 19 扩充后仍成立）。"""
+    tasks = load_tasks(JUDGE_TASKS_DIR)
+
+    assert tasks
+    for task in tasks:
+        judge = task.verifier.judge
+        assert judge is not None
+        assert judge.samples is not None and judge.calibration is not None
+        samples_path = REPO_ROOT / judge.samples
+        calibration_path = REPO_ROOT / judge.calibration
+        assert samples_path.is_file(), samples_path
+        assert calibration_path.is_file(), calibration_path
+        samples = load_samples(samples_path)
+        calibration = load_calibration(calibration_path)
+        assert len(samples) >= 20, f"{task.id} 只有 {len(samples)} 条样本"
+        assert calibration.samples == len(samples)
+        assert calibration.task_id == task.id

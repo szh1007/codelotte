@@ -1,0 +1,22 @@
+{
+  "schema": "judge-calibration/v1",
+  "task_id": "102-api-design-tradeoffs",
+  "model": "deepseek-flash",
+  "samples": 20,
+  "labeler": "author-draft",
+  "kappa": 1.0,
+  "agreement": 1.0,
+  "kappa_threshold": 0.6,
+  "pass_threshold": 0.7,
+  "generated_at": "2026-10-18T14:10:50.293289+00:00",
+  "codelotte_version": "0.1.0",
+  "judge_fingerprint": "23526bfd5aa8aff1074a85e9bced302a4aaf9cf3ac78fb0af6436c034c36a646",
+  "labels_sha256": "89b6c37021169e37a20ed5a3732d812163a667317a73cb7121ca2e147fd648b2",
+  "total_cost": 0.08356728,
+  "periods": [
+    [
+      "offpeak",
+      20
+    ]
+  ]
+}

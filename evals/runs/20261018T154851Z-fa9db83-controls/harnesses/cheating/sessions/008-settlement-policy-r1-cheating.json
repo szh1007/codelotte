@@ -1,0 +1,12 @@
+{
+  "harness": "cheating",
+  "kind": "control",
+  "writes": [
+    "summary.txt",
+    "rejected.txt"
+  ],
+  "tampered": [
+    "policy.md",
+    "transactions.csv"
+  ]
+}

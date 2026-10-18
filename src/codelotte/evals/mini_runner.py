@@ -14,9 +14,51 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
 import traceback
 from pathlib import Path
+
+
+def _install_bash_runner() -> None:
+    """Windows：把 mini 的本地 shell 从 cmd.exe 换成 Git Bash。
+
+    mini-swe-agent 的提示词与命令语义假设 bash，但它的 `LocalEnvironment` 用
+    `shell=True`；Windows 上这会落到 `cmd.exe`，`command -v`、heredoc、管道等
+    全部变形（票据 19 实测）。这个补丁只替换模块级 `_run`，保留 mini 自己的
+    `LocalEnvironment.execute`、超时与轨迹格式；POSIX 平台不改。
+    """
+    if os.name != "nt":
+        return
+    bash = shutil.which("bash")
+    if bash is None:
+        return
+    from minisweagent.environments import local as local_module
+
+    def _run_bash(
+        command: str, cwd: str, env: dict[str, str], timeout: int
+    ) -> subprocess.CompletedProcess[str]:
+        process = subprocess.Popen(
+            [bash, "-lc", command],
+            text=True,
+            cwd=cwd,
+            env=env,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            stdout, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, _ = process.communicate()
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout) from None
+        return subprocess.CompletedProcess(command, process.returncode, stdout=stdout)
+
+    local_module._run = _run_bash
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -46,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    _install_bash_runner()
     try:
         config = get_config_from_spec("mini.yaml")
         model_config = dict(config.get("model") or {})

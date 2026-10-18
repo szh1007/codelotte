@@ -1,0 +1,12 @@
+{
+  "harness": "oracle",
+  "kind": "control",
+  "writes": [
+    "result.txt",
+    "summary.txt"
+  ],
+  "oracle_files": [
+    "result.txt",
+    "summary.txt"
+  ]
+}

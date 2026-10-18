@@ -1,0 +1,116 @@
+# A 桶（规格重构）：现有实现是 text.split()，要按 spec.md 的完整契约重写。
+# 设计要点：没有可见测试，必须把规格读成可执行规则（标点、空白、大小写、数字）；
+# 允许多种实现，只看行为；notes.md 记录改了什么。
+
+id = "007-refactor-tokenizer"
+bucket = "A"
+timeout_seconds = 300
+max_model_calls = 30
+
+instruction = '''
+Read `spec.md`. Rewrite `tokenize` in `tokenizer.py` so it satisfies the contract exactly.
+
+Then write `notes.md` with a short explanation of the changes; mention `tokenize`.
+Do not modify `spec.md`; keep the public function name `tokenize`.
+'''
+
+[setup.files]
+"tokenizer.py" = '''
+def tokenize(text):
+    return text.split()
+'''
+"spec.md" = '''
+# Tokenizer contract
+
+`tokenize(text: str) -> list[str]` must:
+
+1. Return lowercase tokens.
+2. Split on any whitespace.
+3. Separate the punctuation characters `.` `,` `!` `?` from words; each punctuation
+   mark is its own token.
+4. Drop empty tokens.
+5. Keep numbers intact (for example `"42"` stays `"42"`).
+
+Examples:
+
+- `"Hello, world!"` -> `["hello", ",", "world", "!"]`
+- `"  A  b. "` -> `["a", "b", "."]`
+- `"x=1"` -> `["x=1"]` (only `.` `,` `!` `?` are separators)
+'''
+
+[verifier]
+python = '''
+from tokenizer import tokenize
+
+assert tokenize("Hello, world!") == ["hello", ",", "world", "!"]
+assert tokenize("  A  b. ") == ["a", "b", "."]
+assert tokenize("x=1") == ["x=1"]
+assert tokenize("Wait... what?!") == ["wait", ".", ".", ".", "what", "?", "!"]
+assert tokenize("") == []
+assert tokenize("42") == ["42"]
+print("tokenizer ok")
+'''
+[[verifier.files]]
+path = "notes.md"
+contains = "tokenize"
+[[verifier.files]]
+path = "spec.md"
+unchanged = true
+
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"tokenizer.py" = '''
+_PUNCTUATION = ".,!?"
+
+
+def tokenize(text):
+    tokens = []
+    current = []
+    for char in text.lower():
+        if char.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+        elif char in _PUNCTUATION:
+            if current:
+                tokens.append("".join(current))
+                current = []
+            tokens.append(char)
+        else:
+            current.append(char)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+'''
+"notes.md" = '''Changed `tokenize` from `text.split()` to a character scan: lowercase input,
+split on whitespace, emit `.` `,` `!` `?` as separate tokens, and drop empty tokens.
+The implementation follows `spec.md`.
+
+Examples:
+- `"Hello, world!"` -> `["hello", ",", "world", "!"]`
+- `"  A  b. "` -> `["a", "b", "."]`
+- `"x=1"` -> `["x=1"]`
+'''
+
+[[checkpoints]]
+question = "任务目标是什么？"
+facts = [
+  ["tokenize"],
+  ["spec.md"],
+  ["重写", "实现", "rewrite", "implement", "修改"],
+]
+
+[[checkpoints]]
+question = "规格里有哪些关键规则？"
+facts = [
+  ["小写", "lowercase", "lower"],
+  ["标点", "punctuation", ".", "!", "?", ","],
+  ["空白", "whitespace", "split", "空格"],
+]
+
+[[checkpoints]]
+question = "不能修改哪个文件？"
+facts = [
+  ["spec.md"],
+  ["不要", "不得", "不能", "不修改", "不要改"],
+]

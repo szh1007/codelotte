@@ -1,0 +1,12 @@
+{
+  "harness": "oracle",
+  "kind": "control",
+  "writes": [
+    "tokenizer.py",
+    "notes.md"
+  ],
+  "oracle_files": [
+    "notes.md",
+    "tokenizer.py"
+  ]
+}

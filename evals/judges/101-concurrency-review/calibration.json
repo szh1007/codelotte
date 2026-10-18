@@ -1,0 +1,22 @@
+{
+  "schema": "judge-calibration/v1",
+  "task_id": "101-concurrency-review",
+  "model": "deepseek-flash",
+  "samples": 20,
+  "labeler": "author-draft",
+  "kappa": 1.0,
+  "agreement": 1.0,
+  "kappa_threshold": 0.6,
+  "pass_threshold": 0.7,
+  "generated_at": "2026-10-18T15:48:47.173850+00:00",
+  "codelotte_version": "0.1.0",
+  "judge_fingerprint": "4b011e9ba7918485923fb0c0c0d68ea2db9a76309a0f1f8d5b1a6e1305de0401",
+  "labels_sha256": "546ec83129db0f6d3d8867e8328e557a11a1d3b2a992e3d9663a833708e64502",
+  "total_cost": 0.07107284,
+  "periods": [
+    [
+      "offpeak",
+      20
+    ]
+  ]
+}

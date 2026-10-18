@@ -75,44 +75,59 @@ All tasks are complete: bug fixed, check passes, notes.txt written.
 - 压缩 5 次的样例轨迹：[HTML](docs/examples/session-001-audit-report-k5.html) · [Markdown](docs/examples/session-001-audit-report-k5.md)
 - 指标口径与局限：[evals/compaction.md](evals/compaction.md)
 
-### 对照组：codelotte vs mini-swe-agent vs 裸单轮 API（2026-10-18）
+### E4 scaffolding tax：codelotte vs mini-swe-agent vs 裸单轮 API（2026-10-18）
 
-同一 5 条任务 × 1 次重复，同一个 `deepseek-flash`、同一思考档位 `high`。mini-swe-agent
-2.4.6 通过独立解释器接入；真实 API key 由本地录制代理注入，被测 agent 只看到假 key。
+任务集扩到 **9 条**（5 条原有 + 4 条多步任务：三 bug 流水线、规格重构、长规则结算、
+误导测试的边界条件），每条任务 × 2 次重复，同一个 `deepseek-flash`、同一思考档位 `high`。
+mini-swe-agent 2.4.6 通过独立解释器接入；真实 API key 由本地录制代理注入，被测 agent
+只看到假 key。
 
-| 组 | 通过 | 模型调用 | 总成本 | 平均耗时/案例 |
-|---|---|---|---|---|
-| codelotte | 5/5 (100%) | 31 | ¥0.015903 | 5.3s |
-| mini-swe-agent | 5/5 (100%) | 31 | ¥0.022858 | 13.6s |
-| 裸单轮 API（无工具） | 0/5 (0%) | 5 | ¥0.011245 | 3.4s |
+| 组 | 通过 | pass^2 任务 | 模型调用 | 总成本 | 平均耗时/案例 | 每条成功成本 |
+|---|---|---|---|---|---|---|
+| codelotte | 18/18 (100%) | 9/9 | 125 | ¥0.128218 | 13.9s | ¥0.00712 |
+| mini-swe-agent | 18/18 (100%) | 9/9 | 99 | ¥0.111146 | 20.9s | ¥0.00617 |
+| 裸单轮 API（无工具） | 0/18 (0%) | 0/9 | 18 | ¥0.280970 | 17.3s | — |
 
-**这证明了什么、不证明什么。** 工具循环是必要条件：裸单轮 API 一条都过不了；codelotte
-与 mini-swe-agent 都能过，但 codelotte 在同样调用次数下成本更低、耗时不到 mini 的 40%。
-不过这批 v0 任务太短，两个有工具的 harness 成功率没有拉开——真正的 scaffolding tax
-需要更难的任务集，正式 E4 在票据 19。三组不是同策略 A/B：任务里的“必须用 read/write”
-等执行纪律不在验收范围内。口径与限制见报表“口径与限制”。
+**这证明了什么。** ① 工具循环本身是必要条件：裸单轮 API 0/18——它连写文件都没有手段，
+这是下界而不是公平的同策略对照。② 相对参照 harness 的增量：两个有工具的 harness
+成功率**打平**（18/18 vs 18/18）；差异在成本–时延：codelotte **贵 15.4%、调用多 26.3%，
+但每条案例快 33.5%**。codelotte 在 001–005 更便宜，006–009 更贵（mini 用更少的
+bash 调用合并多步操作）；7/9 条任务更快，007/008 更慢，且这还是在 codelotte 多一层
+Docker 开销的情况下。
 
-- 对照报表：[evals/runs/20261017T223658Z-f2320a8-compare/report.md](evals/runs/20261017T223658Z-f2320a8-compare/report.md)
-- 控制 agent 自检（离线、零成本）：[evals/runs/20261017T223904Z-f2320a8-controls/report.md](evals/runs/20261017T223904Z-f2320a8-controls/report.md)
-  ——oracle 5/5、no-op 0/5、cheating 0/5 且 5/5 被标记。
+**不证明什么。** 只有 9 条任务、2 次重复、一个模型；没有置信区间，成功率打平不能说
+“codelotte 更可靠”。裸 API 的总成本被一次长推理调用抬高（007 r2 单次 ¥0.157），
+只作结构下界、不作成本基线。新任务提高了复杂度（调用/成本上升），但没有把两个 harness 的
+成功率拉开——想要成功率区分度，需要更长任务链或不同模型，而不是继续加同量级任务。
+三组不是同策略 A/B：任务里的“必须用 read/write”等执行纪律不在验收范围内。
+完整口径、轨迹样本与复现命令：[docs/experiments/e4-scaffolding-tax.md](docs/experiments/e4-scaffolding-tax.md)。
+
+- E4 对照报表：[evals/runs/20261018T155840Z-fa9db83-compare/report.md](evals/runs/20261018T155840Z-fa9db83-compare/report.md)
+- 正式 `eval run`（9 任务 × 3 次，Docker）：[evals/runs/20261018T154112Z-fa9db83/report.md](evals/runs/20261018T154112Z-fa9db83/report.md)
+  ——27/27 通过、pass^3 9/9、¥0.205832、349.0s。
+- 控制 agent 自检（9 任务，离线零成本）：[evals/runs/20261018T154851Z-fa9db83-controls/report.md](evals/runs/20261018T154851Z-fa9db83-controls/report.md)
+  ——oracle 9/9、no-op 0/9、cheating 0/9 且 9/9 被标记。
 - 操作手册：[evals/run.md](evals/run.md) §4.5 / §4.6。
 
 ### LLM judge 兜底 + κ 校准（2026-10-18）
 
 标准答案不好写的任务，用评分卡让模型阅卷；但先证明阅卷人靠谱：
 
-- **校准**：20 条作者草拟样本（`author-draft`），Cohen's κ = **1.000**，一致率 100%，
-  成本 ¥0.033613。因为标注尚未复核，**报表把这次校准标为 ⚠ 草稿值**。
-- **真实 judge 任务**：`006-code-review` 一次通过，judge overall **1.00**（阈值 0.70），
-  4 次模型调用（3 agent + 1 judge），¥0.003675；报表同时显示“草稿标注”警告。
+- **校准**：三个 judge 任务（代码 review / 并发 review / API 设计取舍）各 20 条作者草拟
+  样本（`author-draft`），Cohen's κ 均为 **1.000**，一致率 100%；校准成本分别为
+  ¥0.033613 / ¥0.071073 / ¥0.083567。因为标注尚未复核，**报表把校准标为 ⚠ 草稿值**。
+- **真实 judge 任务**：3 条任务一次全过，judge overall 均 **1.00**（阈值 0.70），
+  17 次模型调用（含 3 次 judge），¥0.041690；报表同时显示“草稿标注”警告。
 - **纪律**：确定性检查先跑；确定性失败不调用 judge；judge 只在任务显式声明
   `[verifier.judge]` 时启用。κ 低于阈值、样本 <20、校准缺失或标注为 `draft`
   都会在报表标 ⚠。
 - **不证明什么**：样本刻意清晰，κ=1.0 有天花板效应；作者复核标注后应把
   `labeler` 改成真实标注者并重跑，同时加入 borderline 样本。
 
-- 校准报告：[evals/judges/006-code-review/calibration.md](evals/judges/006-code-review/calibration.md)
-- judge 跑数：[evals/runs/20261018T123909Z-5264236/report.md](evals/runs/20261018T123909Z-5264236/report.md)
+- 校准报告：[006-code-review](evals/judges/006-code-review/calibration.md) ·
+  [101-concurrency-review](evals/judges/101-concurrency-review/calibration.md) ·
+  [102-api-design-tradeoffs](evals/judges/102-api-design-tradeoffs/calibration.md)
+- judge 跑数：[evals/runs/20261018T154901Z-fa9db83/report.md](evals/runs/20261018T154901Z-fa9db83/report.md)
 - 操作手册：[evals/run.md](evals/run.md) §4.7
 
 ### 失败归因 + 回归任务（2026-10-18）
@@ -222,8 +237,8 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 ```
 
 `eval run` 每个任务重复 3 次，输出 `pass^3`、每任务成本与耗时；`eval compaction` 是票据 13 的
-专用测评 - 压缩回归 v0。v0 基线（12 条案例）当时约 ¥0.27；当前 5 条任务的压缩全量是
-20 条案例。加题与读报表见 [evals/run.md](evals/run.md)。
+专用测评 - 压缩回归 v0。v0 基线（12 条案例）当时约 ¥0.27；当前 9 条任务的压缩全量是
+36 条案例。加题与读报表见 [evals/run.md](evals/run.md)。
 
 | 现象 | 处理 |
 |---|---|
@@ -241,10 +256,12 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 23 张曳光弹票据与状态 |
+| [evals/README.md](evals/README.md) | 评估体系总览：目录地图、七个命令、跑数产物、基线快照 |
 | [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、失败归因、任务格式、pass^k、CI 冒烟 |
 | [evals/attribution.md](evals/attribution.md) | 失败归因规则、标注语料与准确率、失败 → 回归任务 |
 | [evals/compaction.md](evals/compaction.md) | 专用测评 - 压缩回归 v0：机制、评分、基线、人工标注 |
 | [evals/record.md](evals/record.md) | 评测跑数记录：索引、目录约定、已入库基线 |
+| [docs/experiments/e4-scaffolding-tax.md](docs/experiments/e4-scaffolding-tax.md) | E4 实验报告：任务集、基线、指标、轨迹样本、复现命令 |
 | [docs/tech/configuration.md](docs/tech/configuration.md) | 配置取值链与每个设置项 |
 | [docs/demo/](docs/demo/README.md) | 3 分钟演示脚本与拍摄清单 |
 | [docs/dogfood/log.md](docs/dogfood/log.md) | 每日真实使用日志（暂时忽略，作者后续补充） |
@@ -263,9 +280,14 @@ oracle/no-op/cheating 均已真实跑通。票据 17 交付 LLM judge 兜底与 
 20 条 `author-draft` 样本 κ=1.000，真实 judge 任务通过）。票据 18 交付失败归因分类器
 （五类病位 + 证据 + 置信度，自动进报表）与失败 → 回归任务命令
 （`codelotte eval attribute` / `codelotte eval regression`）；15 条作者草稿语料准确率
-15/15，真实失败上的准确率待复核。票据 19–23 覆盖 E1–E5 实验与最终材料包。
+15/15，真实失败上的准确率待复核。票据 19 完成 E4：任务集扩到 9 条（新增多文件调试、
+规格重构、长规则结算、边界条件 4 条），新增 2 条主观 judge 任务（并发 review / API 设计，
+各 20 条 `author-draft` 样本 κ=1.000）；三组对照 `repeat 2` 结果为 codelotte 18/18、
+mini-swe-agent 18/18、裸 API 0/18；成功率打平，codelotte 成本高 15.4%、耗时低 33.5%，
+是 token 成本换墙钟时间的取舍。票据 20–22 覆盖
+E1/E2/E3/E5 实验与最终材料包；23 是 stretch 的 MCP stdio 客户端。
 
-当前工作树的工程检查：`569 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
+当前工作树的工程检查：`571 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。

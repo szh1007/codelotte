@@ -218,6 +218,20 @@ def test_resolve_mini_command_prefers_explicit_python(tmp_path: Path) -> None:
     command = resolve_mini_command(mini_python=sys.executable)
 
     assert command == (sys.executable, str(Path(command[1])))
+
+
+def test_resolve_mini_command_makes_relative_interpreter_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """子进程 cwd 是临时工作区，相对解释器路径必须在启动前变成绝对路径。"""
+    interpreter = tmp_path / "fake-python-not-on-path"
+    interpreter.write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    command = resolve_mini_command(mini_python=interpreter.name)
+
+    assert Path(command[0]).is_absolute()
+    assert Path(command[0]) == interpreter
     assert Path(command[1]).name == "mini_runner.py"
     assert Path(command[1]).is_file()
 

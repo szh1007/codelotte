@@ -1,0 +1,12 @@
+{
+  "harness": "oracle",
+  "kind": "control",
+  "writes": [
+    "calc.py",
+    "notes.txt"
+  ],
+  "oracle_files": [
+    "calc.py",
+    "notes.txt"
+  ]
+}

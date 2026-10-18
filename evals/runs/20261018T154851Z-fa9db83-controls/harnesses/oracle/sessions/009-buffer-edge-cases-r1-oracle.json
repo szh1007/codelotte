@@ -1,0 +1,10 @@
+{
+  "harness": "oracle",
+  "kind": "control",
+  "writes": [
+    "buffer.py"
+  ],
+  "oracle_files": [
+    "buffer.py"
+  ]
+}

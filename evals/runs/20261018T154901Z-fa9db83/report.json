@@ -1,0 +1,318 @@
+{
+  "meta": {
+    "run_id": "20261018T154901Z-fa9db83",
+    "started_at": "2026-10-18T15:49:01.072072+00:00",
+    "finished_at": "2026-10-18T15:50:00.030715+00:00",
+    "git_ref": "fa9db8357984efe04fd591f8f280a920c787f1f1",
+    "git_dirty": true,
+    "git_diff_sha": "b2ab19fdde328b9761fe62c968082cbc222da1d2dd9e4faa1c601e41c3434b85",
+    "python": "3.13.13",
+    "codelotte_version": "0.1.0",
+    "uv_lock_sha": "b64ada6fe8c5faea366310bae5cc70fe25a2b98ce6baf8676e26d72c0531caf7",
+    "model": "deepseek-flash",
+    "reasoning_effort": "high",
+    "context_window": 1000000,
+    "repetitions": 1,
+    "seed": 0,
+    "tasks": [
+      {
+        "id": "006-code-review",
+        "bucket": "A",
+        "sha256": "559a9a784c2f3aafa22e8d1921e5902f5314fdf290f498bd6ff988b3a71959f1",
+        "snapshot_ref": null
+      },
+      {
+        "id": "101-concurrency-review",
+        "bucket": "A",
+        "sha256": "09400d69bf0aa8e32a3c7716057cd5a5767b860837fbf562b8dfdeec5ad0681c",
+        "snapshot_ref": null
+      },
+      {
+        "id": "102-api-design-tradeoffs",
+        "bucket": "A",
+        "sha256": "5f16cb247d8d58bc2c7493e8ff901d0ba76b3005de1b4572485f1188d08aa6f2",
+        "snapshot_ref": null
+      }
+    ],
+    "command": "codelotte eval run --tasks evals/judge-tasks --repeat 1",
+    "currency": "CNY",
+    "harness": "codelotte",
+    "harness_kind": "agent",
+    "harness_version": "0.1.0",
+    "isolation": "docker"
+  },
+  "summaries": [
+    {
+      "task_id": "006-code-review",
+      "bucket": "A",
+      "attempts": 1,
+      "passed": 1,
+      "pass_pow_k": true,
+      "model_calls": 5,
+      "cost": 0.0046416,
+      "duration_seconds": 8.397571599998628,
+      "periods": [
+        [
+          "offpeak",
+          5
+        ]
+      ],
+      "judge_calls": 1,
+      "judge_cost": 0.0011361199999999998,
+      "judge_used": true,
+      "judge_unreliable": 1
+    },
+    {
+      "task_id": "101-concurrency-review",
+      "bucket": "A",
+      "attempts": 1,
+      "passed": 1,
+      "pass_pow_k": true,
+      "model_calls": 7,
+      "cost": 0.00997616,
+      "duration_seconds": 17.408228500000405,
+      "periods": [
+        [
+          "offpeak",
+          7
+        ]
+      ],
+      "judge_calls": 1,
+      "judge_cost": 0.0028816799999999997,
+      "judge_used": true,
+      "judge_unreliable": 1
+    },
+    {
+      "task_id": "102-api-design-tradeoffs",
+      "bucket": "A",
+      "attempts": 1,
+      "passed": 1,
+      "pass_pow_k": true,
+      "model_calls": 5,
+      "cost": 0.0270718,
+      "duration_seconds": 32.73792010000034,
+      "periods": [
+        [
+          "offpeak",
+          5
+        ]
+      ],
+      "judge_calls": 1,
+      "judge_cost": 0.00506912,
+      "judge_used": true,
+      "judge_unreliable": 1
+    }
+  ],
+  "cases": [
+    {
+      "task_id": "006-code-review",
+      "bucket": "A",
+      "repetition": 1,
+      "passed": true,
+      "verifier_detail": "验收通过；judge overall=1.00（阈值 0.70，通过）；⚠ 标注者 author-draft 尚未复核，κ 是草稿值",
+      "model_calls": 5,
+      "input_tokens": 4925,
+      "output_tokens": 680,
+      "cost": 0.0046416,
+      "duration_seconds": 8.397571599998628,
+      "periods": [
+        [
+          "offpeak",
+          5
+        ]
+      ],
+      "session_path": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261018T154901Z-fa9db83\\sessions\\006-code-review-r1\\20261018T154901Z_7f02932f.jsonl",
+      "workspace": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261018T154901Z-fa9db83\\workspaces\\006-code-review-r1",
+      "error": null,
+      "harness": "codelotte",
+      "flagged": false,
+      "flag_reason": null,
+      "harness_version": "0.1.0",
+      "note": null,
+      "judge_calls": 1,
+      "judge_cost": 0.0011361199999999998,
+      "judge_input_tokens": 607,
+      "judge_output_tokens": 195,
+      "judge_used": true,
+      "judge_passed": true,
+      "judge_overall": 1.0,
+      "judge_scores": [
+        [
+          "correctness",
+          1.0
+        ],
+        [
+          "specificity",
+          1.0
+        ],
+        [
+          "clarity",
+          1.0
+        ]
+      ],
+      "judge_reasons": [
+        [
+          "correctness",
+          "Identifies `for i in range(n + 1):` as the bug and gives `for i in range(n):` as the fix."
+        ],
+        [
+          "specificity",
+          "Quotes the exact buggy line and explains both n = 0 and n = len(values) failure modes with evidence."
+        ],
+        [
+          "clarity",
+          "Uses exactly the three requested sections and is concise."
+        ]
+      ],
+      "judge_error": null,
+      "judge_kappa": 1.0,
+      "judge_samples": 20,
+      "judge_reliable": false,
+      "judge_warning": "标注者 author-draft 尚未复核，κ 是草稿值",
+      "failure_class": null,
+      "failure_confidence": null,
+      "failure_evidence": null,
+      "failure_signals": []
+    },
+    {
+      "task_id": "101-concurrency-review",
+      "bucket": "A",
+      "repetition": 1,
+      "passed": true,
+      "verifier_detail": "验收通过；judge overall=1.00（阈值 0.70，通过）；⚠ 标注者 author-draft 尚未复核，κ 是草稿值",
+      "model_calls": 7,
+      "input_tokens": 11886,
+      "output_tokens": 1405,
+      "cost": 0.00997616,
+      "duration_seconds": 17.408228500000405,
+      "periods": [
+        [
+          "offpeak",
+          7
+        ]
+      ],
+      "session_path": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261018T154901Z-fa9db83\\sessions\\101-concurrency-review-r1\\20261018T154909Z_d78169c3.jsonl",
+      "workspace": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261018T154901Z-fa9db83\\workspaces\\101-concurrency-review-r1",
+      "error": null,
+      "harness": "codelotte",
+      "flagged": false,
+      "flag_reason": null,
+      "harness_version": "0.1.0",
+      "note": null,
+      "judge_calls": 1,
+      "judge_cost": 0.0028816799999999997,
+      "judge_input_tokens": 1042,
+      "judge_output_tokens": 554,
+      "judge_used": true,
+      "judge_passed": true,
+      "judge_overall": 1.0,
+      "judge_scores": [
+        [
+          "correctness",
+          1.0
+        ],
+        [
+          "specificity",
+          1.0
+        ],
+        [
+          "clarity",
+          1.0
+        ]
+      ],
+      "judge_reasons": [
+        [
+          "correctness",
+          "Identifies the unsynchronized read-modify-write, explains lost update, states GIL does not make it atomic, and fixes with a module-level threading.Lock."
+        ],
+        [
+          "specificity",
+          "Quotes the exact racy lines, gives a concrete two-thread interleaving, and names the shared counter state."
+        ],
+        [
+          "clarity",
+          "Uses exactly the requested Bug/Why/Fix sections, stays on topic, and is concise."
+        ]
+      ],
+      "judge_error": null,
+      "judge_kappa": 1.0,
+      "judge_samples": 20,
+      "judge_reliable": false,
+      "judge_warning": "标注者 author-draft 尚未复核，κ 是草稿值",
+      "failure_class": null,
+      "failure_confidence": null,
+      "failure_evidence": null,
+      "failure_signals": []
+    },
+    {
+      "task_id": "102-api-design-tradeoffs",
+      "bucket": "A",
+      "repetition": 1,
+      "passed": true,
+      "verifier_detail": "验收通过；judge overall=1.00（阈值 0.70，通过）；⚠ 标注者 author-draft 尚未复核，κ 是草稿值",
+      "model_calls": 5,
+      "input_tokens": 13911,
+      "output_tokens": 5253,
+      "cost": 0.0270718,
+      "duration_seconds": 32.73792010000034,
+      "periods": [
+        [
+          "offpeak",
+          5
+        ]
+      ],
+      "session_path": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261018T154901Z-fa9db83\\sessions\\102-api-design-tradeoffs-r1\\20261018T154927Z_f1dba3f1.jsonl",
+      "workspace": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261018T154901Z-fa9db83\\workspaces\\102-api-design-tradeoffs-r1",
+      "error": null,
+      "harness": "codelotte",
+      "flagged": false,
+      "flag_reason": null,
+      "harness_version": "0.1.0",
+      "note": null,
+      "judge_calls": 1,
+      "judge_cost": 0.00506912,
+      "judge_input_tokens": 3260,
+      "judge_output_tokens": 515,
+      "judge_used": true,
+      "judge_passed": true,
+      "judge_overall": 1.0,
+      "judge_scores": [
+        [
+          "tradeoff_depth",
+          1.0
+        ],
+        [
+          "constraint_coverage",
+          1.0
+        ],
+        [
+          "clarity",
+          1.0
+        ]
+      ],
+      "judge_reasons": [
+        [
+          "tradeoff_depth",
+          "Clearly chooses batch endpoint A and compares A vs B on latency, retries/idempotency, partial failure, pagination, and versioning with concrete reasoning and numbers."
+        ],
+        [
+          "constraint_coverage",
+          "Covers all requirements: 500-item batches, per-item idempotency keys, per-item status/errors, no double charge, sub-2s progress feedback, pagination, and versioning."
+        ],
+        [
+          "clarity",
+          "Recommendation and retry flow are explicit, structured, and easy to follow; prose is concise despite the detailed contract."
+        ]
+      ],
+      "judge_error": null,
+      "judge_kappa": 1.0,
+      "judge_samples": 20,
+      "judge_reliable": false,
+      "judge_warning": "标注者 author-draft 尚未复核，κ 是草稿值",
+      "failure_class": null,
+      "failure_confidence": null,
+      "failure_evidence": null,
+      "failure_signals": []
+    }
+  ]
+}

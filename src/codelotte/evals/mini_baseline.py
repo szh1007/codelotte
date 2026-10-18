@@ -56,11 +56,17 @@ def _python_next_to(executable: str) -> str | None:
 def resolve_mini_command(*, mini_python: str | None = None) -> tuple[str, ...]:
     """决定用哪个解释器跑 mini 适配入口：显式解释器 > PATH 上 mini 的同环境解释器 > 当前解释器。"""
     if mini_python is not None:
-        if shutil.which(mini_python) is None and not Path(mini_python).is_file():
-            raise ConfigError(f"--mini-python 指向的解释器不存在：{mini_python}")
+        resolved = shutil.which(mini_python)
+        if resolved is None:
+            candidate = Path(mini_python)
+            if not candidate.is_file():
+                raise ConfigError(f"--mini-python 指向的解释器不存在：{mini_python}")
+            resolved = str(candidate)
         if not MINI_RUNNER.is_file():
             raise ConfigError(f"mini 适配入口缺失：{MINI_RUNNER}")
-        return (mini_python, str(MINI_RUNNER))
+        # 子进程的 cwd 是临时工作区：相对解释器路径必须先变成绝对路径，
+        # 否则 Windows 上会以 FileNotFoundError 启动失败（票据 19 实测）。
+        return (os.path.abspath(resolved), str(MINI_RUNNER))
     executable = shutil.which(MINI_COMMAND)
     if executable is not None:
         python = _python_next_to(executable)

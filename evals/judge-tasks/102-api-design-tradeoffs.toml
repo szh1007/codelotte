@@ -1,0 +1,63 @@
+# LLM judge 任务（票据 19）：API 设计没有唯一答案，靠评分卡判“取舍是否具体、约束是否覆盖”。
+# 确定性兜底只确认讨论了两种 API 形态且使用 idempotency 概念；质量由 judge 判。
+
+id = "102-api-design-tradeoffs"
+bucket = "A"
+timeout_seconds = 300
+max_model_calls = 20
+
+instruction = '''
+Read requirements.md. Write design.md that compares two API shapes for batch payments:
+
+A) POST /v1/batches with a JSON array of transfers
+B) one request per transfer under /v1/transfers
+
+Choose one for the main path, justify it with concrete trade-offs (latency, retries and
+idempotency, partial failure, pagination, versioning), and describe the retry flow.
+Do not modify requirements.md. Be specific and concise.
+'''
+
+[setup.files]
+"requirements.md" = '''
+# Batch payment API requirements
+
+- Clients submit up to 500 transfers in one request.
+- Each transfer must be idempotent by a client-supplied idempotency key.
+- Partial success is allowed: return per-item status and errors.
+- Retries must not double-charge a transfer.
+- Mobile clients need progress feedback within 2 seconds.
+- The system must support pagination when listing batch results.
+- Breaking changes require a version bump.
+'''
+
+[verifier]
+[[verifier.files]]
+path = "design.md"
+contains = "POST"
+[[verifier.files]]
+path = "design.md"
+contains = "idempotency"
+[[verifier.files]]
+path = "requirements.md"
+unchanged = true
+
+[verifier.judge]
+dimensions = ["tradeoff_depth", "constraint_coverage", "clarity"]
+pass_threshold = 0.7
+kappa_threshold = 0.6
+samples = "evals/judges/102-api-design-tradeoffs/samples.jsonl"
+calibration = "evals/judges/102-api-design-tradeoffs/calibration.json"
+rubric = '''
+Score each dimension from 0.0 to 1.0:
+
+- tradeoff_depth: 1.0 if it makes a clear choice and compares both shapes on latency,
+  retry/idempotency semantics, partial failure, pagination, and versioning with concrete
+  reasoning. 0.0 if it only lists generic REST advantages or never chooses.
+- constraint_coverage: 1.0 if it covers every requirement in requirements.md: 500-item
+  batches, per-item idempotency keys, per-item status/errors, no double charge, sub-2s
+  progress feedback, pagination, and versioning. 0.0 if it ignores several constraints.
+- clarity: 1.0 if the recommendation and retry flow are easy to follow and the prose is
+  concise. 0.0 if it is disorganized or contradictory.
+
+Judge the submission against this rubric only. Do not reward extra prose.
+'''

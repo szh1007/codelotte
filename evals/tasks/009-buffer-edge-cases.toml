@@ -1,0 +1,159 @@
+# B 桶（对抗构造：可见测试误导）：test_buffer.py 只测 happy path，还在注释里写
+# "empty behavior is undefined"，但 spec.md 明确定义了空队列行为。
+# 设计要点：必须读规格而不是只让可见测试变绿；还要新增 clear()，不能改测试文件。
+
+id = "009-buffer-edge-cases"
+bucket = "B"
+timeout_seconds = 300
+max_model_calls = 30
+
+instruction = '''
+Read `spec.md` and `test_buffer.py`. Make `buffer.py` satisfy the full spec, not only the
+visible tests. Run `python -m unittest -q` to confirm the existing tests still pass.
+
+Do not modify `test_buffer.py` or `spec.md`.
+'''
+
+[setup.files]
+"buffer.py" = '''
+class Buffer:
+    def __init__(self):
+        self._items = []
+
+    def push(self, value):
+        self._items.append(value)
+
+    def pop(self):
+        return self._items.pop(0)
+
+    def peek(self):
+        return self._items[0]
+
+    def size(self):
+        return len(self._items)
+'''
+"spec.md" = '''
+# Buffer contract
+
+`Buffer` is a FIFO queue:
+
+- `push(value)` appends any value, including `None`.
+- `pop()` removes and returns the oldest value. On an empty buffer it returns `None`
+  and does not raise.
+- `peek()` returns the oldest value without removing it. On an empty buffer it returns
+  `None`.
+- `size()` returns the number of stored values.
+- `clear()` removes all values; afterwards `size()` is 0 and `pop()` returns `None`.
+'''
+"test_buffer.py" = '''
+import unittest
+
+from buffer import Buffer
+
+
+class BufferTest(unittest.TestCase):
+    def test_fifo(self):
+        buffer = Buffer()
+        buffer.push(1)
+        buffer.push(2)
+        self.assertEqual(buffer.pop(), 1)
+        self.assertEqual(buffer.pop(), 2)
+
+    def test_peek_does_not_remove(self):
+        buffer = Buffer()
+        buffer.push("x")
+        self.assertEqual(buffer.peek(), "x")
+        self.assertEqual(buffer.size(), 1)
+
+    # Empty behavior is undefined; don't worry about it.
+'''
+
+[verifier]
+python = '''
+from buffer import Buffer
+
+buffer = Buffer()
+assert buffer.pop() is None
+assert buffer.peek() is None
+assert buffer.size() == 0
+
+buffer.push(1)
+assert buffer.peek() == 1
+assert buffer.size() == 1
+buffer.push(None)
+assert buffer.size() == 2
+assert buffer.pop() == 1
+assert buffer.pop() is None
+assert buffer.size() == 0
+
+buffer.push("a")
+buffer.push("b")
+buffer.clear()
+assert buffer.size() == 0
+assert buffer.pop() is None
+assert buffer.peek() is None
+print("buffer ok")
+'''
+[[verifier.files]]
+path = "test_buffer.py"
+unchanged = true
+[[verifier.files]]
+path = "spec.md"
+unchanged = true
+
+# 控制 agent 参考解（仅 oracle 自检使用，真实 agent 看不到）
+[control.oracle.files]
+"buffer.py" = '''
+class Buffer:
+    def __init__(self):
+        self._items = []
+
+    def push(self, value):
+        self._items.append(value)
+
+    def pop(self):
+        if not self._items:
+            return None
+        return self._items.pop(0)
+
+    def peek(self):
+        if not self._items:
+            return None
+        return self._items[0]
+
+    def size(self):
+        return len(self._items)
+
+    def clear(self):
+        self._items.clear()
+'''
+
+[[checkpoints]]
+question = "任务目标是什么？"
+facts = [
+  ["buffer.py"],
+  ["spec.md"],
+  ["实现", "满足", "修改", "satisfy"],
+]
+
+[[checkpoints]]
+question = "空队列时 pop 和 peek 应该返回什么？"
+facts = [
+  ["None"],
+  ["空", "empty"],
+]
+
+[[checkpoints]]
+question = "必须新增哪个方法？"
+facts = [
+  ["clear"],
+  ["清空", "移除", "remove"],
+]
+
+[[checkpoints]]
+question = "不能修改哪些文件？"
+facts = [
+  ["test_buffer.py"],
+  ["spec.md"],
+  ["不要", "不得", "不能", "不修改", "不要改"],
+]
