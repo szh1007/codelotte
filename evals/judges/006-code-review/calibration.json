@@ -1,0 +1,22 @@
+{
+  "schema": "judge-calibration/v1",
+  "task_id": "006-code-review",
+  "model": "deepseek-flash",
+  "samples": 20,
+  "labeler": "author-draft",
+  "kappa": 1.0,
+  "agreement": 1.0,
+  "kappa_threshold": 0.6,
+  "pass_threshold": 0.7,
+  "generated_at": "2026-10-18T13:08:02.670582+00:00",
+  "codelotte_version": "0.1.0",
+  "judge_fingerprint": "482d026b7bb4afacb3ed4978a222e758b18463869da8a7189e44445e56f19c58",
+  "labels_sha256": "64e5a3bba427d7c6b4f6a28d69be9fa2ec582a3665668af51e499d22601b613d",
+  "total_cost": 0.0334454,
+  "periods": [
+    [
+      "offpeak",
+      20
+    ]
+  ]
+}

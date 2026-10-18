@@ -14,6 +14,7 @@
 # 1. 只校验任务文件/快照 ref，不调用模型、不花钱
 uv run codelotte eval run --dry-run
 uv run codelotte eval compaction --dry-run
+uv run codelotte eval judge --dry-run
 
 # 2. 通用测评：全部任务 × 3 次重复（pass^3、每任务成本/耗时）
 uv run codelotte eval run
@@ -30,13 +31,19 @@ uv run codelotte eval controls
 # 6. 对照组：codelotte / mini-swe-agent / 裸单轮 API 跑同一任务集
 uv run codelotte eval compare --repeat 1 --no-sandbox
 
-# 7. 打开最新 run 的报表
+# 7. LLM judge 校准（≥20 条人工标注样本）
+uv run codelotte eval judge
+
+# 8. 跑 judge 任务（不在默认任务目录里，避免控制组依赖模型）
+uv run codelotte eval run --tasks evals/judge-tasks --task 006-code-review --repeat 1 --no-sandbox
+
+# 9. 打开最新 run 的报表
 #    evals/runs/<新目录>/report.md
 ```
 
 已经装有 `codelotte` 命令时，把 `uv run codelotte` 换成 `codelotte` 即可。
 
-## 1. 四个命令在干什么
+## 1. 五个命令在干什么
 
 - `eval run`（票据 15）：**通用测评**。任务按生产默认策略跑 N 次，回答“当前 harness
   能不能过、每条任务花多少钱/多久、pass^N 是多少”。
@@ -46,20 +53,24 @@ uv run codelotte eval compare --repeat 1 --no-sandbox
   和裸单轮 API，回答“模型自身的功劳 vs harness 的增量”（scaffolding tax）。
 - `eval controls`（票据 16）：**控制 agent 自检**。oracle 应 100%、no-op 应 0%、
   cheating 应 0% 且被标记；先证明评测器不瞎打分，再相信任何真实跑分。
+- `eval judge`（票据 17）：**LLM judge 校准**。用 ≥20 条人工标注样本算 Cohen's κ；
+  评测运行时 judge 的分数/理由/κ 进报表，κ 低标 ⚠。
 
-四者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
+五者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
 压缩专项用 `eval compaction`（细节见 [compaction.md](compaction.md)）；对照与自检
-见 §4.5 / §4.6。
+见 §4.5 / §4.6；judge 见 §4.7。
 
 ## 2. 目录地图
 
 | 路径 | 作用 |
 |---|---|
 | `evals/tasks/*.toml` | **题目定义**：初始文件/仓库快照、指令、验收器、checkpoint |
+| `evals/judge-tasks/*.toml` | **LLM judge 题目**：单独目录，避免 `eval controls` 依赖模型 |
+| `evals/judges/<task>/` | 校准样本（`samples.jsonl`）与结果（`calibration.json/.md`） |
 | `evals/runs/<run-id>/` | **一次跑数的全部证据**；每次新建，不覆盖 |
-| `src/codelotte/evals/` | 实现：加载任务、通用测评、强制压缩、探针、评分、报表 |
+| `src/codelotte/evals/` | 实现：加载任务、通用测评、强制压缩、探针、评分、judge、报表 |
 | `evals/compaction.md` | 专用测评 - 压缩回归 v0 手册（机制、评分、基线、人工标注） |
-| `tests/test_eval_*.py` | 自动化测试（加载/评分/运行/报表/CLI） |
+| `tests/test_eval_*.py` | 自动化测试（加载/评分/运行/报表/judge/CLI） |
 
 ## 3. 任务格式
 
@@ -104,6 +115,15 @@ path = "out.txt"
 equals = """hello
 """
 
+# 可选：LLM judge 兜底（先跑 eval judge 校准）
+# [verifier.judge]
+# dimensions = ["correctness", "clarity"]
+# rubric = "correctness: …；clarity: …"
+# pass_threshold = 0.7
+# kappa_threshold = 0.6
+# samples = "evals/judges/006-your-task/samples.jsonl"
+# calibration = "evals/judges/006-your-task/calibration.json"
+
 [[checkpoints]]
 question = "任务目标是什么？"
 facts = [
@@ -140,18 +160,27 @@ facts = [
 | `instruction` | 是 | 发给模型的题面；决定它做多少步 |
 | `setup.files` | 与 snapshot 二选一或叠加 | `路径 = "内容"`；路径必须是工作区内相对路径 |
 | `setup.snapshot` | 与 files 二选一或叠加 | `ref` 必填；`repo` / `script` / `timeout_seconds` 可选 |
-| `verifier` | 是 | 必须至少有一个 `command`、`python` 或 `files` 期望 |
+| `verifier` | 是 | 至少有一个 `command`、`python`、`files` 或 `[verifier.judge]` |
 | `[[verifier.files]]` | 否 | `path` + `equals`/`contains`/`unchanged` 三选一 |
 | `verifier.python` | 否 | 在工作区执行 `python -c`，退出码 0 即通过 |
 | `verifier.command` | 否 | 字符串数组（如 `["python", "check.py"]`）；不经 shell |
 | `verifier.command_timeout` | 否 | 默认 60 秒 |
+| `[verifier.judge]` | 否 | LLM 评分卡；确定性检查通过后才运行 |
+| `judge.dimensions` | 是（写了 judge 时） | 非空、不重复的维度名 |
+| `judge.rubric` | 是（写了 judge 时） | 每个维度的评分标准 |
+| `judge.pass_threshold` | 否 | 平均分阈值，默认 0.6 |
+| `judge.kappa_threshold` | 否 | κ 可靠性阈值，默认 0.6 |
+| `judge.samples` | 否 | 人工标注 JSONL（`eval judge` 用），仓库内相对路径 |
+| `judge.calibration` | 否 | 校准结果 JSON（评测时读取），仓库内相对路径 |
 | `[[checkpoints]]` | 压缩回归必填 | 通用测评可省略；每个含 `question` + `facts` |
 | `checkpoint.facts` | 是（写了 checkpoint 时） | 数组的数组：每个内层数组是一组替代表述 |
 | `timeout_seconds` | 否 | 默认 300；单案例墙钟超时 |
 | `max_model_calls` | 否 | 默认 40；超过后中止并记错误（软上限） |
 
 校验在加载时完成：路径必须留在工作区/评测仓库内（拒绝绝对路径、`..`、盘符相对路径）；
-验收器不能为空；重复任务 id 直接报错。任务语义指纹（含快照定义）写进报表，改缩进不影响复现。
+验收器不能为空；重复任务 id 直接报错。judge 的 `samples`/`calibration` 是仓库内相对
+路径；样本数 ≥20 由 `eval judge` 检查。任务语义指纹（含快照与 judge 定义）写进报表，
+改缩进不影响复现。
 
 ### 3.3 验收器（verifier）
 
@@ -200,6 +229,35 @@ command_timeout = 60
 
 验收器必须**确定性**：不看当前时间、不联网、不依赖随机数。命令式检查优先，
 LLM judge 是票据 17 的兜底；未声明 judge 的任务不会走 judge。
+
+#### LLM judge（`[verifier.judge]`）
+
+任务可以声明一张评分卡；judge 只在**显式声明**且**确定性检查通过**（或没有确定性
+检查）时运行。确定性失败不会调用 judge。
+
+```toml
+[verifier.judge]
+dimensions = ["correctness", "specificity", "clarity"]
+rubric = """
+每个维度 0–1 分：
+- correctness：bug 和修复都对才 1.0；
+- specificity：引用具体代码/失败模式；
+- clarity：结构清晰、简洁。
+"""
+pass_threshold = 0.7       # 各维度平均分 ≥ 0.7 才算通过
+kappa_threshold = 0.6      # κ 低于它 → 报表标“不可靠”
+samples = "evals/judges/006-code-review/samples.jsonl"
+calibration = "evals/judges/006-code-review/calibration.json"
+```
+
+- judge 收到的输入：任务指令、rubric、确定性检查结果、最终工作区文本（有长度上限）。
+- judge 必须返回 `{"scores": {...}, "reasons": {...}}`；每个维度 0–1 分 + 一句理由。
+- judge 的调用成本计入案例总成本，报表“LLM judge”段列出分数/理由/κ。
+- **先校准再相信分数**：`eval judge` 用 ≥20 条人工标注样本算 Cohen's κ，写
+  `calibration.json`；运行时只读这个结果。κ 缺失、样本 <20 或 κ 低于阈值都会标 ⚠，
+  但仍保留分数，不静默丢弃。
+- judge 任务放在 `evals/judge-tasks/`，不放进默认 `evals/tasks`：`eval controls`
+  必须离线零成本，不能依赖模型。
 
 ### 3.4 仓库快照
 
@@ -268,7 +326,7 @@ uv run codelotte eval compaction --k 5 --task 006-your-task --out evals/runs
 |---|---|
 | `缺少字段 …` | 补齐 `id/bucket/instruction/setup/verifier`（压缩回归还需 checkpoints） |
 | `必须是工作区内的相对路径` | 去掉绝对路径、`..`、`C:foo` 盘符相对路径 |
-| `verifier：至少给 files 期望或 python 检查` | 加验收器（`command` / `python` / `files` 至少一个） |
+| `verifier：至少给 files 期望、python 检查、command 命令 或 [verifier.judge]` | 加验收器（`command` / `python` / `files` / `[verifier.judge]` 至少一个） |
 | `重复的任务 id` | 两个 TOML 用了同一个 `id` |
 | `每个事实组必须是非空数组` | `facts = [[...]]`，不要写成扁平字符串数组 |
 | `bucket 只能是 A/B/C` | 改 `bucket` |
@@ -314,8 +372,11 @@ codelotte eval run --dry-run
 - **pass^k**：一条任务的 **全部 k 次重复都通过**才算 pass^k；少跑一次、失败一次或运行错误都记 0。
 - **成功率**：通过案例 / 尝试案例；运行错误也是失败，不剔除。
 - **成本**：每次模型调用的 `usage` 记录之和（人民币元）；不含验收命令。
+  judge 的调用成本并入总成本，报表单独给 `judge` 列。
 - **计费时段**：每条 usage 记录的实际 `period`（峰值 / 低谷），在案例和任务汇总里都能看到。
 - **耗时**：单案例墙钟时间；任务平均耗时 = 总耗时 / 尝试次数。
+- **judge**：`—` = 未使用；否则显示调用次数/成本与 ⚠（κ 不可靠）；分数/理由在
+  “LLM judge”段。
 
 报表文件：
 
@@ -430,9 +491,47 @@ uv run codelotte eval controls --dry-run    # 只校验任务/快照
   `tests/test_eval_tasks.py` 会检查 shipped 任务两者都有。没有保护文件时，cheating
   仍会因内容不对记 0，但不会产生“篡改”标记。
 
-### 4.7 已知局限
+### 4.7 LLM judge 与 κ 校准（`eval judge`）
 
-- 没有 LLM judge 与 κ 校准——票据 17。
+**先校准，再相信分数。** 确定性验收回答“结果对不对”；judge 回答“质量够不够好”。
+judge 的可靠性由它和人工标注的一致性 κ 决定。
+
+```bash
+# 只校验任务、样本数量和输出路径，不调用模型
+uv run codelotte eval judge --dry-run
+
+# 用真实模型跑 20 条样本，写 calibration.json/.md
+uv run codelotte eval judge
+```
+
+- 样本文件：`evals/judges/<task>/samples.jsonl`，每行：
+  ```json
+  {"id": "g01", "submission": "review 文本", "human_pass": true, "labeler": "author"}
+  ```
+  `submission` 是给 judge 看的最终结果文本；`human_pass` 是人工判定。
+- 校准结果：`calibration.json` 记录 `samples`、`kappa`、`agreement`、标注者、
+  模型、阈值、`judge_fingerprint`（任务指令 + 维度 + rubric + 阈值）与
+  `labels_sha256`；同名 `.md` 是人类可读表。运行时若任务/模型/rubric/样本文件
+  与校准不一致，旧 κ 会被标 ⚠ 并提示重跑。
+- `eval judge` 的退出码：`0` = 校准完成且可靠性检查全过；`1` = 可靠性检查失败
+  （κ 低于阈值、样本不足、草稿标注或校准与任务/模型/样本不一致）；`2` = 任务/样本/
+  模型配置错误。
+- 评测运行时只读 `calibration.json`，不会为每条案例重跑 20 条校准样本。
+- κ 缺失、样本 <20、或 κ 低于 `kappa_threshold`：报表标 ⚠，但**仍保留 judge 分数**，
+  不静默丢弃；这正是“承认验收器不可靠”而不是装作没看见。
+- 当前示例：`006-code-review` 的 20 条样本由实现者草拟（`labeler=author-draft`），
+  κ=1.000（20 样本，一致率 100%）。因为标注尚未复核，**报表会把这次校准标为
+  ⚠ 草稿值**；样本刻意清晰，**κ=1.0 还有天花板效应**。作者复核后应把 `labeler`
+  改成真实标注者并重跑校准，下一批加入 borderline 样本。
+- judge 任务放在 `evals/judge-tasks/`；`eval controls` 会跳过 judge 任务并提示，
+  因为控制组必须离线零成本。`eval run` / `eval compare` 会配置 judge 模型；
+  `eval compaction` 是确定性压缩套件，不配置 judge（`judge-tasks` 不要拿去跑 compaction）。
+
+### 4.8 已知局限
+
+- judge 校准样本目前是作者草拟（`author-draft`），不是作者已复核的人工标签；
+  κ=1.0 是清晰样本上的天花板，不代表 judge 在模糊样本上也可靠。
+- judge 只看最终工作区文本，不读完整轨迹；“过程是否合规”仍由确定性检查覆盖。
 - pass^k 是严格口径；不提供 pass@k（至少一次通过）的并列指标。
 - 首批任务只有 5 条，B 桶 3 条；任务集扩大与 E1/E2 正式实验在票据 20。
 - 任务的初始化脚本按平台 shell 语义执行；跨平台任务应优先用 Python 或 `python -c`。
@@ -441,13 +540,14 @@ uv run codelotte eval controls --dry-run    # 只校验任务/快照
 - mini 的思考参数沿用它的默认请求；codelotte 用 `reasoning_effort` 配置。同模型，
   但请求参数不保证逐字段一致。
 
-### 4.8 代码地图
+### 4.9 代码地图
 
 | 文件 | 职责 |
 |---|---|
-| `src/codelotte/evals/tasks.py` | TOML 加载与校验（文件/快照/验收器/checkpoint/参考解） |
+| `src/codelotte/evals/tasks.py` | TOML 加载与校验（文件/快照/验收器/checkpoint/judge/参考解） |
 | `src/codelotte/evals/workspace.py` | 工作区准备、git 快照、初始化脚本、确定性验收、保护文件检查 |
-| `src/codelotte/evals/execution.py` | 单任务执行核心（codelotte loop、预算、成本/时段、验收） |
+| `src/codelotte/evals/execution.py` | 单任务执行核心（codelotte loop、预算、成本/时段、确定性验收、judge） |
+| `src/codelotte/evals/judge.py` | judge 评分卡、κ 计算、校准文件与报告 |
 | `src/codelotte/evals/harness_types.py` | harness 协议与 `HarnessExecution` |
 | `src/codelotte/evals/harnesses.py` | 裸单轮 API + 三种控制 agent |
 | `src/codelotte/evals/mini_baseline.py` | mini-swe-agent 外部进程适配 |
@@ -457,7 +557,9 @@ uv run codelotte eval controls --dry-run    # 只校验任务/快照
 | `src/codelotte/evals/compare.py` | 多组对照、控制 agent 自检、并列报表 |
 | `src/codelotte/evals/eval_report.py` | 单组报表（Markdown/JSON） |
 | `src/codelotte/evals/regression.py` | 压缩回归（强制压缩 + checkpoint 探针） |
-| `evals/tasks/*.toml` | 任务定义 |
+| `evals/tasks/*.toml` | 确定性任务定义 |
+| `evals/judge-tasks/*.toml` | judge 任务定义（控制组不加载） |
+| `evals/judges/<task>/` | 人工标注样本与校准结果 |
 | `evals/runs/<run-id>/` | 跑数证据 |
 
 ## 5. 专用测评 - 压缩回归 v0（`eval compaction`）
@@ -477,10 +579,10 @@ uv run codelotte eval compaction --k 0,1,3,5 --out evals/runs
 
 接手的人按这个顺序看：
 
-1. 本文件（通用测评：操作、任务格式、CI）；
+1. 本文件（通用测评、对照、自检、judge：操作、任务格式、CI）；
 2. [compaction.md](compaction.md)（专用测评 - 压缩回归 v0：机制、评分、基线、局限）；
 3. 最近一次跑数的 `report.md`；
-4. `src/codelotte/evals/`（按 tasks → workspace → execution → runner/regression → report 读）；
+4. `src/codelotte/evals/`（按 tasks → workspace → execution → judge → runner/regression → report 读）；
 5. [record.md](record.md)（跑数目录、记录表与复现约定）。
 
 跑之前先 `--dry-run`；动代码后跑 `uv run pytest tests/test_eval_*.py`。

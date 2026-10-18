@@ -1,0 +1,122 @@
+{
+  "meta": {
+    "run_id": "20261018T123909Z-5264236",
+    "started_at": "2026-10-18T12:39:09.665014+00:00",
+    "finished_at": "2026-10-18T12:39:16.696575+00:00",
+    "git_ref": "526423664432d9c692a27f90949bf6f533d03275",
+    "git_dirty": true,
+    "git_diff_sha": "7be3c7ee779ac479bb4eba59eb0196d9b6c10a0386566da8c7fd0dddc4aa27a4",
+    "python": "3.13.13",
+    "codelotte_version": "0.1.0",
+    "uv_lock_sha": "b64ada6fe8c5faea366310bae5cc70fe25a2b98ce6baf8676e26d72c0531caf7",
+    "model": "deepseek-flash",
+    "reasoning_effort": "high",
+    "context_window": 1000000,
+    "repetitions": 1,
+    "seed": 0,
+    "tasks": [
+      {
+        "id": "006-code-review",
+        "bucket": "A",
+        "sha256": "559a9a784c2f3aafa22e8d1921e5902f5314fdf290f498bd6ff988b3a71959f1",
+        "snapshot_ref": null
+      }
+    ],
+    "command": "codelotte eval run --tasks evals/judge-tasks --task 006-code-review --repeat 1 --out evals/runs --no-sandbox",
+    "currency": "CNY",
+    "harness": "codelotte",
+    "harness_kind": "agent",
+    "harness_version": "0.1.0",
+    "isolation": "local"
+  },
+  "summaries": [
+    {
+      "task_id": "006-code-review",
+      "bucket": "A",
+      "attempts": 1,
+      "passed": 1,
+      "pass_pow_k": true,
+      "model_calls": 4,
+      "cost": 0.0036745600000000003,
+      "duration_seconds": 6.878232499999285,
+      "periods": [
+        [
+          "offpeak",
+          4
+        ]
+      ],
+      "judge_calls": 1,
+      "judge_cost": 0.00100668,
+      "judge_used": true,
+      "judge_unreliable": 1
+    }
+  ],
+  "cases": [
+    {
+      "task_id": "006-code-review",
+      "bucket": "A",
+      "repetition": 1,
+      "passed": true,
+      "verifier_detail": "验收通过；judge overall=1.00（阈值 0.70，通过）；⚠ 标注者 author-draft 尚未复核，κ 是草稿值",
+      "model_calls": 4,
+      "input_tokens": 3409,
+      "output_tokens": 536,
+      "cost": 0.0036745600000000003,
+      "duration_seconds": 6.878232499999285,
+      "periods": [
+        [
+          "offpeak",
+          4
+        ]
+      ],
+      "session_path": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261018T123909Z-5264236\\sessions\\006-code-review-r1\\20261018T123909Z_dd8d146b.jsonl",
+      "workspace": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261018T123909Z-5264236\\workspaces\\006-code-review-r1",
+      "error": null,
+      "harness": "codelotte",
+      "flagged": false,
+      "flag_reason": null,
+      "harness_version": "0.1.0",
+      "note": null,
+      "judge_calls": 1,
+      "judge_cost": 0.00100668,
+      "judge_input_tokens": 615,
+      "judge_output_tokens": 192,
+      "judge_used": true,
+      "judge_passed": true,
+      "judge_overall": 1.0,
+      "judge_scores": [
+        [
+          "correctness",
+          1.0
+        ],
+        [
+          "specificity",
+          1.0
+        ],
+        [
+          "clarity",
+          1.0
+        ]
+      ],
+      "judge_reasons": [
+        [
+          "correctness",
+          "Identifies `for i in range(n + 1):` as the bug and gives `for i in range(n):` as the fix."
+        ],
+        [
+          "specificity",
+          "Quotes the exact buggy line and explains both failure modes: n = 0 adds values[0], n = len(values) reads values[n] out of bounds."
+        ],
+        [
+          "clarity",
+          "Uses exactly the three requested sections, is concise, and does not modify bug.py."
+        ]
+      ],
+      "judge_error": null,
+      "judge_kappa": 1.0,
+      "judge_samples": 20,
+      "judge_reliable": false,
+      "judge_warning": "标注者 author-draft 尚未复核，κ 是草稿值"
+    }
+  ]
+}

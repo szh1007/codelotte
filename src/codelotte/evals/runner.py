@@ -22,6 +22,7 @@ from codelotte.cost import Catalog
 from codelotte.evals.eval_report import write_eval_report
 from codelotte.evals.execution import CodelotteHarness, execute_harness
 from codelotte.evals.harness_types import Harness
+from codelotte.evals.judge import JudgeContext
 from codelotte.evals.meta import (
     EvalRunMeta,
     now_iso,
@@ -49,6 +50,7 @@ async def run_harness_case(
     session_root: Path,
     repo_root: Path,
     snapshot_ref: str | None,
+    judge_context: JudgeContext | None = None,
 ) -> EvalCaseResult:
     """跑一条任务的一次重复；验收通过且没有运行错误才算 pass。"""
     execution = await execute_harness(
@@ -58,6 +60,7 @@ async def run_harness_case(
         session_root=session_root,
         repo_root=repo_root,
         snapshot_ref=snapshot_ref,
+        judge_context=judge_context,
     )
     return EvalCaseResult(
         task_id=task.id,
@@ -79,6 +82,20 @@ async def run_harness_case(
         flag_reason=execution.flag_reason,
         harness_version=execution.harness_version,
         note=execution.note,
+        judge_calls=execution.judge_calls,
+        judge_cost=execution.judge_cost,
+        judge_input_tokens=execution.judge_input_tokens,
+        judge_output_tokens=execution.judge_output_tokens,
+        judge_used=execution.judge_used,
+        judge_passed=execution.judge_passed,
+        judge_overall=execution.judge_overall,
+        judge_scores=execution.judge_scores,
+        judge_reasons=execution.judge_reasons,
+        judge_error=execution.judge_error,
+        judge_kappa=execution.judge_kappa,
+        judge_samples=execution.judge_samples,
+        judge_reliable=execution.judge_reliable,
+        judge_warning=execution.judge_warning,
     )
 
 
@@ -98,6 +115,7 @@ async def run_harness_suite(
     model: str | None = None,
     reasoning_effort: str = "",
     context_window: int = 0,
+    judge_context: JudgeContext | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[EvalRunMeta, list[EvalCaseResult]]:
     """跑完整一轮某个 harness 的测评并落报表。
@@ -138,6 +156,7 @@ async def run_harness_suite(
                 session_root=context.session_root,
                 repo_root=context.repo_root,
                 snapshot_ref=context.snapshot_refs.get(task.id),
+                judge_context=judge_context,
             )
             cases.append(result)
             if progress is not None:
@@ -201,6 +220,7 @@ async def run_eval_suite(
     command: str,
     progress: Callable[[str], None] | None = None,
     isolation: str = "unknown",
+    judge_context: JudgeContext | None = None,
 ) -> tuple[EvalRunMeta, list[EvalCaseResult]]:
     """跑完整一轮 codelotte 通用测评并落报表；返回元数据与全部案例。"""
 
@@ -229,5 +249,6 @@ async def run_eval_suite(
         model=model,
         reasoning_effort=reasoning_effort,
         context_window=context_window,
+        judge_context=judge_context,
         progress=progress,
     )

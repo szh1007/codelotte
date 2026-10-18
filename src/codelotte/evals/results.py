@@ -28,3 +28,18 @@ class EvalCaseResult:
     flag_reason: str | None = None
     harness_version: str | None = None
     note: str | None = None
+    judge_calls: int = 0
+    judge_cost: float = 0.0
+    judge_input_tokens: int = 0
+    judge_output_tokens: int = 0
+    # judge 路径被激活（含“声明了但缺 judge 模型”的失败）；实际调用数看 judge_calls
+    judge_used: bool = False
+    judge_passed: bool | None = None
+    judge_overall: float | None = None
+    judge_scores: tuple[tuple[str, float], ...] = ()
+    judge_reasons: tuple[tuple[str, str], ...] = ()
+    judge_error: str | None = None
+    judge_kappa: float | None = None
+    judge_samples: int | None = None
+    judge_reliable: bool | None = None
+    judge_warning: str | None = None

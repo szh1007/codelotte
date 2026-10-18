@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from codelotte.evals.eval_report import summarize_eval, write_eval_report
@@ -91,6 +92,36 @@ def test_summarize_eval_does_not_grant_pass_pow_k_when_a_case_is_missing() -> No
     (summary,) = summarize_eval([_case("a", 1, passed=True)], repetitions=3)
 
     assert summary.pass_pow_k is False
+
+
+def test_report_includes_judge_scores_reasons_and_kappa_warning(tmp_path: Path) -> None:
+    case = _case("a", 1, passed=True)
+    case = replace(
+        case,
+        judge_used=True,
+        judge_passed=True,
+        judge_overall=0.9,
+        judge_scores=(("correctness", 0.9),),
+        judge_reasons=(("correctness", "指出 bug"),),
+        judge_kappa=0.2,
+        judge_samples=20,
+        judge_reliable=False,
+        judge_warning="κ=0.20 < 阈值 0.60，judge 验收器不可靠",
+        judge_calls=1,
+        judge_cost=0.001,
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    write_eval_report(run_dir, _meta(), [case])
+
+    markdown = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "## LLM judge" in markdown
+    assert "overall 0.90" in markdown
+    assert "指出 bug" in markdown
+    assert "κ=0.20" in markdown
+    assert "⚠ 不可靠" in markdown
+    assert "judge" in markdown
 
 
 def test_write_eval_report_contains_failure_session_and_periods(tmp_path: Path) -> None:

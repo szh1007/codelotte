@@ -65,17 +65,34 @@ class Snapshot:
 
 
 @dataclass(frozen=True)
-class Verifier:
-    """确定性验收器：命令、工作区 Python 检查、文件期望，全部通过才算完成。
+class Judge:
+    """LLM 阅卷兜底：显式声明的评分卡 + 校准结果。
 
-    命令是"验收命令"（如 pytest / python check.py），在任务工作区执行；不接受
-    shell 字符串，TOML 里写成字符串数组，避免隐式 shell 解析。
+    只在任务写了 `[verifier.judge]` 时启用。确定性检查仍然先跑：确定性失败不会
+    调用 judge；确定性通过（或没有确定性检查）才让 judge 做最终判定。
+    `calibration` 是预先跑好的 κ 结果（仓库内相对路径）；`samples` 是人工标注
+    样本，供 `codelotte eval judge` 重新校准。
     """
+
+    dimensions: tuple[str, ...]
+    rubric: str
+    pass_threshold: float = 0.6
+    kappa_threshold: float = 0.6
+    calibration: str | None = None
+    samples: str | None = None
+    timeout_seconds: float = 60.0
+    max_submission_chars: int = 20_000
+
+
+@dataclass(frozen=True)
+class Verifier:
+    """验收器：确定性检查优先，可选的 LLM judge 兜底。"""
 
     files: tuple[FileExpectation, ...] = ()
     python: str | None = None
     command: tuple[str, ...] = ()
     command_timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS
+    judge: Judge | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +183,84 @@ def _setup(raw: Any, where: str) -> tuple[dict[str, str], Snapshot | None]:
     return files, snapshot
 
 
+def _repo_relative_path(
+    value: Any, field: str, where: str, *, suffix: str
+) -> str:
+    """judge 的校准/样本路径是仓库内相对路径（不是工作区文件）。"""
+    text = _nonempty_str(value, field, where)
+    path = Path(text)
+    if path.drive or path.is_absolute() or any(part == ".." for part in path.parts):
+        raise TaskFileError(f"{where} 的 {field} 必须是相对路径（给了 {text!r}）")
+    if path.suffix.lower() != suffix:
+        raise TaskFileError(f"{where} 的 {field} 必须是 {suffix} 文件（给了 {text!r}）")
+    return text
+
+
+def _threshold(value: Any, field: str, where: str, default: float) -> float:
+    number = default if value is None else value
+    if (
+        not isinstance(number, (int, float))
+        or isinstance(number, bool)
+        or not 0 <= float(number) <= 1
+    ):
+        raise TaskFileError(f"{where} 的 {field} 要在 0–1 之间（给了 {number!r}）")
+    return float(number)
+
+
+def _judge(raw: Any, where: str) -> Judge | None:
+    if raw is None:
+        return None
+    label = f"{where} 的 verifier.judge"
+    if not isinstance(raw, dict):
+        raise TaskFileError(f"{label} 应是对象")
+    dimensions_raw = _require(raw, "dimensions", label)
+    if not isinstance(dimensions_raw, list) or not dimensions_raw:
+        raise TaskFileError(f"{label} 的 dimensions 必须是非空数组")
+    dimensions: list[str] = []
+    for item in dimensions_raw:
+        dimension = _nonempty_str(item, "dimensions 的维度", label)
+        if dimension in dimensions:
+            raise TaskFileError(f"{label} 的 dimensions 不能重复：{dimension!r}")
+        dimensions.append(dimension)
+    rubric = _nonempty_str(_require(raw, "rubric", label), "rubric", label)
+    pass_threshold = _threshold(
+        raw.get("pass_threshold"), "pass_threshold", label, 0.6
+    )
+    kappa_threshold = _threshold(
+        raw.get("kappa_threshold"), "kappa_threshold", label, 0.6
+    )
+    calibration_raw = raw.get("calibration")
+    calibration = (
+        _repo_relative_path(calibration_raw, "calibration", label, suffix=".json")
+        if calibration_raw is not None
+        else None
+    )
+    samples_raw = raw.get("samples")
+    samples = (
+        _repo_relative_path(samples_raw, "samples", label, suffix=".jsonl")
+        if samples_raw is not None
+        else None
+    )
+    timeout = _positive_number(
+        raw.get("timeout_seconds"), "timeout_seconds", label, 60.0
+    )
+    max_chars = raw.get("max_submission_chars", 20_000)
+    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
+        raise TaskFileError(
+            f"{label} 的 max_submission_chars 要是正整数（给了 {max_chars!r}）"
+        )
+    return Judge(
+        dimensions=tuple(dimensions),
+        rubric=rubric,
+        pass_threshold=pass_threshold,
+        kappa_threshold=kappa_threshold,
+        calibration=calibration,
+        samples=samples,
+        timeout_seconds=timeout,
+        max_submission_chars=max_chars,
+    )
+
+
 def _file_expectation(raw: Any, where: str) -> FileExpectation:
     if not isinstance(raw, dict):
         raise TaskFileError(f"{where} 的 verifier.files 条目应是对象")
@@ -218,15 +313,18 @@ def _verifier(raw: Any, where: str) -> Verifier:
         DEFAULT_COMMAND_TIMEOUT_SECONDS,
     )
     files = tuple(_file_expectation(item, where) for item in entries)
-    if not files and python is None and not command:
+    judge = _judge(raw.get("judge"), where)
+    if not files and python is None and not command and judge is None:
         raise TaskFileError(
-            f"{where} 缺少 verifier：至少给 files 期望、python 检查或 command 命令"
+            f"{where} 缺少 verifier：至少给 files 期望、python 检查、command 命令"
+            " 或 [verifier.judge] 评分卡"
         )
     return Verifier(
         files=files,
         python=python,
         command=command,
         command_timeout=command_timeout,
+        judge=judge,
     )
 
 

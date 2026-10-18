@@ -29,6 +29,16 @@ from codelotte.config import (
 from codelotte.cost import Catalog, load_catalog
 from codelotte.evals.compare import run_comparison
 from codelotte.evals.execution import CodelotteHarness
+from codelotte.evals.judge import (
+    MIN_CALIBRATION_SAMPLES,
+    JudgeContext,
+    JudgeError,
+    calibrate,
+    judge_reliability,
+    load_calibration,
+    load_samples,
+    write_calibration,
+)
 from codelotte.evals.harnesses import (
     CheatingHarness,
     NoOpHarness,
@@ -394,6 +404,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="只校验任务/快照并打印自检计划，不写 run 目录",
+    )
+
+    judge_parser = eval_sub.add_parser(
+        "judge",
+        help="LLM judge 校准：≥20 条人工标注样本，算 Cohen's κ 并写校准文件",
+    )
+    judge_parser.add_argument(
+        "--tasks",
+        metavar="目录",
+        help="judge 任务目录（默认仓库根下的 evals/judge-tasks）",
+    )
+    judge_parser.add_argument(
+        "--task",
+        action="append",
+        metavar="ID",
+        help="只校准指定任务 id（可重复；默认全部声明了 judge 的任务）",
+    )
+    judge_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只校验样本数量/路径并打印计划，不调用模型、不写校准文件",
     )
     return parser
 
@@ -820,6 +851,15 @@ def _print_eval_task_plan(
         )
 
 
+def _judge_paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    """judge 校准的路径：仓库根与 judge 任务目录（默认 evals/judge-tasks）。"""
+    repo_root = find_repo_root(Path.cwd())
+    tasks_dir = (
+        Path(args.tasks) if args.tasks else repo_root / "evals" / "judge-tasks"
+    )
+    return repo_root, tasks_dir
+
+
 def _select_eval_tasks(
     tasks: Sequence[Task],
     *,
@@ -893,6 +933,109 @@ def _eval_runtime(
         run_id=make_run_id(current_git_ref(repo_root)),
         command="codelotte " + shlex.join(list(argv)),
         progress=progress,
+    )
+
+
+def _run_eval_judge(
+    args: argparse.Namespace, *, settings: Settings
+) -> int:
+    """用人工标注样本校准 LLM judge；写 calibration.json/.md 并报告 κ。"""
+    try:
+        repo_root, tasks_dir = _judge_paths(args)
+        tasks = load_tasks(tasks_dir)
+        if args.task:
+            selected = _select_eval_tasks(
+                tasks, task_ids=args.task, buckets=None
+            )
+        else:
+            selected = [task for task in tasks if task.verifier.judge is not None]
+        if not selected:
+            raise TaskFileError(
+                f"{tasks_dir} 里没有声明 [verifier.judge] 的任务；"
+                "judge 任务应放在 evals/judge-tasks"
+            )
+        missing = [task.id for task in selected if task.verifier.judge is None]
+        if missing:
+            raise TaskFileError(f"这些任务没有声明 judge：{missing}")
+        plans = []
+        for task in selected:
+            judge = task.verifier.judge
+            assert judge is not None
+            if judge.samples is None or judge.calibration is None:
+                raise TaskFileError(
+                    f"{task.id} 的 [verifier.judge] 缺少 samples 或 calibration 路径"
+                )
+            samples_path = (repo_root / judge.samples).resolve()
+            calibration_path = (repo_root / judge.calibration).resolve()
+            samples = load_samples(samples_path)
+            if len(samples) < MIN_CALIBRATION_SAMPLES:
+                raise JudgeError(
+                    f"{task.id} 的校准样本只有 {len(samples)} 条，"
+                    f"至少需要 {MIN_CALIBRATION_SAMPLES} 条"
+                )
+            plans.append((task, judge, samples, samples_path, calibration_path))
+        if args.dry_run:
+            print(f"任务目录：{tasks_dir}")
+            for task, judge, samples, samples_path, calibration_path in plans:
+                print(
+                    f"- {task.id}：{len(judge.dimensions)} 个维度，"
+                    f"{len(samples)} 条样本（{samples_path}）→ {calibration_path}"
+                )
+            print("dry-run：样本数量/路径校验通过，未调用模型、未写校准文件。")
+            return 0
+        catalog = load_catalog()
+        spec = resolve(settings, catalog)
+        context = JudgeContext(
+            client_factory=lambda: _client_from_spec(spec),
+            model=spec.id,
+            catalog=catalog,
+        )
+
+        def progress(line: str) -> None:
+            print(f"[judge] {line}", file=sys.stderr, flush=True)
+
+        all_reliable = True
+        for task, judge, samples, samples_path, calibration_path in plans:
+            print(f"[judge] == {task.id} ==", file=sys.stderr, flush=True)
+            run = asyncio.run(
+                calibrate(
+                    context,
+                    instruction=task.instruction,
+                    judge=judge,
+                    samples=samples,
+                    progress=progress,
+                )
+            )
+            write_calibration(
+                calibration_path,
+                task_id=task.id,
+                instruction=task.instruction,
+                judge=judge,
+                run=run,
+                labels_path=samples_path,
+            )
+            calibration = load_calibration(calibration_path)
+            reliable, warning = judge_reliability(judge, calibration)
+            all_reliable = all_reliable and reliable
+            kappa = "—" if run.kappa is None else f"{run.kappa:.3f}"
+            print(
+                f"[judge] {task.id}：κ={kappa}，一致率={run.agreement:.1%}，"
+                f"样本={run.samples}，成本=¥{run.cost:.6f}；"
+                f"{'✅ 可靠' if reliable else '⚠ ' + (warning or '不可靠')}",
+                file=sys.stderr,
+            )
+            print(calibration_path)
+        return 0 if all_reliable else 1
+    except (TaskFileError, ConfigError, JudgeError, ValueError, OSError) as exc:
+        return _fail(exc)
+
+
+def _judge_context(runtime: _EvalRuntime) -> JudgeContext:
+    """评测运行共用的 judge 资源（与 agent 同模型，独立 client 实例）。"""
+    return JudgeContext(
+        client_factory=lambda: _client_from_spec(runtime.spec),
+        model=runtime.spec.id,
+        catalog=runtime.catalog,
     )
 
 
@@ -982,6 +1125,7 @@ def _run_eval_run(
             print("dry-run：任务文件与快照 ref 校验通过，未调用模型、未创建 run 目录。")
             return 0
         runtime = _eval_runtime(args, settings=settings, argv=argv, repo_root=repo_root)
+        judge_context = _judge_context(runtime)
         meta, cases = asyncio.run(
             run_eval_suite(
                 tasks,
@@ -1001,6 +1145,7 @@ def _run_eval_run(
                 command=runtime.command,
                 progress=runtime.progress,
                 isolation=runtime.isolation,
+                judge_context=judge_context,
             )
         )
     except (TaskFileError, ConfigError, ValueError, OSError) as exc:
@@ -1050,6 +1195,7 @@ def _run_eval_compare(
             return 0
         runtime = _eval_runtime(args, settings=settings, argv=argv, repo_root=repo_root)
         run_dir = create_run_dir(out_dir, runtime.run_id + "-compare")
+        judge_context = _judge_context(runtime)
 
         def codelotte_factory() -> CodelotteHarness:
             return CodelotteHarness(
@@ -1099,6 +1245,7 @@ def _run_eval_compare(
                 reasoning_effort=runtime.spec.reasoning_effort,
                 context_window=runtime.spec.context_window,
                 currency=runtime.catalog.currency,
+                judge_context=judge_context,
                 progress=runtime.progress,
             )
         )
@@ -1122,6 +1269,16 @@ def _run_eval_controls(
         tasks = _select_eval_tasks(
             load_tasks(tasks_dir), task_ids=args.task, buckets=args.bucket
         )
+        judge_tasks = [task.id for task in tasks if task.verifier.judge is not None]
+        if judge_tasks:
+            print(
+                "提示：控制组不调用模型，跳过 judge 任务："
+                + ", ".join(judge_tasks),
+                file=sys.stderr,
+            )
+            tasks = [task for task in tasks if task.verifier.judge is None]
+            if not tasks:
+                raise ConfigError("筛选后只剩 judge 任务；控制 agent 自检不调用模型")
         snapshot_refs = resolve_task_snapshots(tasks, repo_root)
         if args.dry_run:
             print(f"任务目录：{tasks_dir}")
@@ -1207,9 +1364,12 @@ def main(argv: list[str] | None = None) -> int:
                 args,
                 argv=list(argv) if argv is not None else sys.argv[1:],
             )
+        if eval_command == "judge":
+            return _run_eval_judge(args, settings=settings)
         parser.error(
-            "用法：codelotte eval {compaction,run,compare,controls} …；"
-            "compaction 跑压缩回归，run 跑通用测评，compare 跑对照组，controls 跑控制 agent 自检"
+            "用法：codelotte eval {compaction,run,compare,controls,judge} …；"
+            "compaction 跑压缩回归，run 跑通用测评，compare 跑对照组，"
+            "controls 跑控制 agent 自检，judge 校准 LLM judge"
         )
     if args.command == "export":
         return _run_export(args)

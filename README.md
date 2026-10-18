@@ -97,6 +97,24 @@ All tasks are complete: bug fixed, check passes, notes.txt written.
   ——oracle 5/5、no-op 0/5、cheating 0/5 且 5/5 被标记。
 - 操作手册：[evals/run.md](evals/run.md) §4.5 / §4.6。
 
+### LLM judge 兜底 + κ 校准（2026-10-18）
+
+标准答案不好写的任务，用评分卡让模型阅卷；但先证明阅卷人靠谱：
+
+- **校准**：20 条作者草拟样本（`author-draft`），Cohen's κ = **1.000**，一致率 100%，
+  成本 ¥0.033613。因为标注尚未复核，**报表把这次校准标为 ⚠ 草稿值**。
+- **真实 judge 任务**：`006-code-review` 一次通过，judge overall **1.00**（阈值 0.70），
+  4 次模型调用（3 agent + 1 judge），¥0.003675；报表同时显示“草稿标注”警告。
+- **纪律**：确定性检查先跑；确定性失败不调用 judge；judge 只在任务显式声明
+  `[verifier.judge]` 时启用。κ 低于阈值、样本 <20、校准缺失或标注为 `draft`
+  都会在报表标 ⚠。
+- **不证明什么**：样本刻意清晰，κ=1.0 有天花板效应；作者复核标注后应把
+  `labeler` 改成真实标注者并重跑，同时加入 borderline 样本。
+
+- 校准报告：[evals/judges/006-code-review/calibration.md](evals/judges/006-code-review/calibration.md)
+- judge 跑数：[evals/runs/20261018T123909Z-5264236/report.md](evals/runs/20261018T123909Z-5264236/report.md)
+- 操作手册：[evals/run.md](evals/run.md) §4.7
+
 ## 架构
 
 ```mermaid
@@ -202,7 +220,7 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 23 张曳光弹票据与状态 |
-| [evals/run.md](evals/run.md) | 通用测评、对照组（`eval compare`）、控制 agent 自检、任务格式、pass^k、CI 冒烟 |
+| [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、任务格式、pass^k、CI 冒烟 |
 | [evals/compaction.md](evals/compaction.md) | 专用测评 - 压缩回归 v0：机制、评分、基线、人工标注 |
 | [evals/record.md](evals/record.md) | 评测跑数记录：索引、目录约定、已入库基线 |
 | [docs/tech/configuration.md](docs/tech/configuration.md) | 配置取值链与每个设置项 |
@@ -218,9 +236,12 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 作者后续补充）；票据 15 交付通用测评（`codelotte eval run`、`pass^k`、仓库快照、每任务成本/时段）
 与 B 桶 CI 冒烟，CI 已全绿。票据 16 交付对照组（`codelotte eval compare`：codelotte /
 mini-swe-agent / 裸单轮 API）与控制 agent 自检（`codelotte eval controls`），三组对照与
-oracle/no-op/cheating 均已真实跑通。票据 17–23 覆盖失败归因、E1–E5 实验与最终材料包。
+oracle/no-op/cheating 均已真实跑通。票据 17 交付 LLM judge 兜底与 κ 校准
+（`codelotte eval judge`；确定性检查优先，judge 仅在 `[verifier.judge]` 声明时启用；
+20 条 `author-draft` 样本 κ=1.000，真实 judge 任务通过）。票据 18–23 覆盖失败归因、
+E1–E5 实验与最终材料包。
 
-当前工作树的工程检查：`498 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
+当前工作树的工程检查：`528 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。

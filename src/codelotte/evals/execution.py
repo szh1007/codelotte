@@ -19,6 +19,15 @@ from codelotte import __version__
 from codelotte.compaction import CompactionLimits, CompactionPolicy
 from codelotte.cost import Catalog
 from codelotte.evals.harness_types import Harness, HarnessExecution
+from codelotte.evals.judge import (
+    JudgeContext,
+    JudgeError,
+    build_submission,
+    file_sha256,
+    judge_reliability,
+    load_calibration,
+    run_judge_submission,
+)
 from codelotte.evals.tasks import Task
 from codelotte.evals.workspace import (
     capture_unchanged_baseline,
@@ -75,6 +84,22 @@ class TaskExecution:
     flag_reason: str | None = None
     harness_version: str | None = None
     note: str | None = None
+    # 票据 17：judge 的成本/分数/理由与 κ 可靠性（未声明 judge 或未运行时全为 0/None）
+    judge_calls: int = 0
+    judge_cost: float = 0.0
+    judge_input_tokens: int = 0
+    judge_output_tokens: int = 0
+    # judge 路径被激活（含“声明了但缺 judge 模型”的失败）；实际调用数看 judge_calls
+    judge_used: bool = False
+    judge_passed: bool | None = None
+    judge_overall: float | None = None
+    judge_scores: tuple[tuple[str, float], ...] = ()
+    judge_reasons: tuple[tuple[str, str], ...] = ()
+    judge_error: str | None = None
+    judge_kappa: float | None = None
+    judge_samples: int | None = None
+    judge_reliable: bool | None = None
+    judge_warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,8 +211,9 @@ async def execute_harness(
     session_root: Path,
     repo_root: Path | None,
     snapshot_ref: str | None,
+    judge_context: JudgeContext | None = None,
 ) -> TaskExecution:
-    """所有 harness 共用的执行管线：准备 → 跑 → 验收 → 保护文件检查。"""
+    """所有 harness 共用的执行管线：准备 → 跑 → 确定性验收 → judge → 保护文件检查。"""
     started = time.monotonic()
     # 必须在 chdir 之前把路径钉成绝对路径：否则相对 --out 会在工作区里长出
     # sessions/（既污染被测环境，又让报表里的顶层 sessions/ 为空）。
@@ -248,6 +274,23 @@ async def execute_harness(
                 )
                 newest = new_files[0]
             session_path = str(newest)
+    judge_calls = 0
+    judge_cost = 0.0
+    judge_input_tokens = 0
+    judge_output_tokens = 0
+    judge_used = False
+    judge_passed: bool | None = None
+    judge_overall: float | None = None
+    judge_scores: tuple[tuple[str, float], ...] = ()
+    judge_reasons: tuple[tuple[str, str], ...] = ()
+    judge_error: str | None = None
+    judge_kappa: float | None = None
+    judge_samples: int | None = None
+    judge_reliable: bool | None = None
+    judge_warning: str | None = None
+    total_calls = execution.model_calls
+    total_cost = execution.cost
+    periods = dict(execution.periods)
     if prepared:
         try:
             completed, detail = verify(
@@ -256,6 +299,81 @@ async def execute_harness(
         except Exception as exc:  # 验收器自身异常（编码/权限等）也要落成 case error
             logger.exception("验收异常：%s", task.id)
             completed, detail = False, f"验收异常：{type(exc).__name__}: {exc}"
+        # 确定性优先：只有确定性检查通过（或本来就没有确定性检查）且 agent 没报错，
+        # 才让 judge 做最终判定；确定性失败时绝不调用 judge。
+        if (
+            completed
+            and error is None
+            and task.verifier.judge is not None
+        ):
+            judge = task.verifier.judge
+            judge_used = True
+            calibration = None
+            if judge.calibration is not None:
+                calibration_path = (repo_root or Path.cwd()) / judge.calibration
+                try:
+                    calibration = load_calibration(calibration_path)
+                except JudgeError as exc:
+                    judge_warning = str(exc)
+            labels_sha256 = None
+            if judge.samples is not None:
+                labels_sha256 = file_sha256(
+                    (repo_root or Path.cwd()) / judge.samples
+                )
+            reliable, warning = judge_reliability(
+                judge,
+                calibration,
+                task_id=task.id,
+                instruction=task.instruction,
+                model=judge_context.model if judge_context is not None else None,
+                labels_sha256=labels_sha256,
+            )
+            judge_reliable = reliable
+            if judge_warning is None:
+                judge_warning = warning
+            if calibration is not None:
+                judge_kappa = calibration.kappa
+                judge_samples = calibration.samples
+            if judge_context is None:
+                judge_error = "任务声明了 judge，但本次运行没有配置 judge 模型"
+                completed = False
+                detail = f"{detail}；{judge_error}"
+            else:
+                submission = build_submission(
+                    workspace, max_chars=judge.max_submission_chars
+                )
+                judge_run = await run_judge_submission(
+                    judge_context,
+                    instruction=task.instruction,
+                    judge=judge,
+                    submission=submission,
+                    deterministic_detail=detail,
+                )
+                judge_calls = judge_run.calls
+                judge_cost = judge_run.cost
+                judge_input_tokens = judge_run.input_tokens
+                judge_output_tokens = judge_run.output_tokens
+                total_calls += judge_run.calls
+                total_cost += judge_run.cost
+                if judge_run.period is not None:
+                    periods[judge_run.period] = periods.get(judge_run.period, 0) + 1
+                judge_passed = judge_run.passed
+                judge_overall = judge_run.overall
+                judge_scores = judge_run.scores
+                judge_reasons = judge_run.reasons
+                judge_error = judge_run.error
+                if judge_run.error is not None:
+                    completed = False
+                    detail = f"{detail}；judge 失败：{judge_run.error}"
+                else:
+                    completed = bool(judge_run.passed)
+                    outcome = "通过" if completed else "未通过"
+                    detail = (
+                        f"{detail}；judge overall={judge_run.overall:.2f}"
+                        f"（阈值 {judge.pass_threshold:.2f}，{outcome}）"
+                    )
+                if judge_warning:
+                    detail = f"{detail}；⚠ {judge_warning}"
         tampered = tampered_paths(task, workspace, unchanged_baseline)
     else:
         completed, detail = False, "工作区准备失败"
@@ -266,22 +384,36 @@ async def execute_harness(
         completed=completed,
         verifier_detail=detail,
         compactions=execution.compactions,
-        model_calls=execution.model_calls,
+        model_calls=total_calls,
         input_tokens=execution.input_tokens,
         output_tokens=execution.output_tokens,
         probe_input_tokens=execution.probe_input_tokens,
         probe_output_tokens=execution.probe_output_tokens,
-        cost=execution.cost,
+        cost=total_cost,
         probe_cost=execution.probe_cost,
         duration_seconds=time.monotonic() - started,
         session_path=session_path,
         workspace=str(workspace),
-        periods=execution.periods,
+        periods=tuple(sorted(periods.items())),
         error=error,
         flagged=bool(tampered),
         flag_reason=("保护文件被改动：" + "、".join(tampered)) if tampered else None,
         harness_version=execution.harness_version,
         note=execution.note,
+        judge_calls=judge_calls,
+        judge_cost=judge_cost,
+        judge_input_tokens=judge_input_tokens,
+        judge_output_tokens=judge_output_tokens,
+        judge_used=judge_used,
+        judge_passed=judge_passed,
+        judge_overall=judge_overall,
+        judge_scores=judge_scores,
+        judge_reasons=judge_reasons,
+        judge_error=judge_error,
+        judge_kappa=judge_kappa,
+        judge_samples=judge_samples,
+        judge_reliable=judge_reliable,
+        judge_warning=judge_warning,
     )
 
 
@@ -301,11 +433,13 @@ async def execute_task(
     compaction_limits: CompactionLimits | None = None,
     guardrail_limits: GuardrailLimits | None = None,
     on_compaction: CompactionObserver | None = None,
+    judge_context: JudgeContext | None = None,
 ) -> TaskExecution:
     """跑一条 codelotte 任务的一次案例（压缩回归与通用测评的兼容入口）。
 
     `compaction_policy=None` 用生产默认策略；压缩回归传入 forced_policy(k)。
     `on_compaction` 只在需要压缩后探针（票据 13）时传入，通用测评 不传。
+    `judge_context` 只在任务声明了 `[verifier.judge]` 时才会被使用。
     """
     harness = CodelotteHarness(
         client=client,
@@ -325,4 +459,5 @@ async def execute_task(
         session_root=session_root,
         repo_root=repo_root,
         snapshot_ref=snapshot_ref,
+        judge_context=judge_context,
     )

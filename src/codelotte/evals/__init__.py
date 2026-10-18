@@ -7,6 +7,7 @@
 from codelotte.evals.tasks import (
     Checkpoint,
     FileExpectation,
+    Judge,
     Snapshot,
     Task,
     TaskFileError,
@@ -18,6 +19,7 @@ from codelotte.evals.tasks import (
 __all__ = [
     "Checkpoint",
     "FileExpectation",
+    "Judge",
     "Snapshot",
     "Task",
     "TaskFileError",

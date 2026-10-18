@@ -15,6 +15,7 @@ from pathlib import Path
 
 from codelotte.cost import format_money
 from codelotte.evals.eval_report import TaskSummary, summarize_eval
+from codelotte.evals.judge import JudgeContext
 from codelotte.evals.meta import EvalRunMeta
 from codelotte.evals.report_utils import dirty_text, rate, relative, short
 from codelotte.evals.results import EvalCaseResult
@@ -140,6 +141,7 @@ async def run_comparison(
     reasoning_effort: str,
     context_window: int,
     currency: str = "CNY",
+    judge_context: JudgeContext | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[list[HarnessRun], list[ControlCheck] | None]:
     """依次跑多组 harness，父目录落任务级并列对比；控制组返回自检结论。"""
@@ -165,6 +167,7 @@ async def run_comparison(
             model=model,
             reasoning_effort=reasoning_effort,
             context_window=context_window,
+            judge_context=judge_context,
             progress=progress,
         )
         runs.append(
@@ -388,6 +391,8 @@ def _limits_section(mode: str) -> list[str]:
             "因此 mini-swe-agent 可能用 bash 完成要求 read/write 的任务，读表时不要把它当成同一策略。",
             "- codelotte 的隔离方式看各组 `report.md` 的 meta（Docker / local）；"
             "对照组默认跟随 `--no-sandbox` 设置，做耗时对比时请让两组使用同一种隔离。",
+            "- 任务声明了 `[verifier.judge]` 时，judge 成本计入该组总成本；"
+            "分数/理由/κ 见每组明细报表的“LLM judge”段。",
         ]
     )
     lines.append("")

@@ -36,6 +36,10 @@ class TaskSummary:
     cost: float
     duration_seconds: float
     periods: tuple[tuple[str, int], ...]
+    judge_calls: int = 0
+    judge_cost: float = 0.0
+    judge_used: bool = False
+    judge_unreliable: int = 0
 
     @property
     def pass_rate(self) -> float:
@@ -73,6 +77,14 @@ def summarize_eval(
                 cost=sum(case.cost for case in group),
                 duration_seconds=sum(case.duration_seconds for case in group),
                 periods=_merge_periods(group),
+                judge_calls=sum(case.judge_calls for case in group),
+                judge_cost=sum(case.judge_cost for case in group),
+                judge_used=any(case.judge_used for case in group),
+                judge_unreliable=sum(
+                    1
+                    for case in group
+                    if case.judge_used and case.judge_reliable is False
+                ),
             )
         )
     return summaries
@@ -122,13 +134,22 @@ def _task_meta_table(meta: EvalRunMeta) -> list[str]:
     return lines
 
 
+def _judge_summary(summary: TaskSummary, currency: str) -> str:
+    if not summary.judge_used:
+        return "—"
+    text = f"{summary.judge_calls} 次 / {format_money(summary.judge_cost, currency)}"
+    if summary.judge_unreliable:
+        text += " ⚠"
+    return text
+
+
 def _summary_table(
     summaries: Sequence[TaskSummary], repetitions: int, currency: str
 ) -> list[str]:
     lines = [
         f"| 任务 | 桶 | 尝试 | 通过 | 成功率 | pass^{repetitions} | "
-        "模型调用 | 总成本 | 平均耗时 | 计费时段 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "模型调用 | 总成本 | judge | 平均耗时 | 计费时段 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for summary in summaries:
         mean_duration = (
@@ -139,15 +160,29 @@ def _summary_table(
             f"| {summary.task_id} | {summary.bucket} | {summary.attempts} | "
             f"{summary.passed} | {_rate(summary.passed, summary.attempts)} | {mark} | "
             f"{summary.model_calls} | {format_money(summary.cost, currency)} | "
+            f"{_judge_summary(summary, currency)} | "
             f"{mean_duration:.1f}s | {_periods_text(summary.periods)} |"
         )
     return lines
 
 
+def _judge_case_cell(case: EvalCaseResult) -> str:
+    if not case.judge_used:
+        return "—"
+    if case.judge_error is not None:
+        text = "❌ 失败"
+    else:
+        mark = "✅" if case.judge_passed else "❌"
+        text = f"{case.judge_overall:.2f} {mark}" if case.judge_overall is not None else mark
+    if case.judge_reliable is False:
+        text += " ⚠"
+    return text
+
+
 def _case_table(cases: Sequence[EvalCaseResult], run_dir: Path, currency: str) -> list[str]:
     lines = [
-        "| 任务 | 重复 | 通过 | 标记 | 验收 / 错误 | 模型调用 | 成本 | 耗时 | 计费时段 | 轨迹 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| 任务 | 重复 | 通过 | 标记 | 验收 / 错误 | judge | 模型调用 | 成本 | 耗时 | 计费时段 | 轨迹 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for case in cases:
         mark = "✅" if case.passed else "❌"
@@ -155,10 +190,49 @@ def _case_table(cases: Sequence[EvalCaseResult], run_dir: Path, currency: str) -
         session = _relative(case.session_path, run_dir)
         lines.append(
             f"| {case.task_id} | r{case.repetition} | {mark} | {flagged} | "
-            f"{_short(_case_detail(case))} | {case.model_calls} | "
-            f"{format_money(case.cost, currency)} | {case.duration_seconds:.1f}s | "
-            f"{_periods_text(case.periods)} | `{session}` |"
+            f"{_short(_case_detail(case))} | {_judge_case_cell(case)} | "
+            f"{case.model_calls} | {format_money(case.cost, currency)} | "
+            f"{case.duration_seconds:.1f}s | {_periods_text(case.periods)} | "
+            f"`{session}` |"
         )
+    return lines
+
+
+def _judge_section(cases: Sequence[EvalCaseResult]) -> list[str]:
+    used = [case for case in cases if case.judge_used]
+    lines = ["## LLM judge", ""]
+    if not used:
+        lines.append(
+            "无（没有任务声明 `[verifier.judge]`，或确定性检查先失败；确定性验收优先）。"
+        )
+        lines.append("")
+        return lines
+    for case in used:
+        if case.judge_error is not None:
+            lines.append(
+                f"- `{case.task_id}` r{case.repetition}：judge 失败：{case.judge_error}"
+            )
+        else:
+            mark = "通过" if case.judge_passed else "未通过"
+            kappa = (
+                f"κ={case.judge_kappa:.2f}（{case.judge_samples} 样本）"
+                if case.judge_kappa is not None
+                else "κ 缺失"
+            )
+            reliable = "✅ 可靠" if case.judge_reliable else "⚠ 不可靠"
+            overall = (
+                f"{case.judge_overall:.2f}" if case.judge_overall is not None else "—"
+            )
+            lines.append(
+                f"- `{case.task_id}` r{case.repetition}：overall {overall}（{mark}）；"
+                f"{kappa}；{reliable}"
+            )
+        if case.judge_warning:
+            lines.append(f"  - ⚠ {case.judge_warning}")
+        for dimension, score in case.judge_scores:
+            reason = dict(case.judge_reasons).get(dimension, "")
+            lines.append(f"  - {dimension} {score:.2f}：{reason}")
+    lines.append("")
     return lines
 
 
@@ -224,13 +298,17 @@ def render_eval_markdown(
         "",
         *_case_table(cases, run_dir, meta.currency),
         "",
+        *_judge_section(cases),
         *_failure_section(cases, run_dir),
         "## 口径",
         "",
         "- 任务由 TOML 定义：`id` / `bucket` / `instruction` / `setup`（初始文件或仓库快照）/ "
         "`verifier` / 预算；任务文件是可信输入。",
-        "- 验收阶梯：命令式检查（command / python / 文件比对）优先；"
-        "LLM judge 尚未实现（票据 17），未声明 judge 的任务不会走 judge。",
+        "- 验收阶梯：命令式检查（command / python / 文件比对）先跑；只有任务显式声明 "
+        "`[verifier.judge]` 且确定性检查通过时才调用 judge，确定性失败不会调用 judge。",
+        "- judge 的分数/理由/κ 在本报表的“LLM judge”段；judge 成本计入总成本。"
+        "κ 低于任务阈值、样本 <20、校准缺失或标注者为草稿都会标 ⚠，"
+        "但不会静默丢弃分数。",
         "- 仓库快照在开跑前解析成 commit SHA 并写进上表；同一轮所有重复使用同一个快照。",
         "- 原始轨迹在 `sessions/`，最终工作区在 `workspaces/`；"
         "失败案例的会话路径见上表与失败案例段。",

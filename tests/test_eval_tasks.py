@@ -92,6 +92,77 @@ command_timeout = 5
     assert task.setup == {}
 
 
+def test_parses_a_judge_only_verifier(tmp_path: Path) -> None:
+    path = tmp_path / "judge.toml"
+    path.write_text(
+        """
+id = "judge"
+bucket = "A"
+instruction = "写 review.md"
+[setup.files]
+"bug.py" = "x"
+[verifier.judge]
+dimensions = ["correctness", "clarity"]
+rubric = "correctness: 指出 bug；clarity: 结构清晰"
+pass_threshold = 0.7
+kappa_threshold = 0.6
+calibration = "evals/judges/judge/calibration.json"
+samples = "evals/judges/judge/samples.jsonl"
+""",
+        encoding="utf-8",
+    )
+
+    task = load_task(path)
+
+    assert task.verifier.files == ()
+    assert task.verifier.judge is not None
+    assert task.verifier.judge.dimensions == ("correctness", "clarity")
+    assert task.verifier.judge.pass_threshold == 0.7
+    assert task.verifier.judge.kappa_threshold == 0.6
+    assert task.verifier.judge.calibration == "evals/judges/judge/calibration.json"
+    assert task.verifier.judge.samples == "evals/judges/judge/samples.jsonl"
+
+
+def test_rejects_a_judge_without_dimensions(tmp_path: Path) -> None:
+    path = tmp_path / "judge.toml"
+    path.write_text(
+        """
+id = "judge"
+bucket = "A"
+instruction = "x"
+[setup.files]
+"a.txt" = "a"
+[verifier.judge]
+rubric = "x"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskFileError, match="dimensions"):
+        load_task(path)
+
+
+def test_rejects_a_judge_calibration_path_that_escapes_the_repo(tmp_path: Path) -> None:
+    path = tmp_path / "judge.toml"
+    path.write_text(
+        """
+id = "judge"
+bucket = "A"
+instruction = "x"
+[setup.files]
+"a.txt" = "a"
+[verifier.judge]
+dimensions = ["correctness"]
+rubric = "x"
+calibration = "../escape.json"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskFileError, match="相对路径"):
+        load_task(path)
+
+
 def test_parses_control_oracle_files(tmp_path: Path) -> None:
     path = tmp_path / "oracle.toml"
     path.write_text(

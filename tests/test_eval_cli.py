@@ -350,6 +350,176 @@ def test_eval_run_bucket_filter_only_prints_the_selected_bucket(tmp_path: Path) 
     assert "001-audit-report" not in result.stdout
 
 
+def _write_judge_task(directory: Path, *, samples: int = 20) -> Path:
+    directory.mkdir()
+    labels = directory / "samples.jsonl"
+    labels.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "id": f"s{index:02d}",
+                    "submission": f"sample {index}",
+                    "human_pass": index < samples // 2,
+                    "labeler": "author-draft",
+                }
+            )
+            for index in range(samples)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (directory / "calibration.json").write_text("{}\n", encoding="utf-8")
+    (directory / "judge.toml").write_text(
+        """
+id = "judge-task"
+bucket = "A"
+instruction = "写 out.txt，并说明理由"
+[setup.files]
+"in.txt" = "x\\n"
+[verifier]
+[[verifier.files]]
+path = "out.txt"
+equals = "hello\\n"
+[verifier.judge]
+dimensions = ["correctness"]
+rubric = "correctness: 内容正确"
+pass_threshold = 0.6
+samples = "tasks/samples.jsonl"
+calibration = "tasks/calibration.json"
+""",
+        encoding="utf-8",
+    )
+    return directory
+
+
+def test_eval_judge_dry_run_validates_the_sample_count(tmp_path: Path) -> None:
+    tasks_dir = _write_judge_task(tmp_path / "tasks")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = run_cli(
+        "eval",
+        "judge",
+        "--dry-run",
+        "--tasks",
+        str(tasks_dir),
+        cwd=tmp_path,
+        env=home_env(home),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "20 条样本" in result.stdout
+    assert "dry-run" in result.stdout
+
+
+def test_eval_judge_dry_run_rejects_fewer_than_twenty_samples(tmp_path: Path) -> None:
+    tasks_dir = _write_judge_task(tmp_path / "tasks", samples=19)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = run_cli(
+        "eval",
+        "judge",
+        "--dry-run",
+        "--tasks",
+        str(tasks_dir),
+        cwd=tmp_path,
+        env=home_env(home),
+    )
+
+    assert result.returncode == 2
+    assert "20" in result.stderr
+
+
+def _serve_judge_turns() -> tuple[ThreadingHTTPServer, list[dict[str, Any]]]:
+    received: list[dict[str, Any]] = []
+    agent_responses = [
+        _tool_turn("write", {"path": "out.txt", "content": "hello\n"}, "call_write"),
+        _text_turn("done"),
+    ]
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            received.append(body)
+            if "tools" in body:
+                index = sum(1 for item in received[:-1] if "tools" in item)
+                payload = agent_responses[min(index, len(agent_responses) - 1)]
+            else:
+                payload = _text_turn(
+                    json.dumps(
+                        {
+                            "scores": {"correctness": 0.9},
+                            "reasons": {"correctness": "内容正确"},
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, received
+
+
+def test_eval_run_runs_a_declared_judge_and_reports_its_scores(
+    tmp_path: Path,
+) -> None:
+    tasks_dir = _write_judge_task(tmp_path / "tasks")
+    server, received = _serve_judge_turns()
+    port = server.server_address[1]
+    try:
+        home = write_user_config(
+            tmp_path / "home", base_url=f"http://127.0.0.1:{port}", api_key="test-key"
+        )
+        out = tmp_path / "runs"
+        result = run_cli(
+            "eval",
+            "run",
+            "--task",
+            "judge-task",
+            "--repeat",
+            "1",
+            "--tasks",
+            str(tasks_dir),
+            "--out",
+            str(out),
+            "--no-sandbox",
+            cwd=tmp_path,
+            env=home_env(home),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    report_path = Path(result.stdout.strip())
+    markdown = report_path.read_text(encoding="utf-8")
+    assert "## LLM judge" in markdown
+    assert "overall 0.90" in markdown
+    assert "内容正确" in markdown
+    assert "⚠ 不可靠" in markdown  # 没有真实校准文件
+    data = json.loads((report_path.parent / "report.json").read_text(encoding="utf-8"))
+    case = data["cases"][0]
+    assert case["judge_used"] is True
+    assert case["judge_passed"] is True
+    assert case["judge_overall"] == 0.9
+    assert case["judge_calls"] == 1
+    assert case["judge_reliable"] is False
+    assert case["model_calls"] == 3
+    # 三次请求：两次 agent（带 tools）+ 一次 judge（不带 tools）
+    assert sum(1 for body in received if "tools" in body) == 2
+    assert sum(1 for body in received if "tools" not in body) == 1
+
+
 def test_eval_controls_self_check_passes_without_a_model(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

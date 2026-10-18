@@ -1,0 +1,59 @@
+# LLM judge 任务（票据 17）：答案没有唯一字符串，靠评分卡判“解释是否真的对”。
+# 放在单独目录：eval controls 必须离线零成本，不会加载这里的 judge 任务。
+# 确定性检查只确认 review.md 引用了 buggy 行；真正的质量判定由 judge 做。
+
+id = "006-code-review"
+bucket = "A"
+timeout_seconds = 300
+max_model_calls = 20
+
+instruction = """
+Read bug.py. Write review.md with exactly three second-level sections:
+
+## Bug
+## Why
+## Fix
+
+Requirements:
+- In ## Bug, quote the exact buggy line from bug.py.
+- In ## Why, explain why it fails when n = 0 and when n = len(values).
+- In ## Fix, write the corrected loop line exactly.
+Do not modify bug.py. Be concise.
+"""
+
+[setup.files]
+"bug.py" = """def sum_first_n(values, n):
+    total = 0
+    for i in range(n + 1):
+        total += values[i]
+    return total
+"""
+
+[verifier]
+# 确定性兜底：连错误行都没引用，就不麻烦 judge 了
+[[verifier.files]]
+path = "review.md"
+contains = "range(n + 1)"
+[[verifier.files]]
+path = "bug.py"
+unchanged = true
+
+[verifier.judge]
+dimensions = ["correctness", "specificity", "clarity"]
+pass_threshold = 0.7
+kappa_threshold = 0.6
+samples = "evals/judges/006-code-review/samples.jsonl"
+calibration = "evals/judges/006-code-review/calibration.json"
+rubric = """
+Score each dimension from 0.0 to 1.0:
+
+- correctness: 1.0 if the review identifies `for i in range(n + 1):` as the bug
+  and gives `for i in range(n):` as the fix. 0.0 if the bug or fix is wrong.
+- specificity: 1.0 if it quotes the exact buggy line and explains both failure
+  modes (n = 0 adds values[0]; n = len(values) reads past the end). 0.0 if it
+  only says "off-by-one" without evidence.
+- clarity: 1.0 if it uses exactly the three requested sections and is concise.
+  0.0 if sections are missing or the answer rambles. Partial credit is allowed.
+
+Judge the submission against this rubric only. Do not reward extra prose.
+"""
