@@ -34,6 +34,8 @@ markers = [
 
 [tool.ruff]
 line-length = 120
+# 跑数目录里的 workspaces/sessions 是被测 agent 的产物（可能故意写坏），不是本项目源码
+extend-exclude = ["evals/runs"]
 
 [tool.ruff.lint]
 # 显式启用 E501 行宽检查：ruff 默认规则集不含 E501，

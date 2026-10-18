@@ -27,3 +27,11 @@ _Avoid_: 用 turn 指 run（本仓库的 turn 专指模型轮次）
 **Turn（模型轮次）**:
 一次 assistant 回复及其声明的 tool calls / tool results；收集结构是 `_ModelTurn`。一个 run 包含一到多个 turn。
 _Avoid_: 把 turn 当作“一次用户提问到回答”（那是 run）
+
+**Failure attribution（失败归因）**:
+把一次失败归入五类病位之一（模型误判 / 工具 schema / 上下文丢失 / 循环 / 环境），并给出证据与置信度；规则版、确定性、不调用模型。归因回答“病在哪一层”，不回答“谁的责任”。
+_Avoid_: 把归因当作根因证明（它是可解释的代理证据）
+
+**Regression task（回归任务）**:
+由一条失败案例生成的独立评测任务：保留原任务的 setup/verifier/预算，只换 id；用于修好之后防止复发。
+_Avoid_: 把回归任务混进原任务集（默认放 `evals/regressions/`）

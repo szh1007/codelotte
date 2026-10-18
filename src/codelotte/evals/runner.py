@@ -19,6 +19,7 @@ from pathlib import Path
 from codelotte import __version__
 from codelotte.compaction import CompactionLimits
 from codelotte.cost import Catalog
+from codelotte.evals.attribution import classify_failure
 from codelotte.evals.eval_report import write_eval_report
 from codelotte.evals.execution import CodelotteHarness, execute_harness
 from codelotte.evals.harness_types import Harness
@@ -62,11 +63,23 @@ async def run_harness_case(
         snapshot_ref=snapshot_ref,
         judge_context=judge_context,
     )
+    passed = execution.completed and execution.error is None
+    # 归因只对 codelotte 的会话轨迹做：mini/裸 API 的轨迹格式不同，规则不适用。
+    attribution = (
+        classify_failure(
+            execution.session_path,
+            error=execution.error,
+            verifier_detail=execution.verifier_detail,
+            flagged=execution.flagged,
+        )
+        if not passed and harness.name == "codelotte"
+        else None
+    )
     return EvalCaseResult(
         task_id=task.id,
         bucket=task.bucket,
         repetition=repetition,
-        passed=execution.completed and execution.error is None,
+        passed=passed,
         verifier_detail=execution.verifier_detail,
         model_calls=execution.model_calls,
         input_tokens=execution.input_tokens,
@@ -96,6 +109,10 @@ async def run_harness_case(
         judge_samples=execution.judge_samples,
         judge_reliable=execution.judge_reliable,
         judge_warning=execution.judge_warning,
+        failure_class=attribution.failure_class if attribution else None,
+        failure_confidence=attribution.confidence if attribution else None,
+        failure_evidence=attribution.evidence if attribution else None,
+        failure_signals=attribution.signals if attribution else (),
     )
 
 

@@ -7,7 +7,8 @@ import json
 import subprocess
 from pathlib import Path
 
-from codelotte.evals.runner import run_eval_suite
+from codelotte.evals.harnesses import RawHarness
+from codelotte.evals.runner import run_eval_suite, run_harness_suite
 from codelotte.evals.tasks import FileExpectation, Snapshot, Task, Verifier
 from codelotte.sandbox import LocalExecutor
 from tests.fake_client import ScriptedClient, fake_catalog, text_turn, tool_turn
@@ -96,6 +97,9 @@ def test_failure_is_located_by_session_path_in_the_report(tmp_path: Path) -> Non
 
     assert all(not case.passed for case in cases)
     assert all(case.error is None for case in cases)  # 验收失败不是运行错误
+    # 票据 18：失败的 codelotte 轨迹会被归因；没有别的信号时兜底为模型判断
+    assert all(case.failure_class == "model" for case in cases)
+    assert all(case.failure_evidence for case in cases)
     run_dir = tmp_path / "runs" / meta.run_id
     data = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     (summary,) = data["summaries"]
@@ -107,6 +111,34 @@ def test_failure_is_located_by_session_path_in_the_report(tmp_path: Path) -> Non
     assert "write-hello" in markdown
     assert cases[0].session_path is not None
     assert Path(cases[0].session_path).name in markdown
+
+
+def test_non_codelotte_harness_failures_are_not_attributed(tmp_path: Path) -> None:
+    harness = RawHarness(
+        client=ScriptedClient([text_turn("hello")]),
+        model="fake-model",
+        catalog=fake_catalog(),
+    )
+
+    meta, cases = asyncio.run(
+        run_harness_suite(
+            [_task()],
+            harness_factory=lambda: harness,
+            repetitions=1,
+            run_id="raw-run",
+            runs_root=tmp_path / "runs",
+            repo_root=tmp_path,
+            seed=0,
+            command="codelotte eval compare --harness raw",
+        )
+    )
+
+    assert not cases[0].passed
+    assert cases[0].failure_class is None
+    markdown = (tmp_path / "runs" / meta.run_id / "report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "未归因" in markdown
 
 
 def test_snapshot_task_is_extracted_and_scripted_before_the_agent(tmp_path: Path) -> None:

@@ -1,0 +1,6 @@
+{"type": "session", "id": "s1", "parentId": null, "timestamp": "2026-10-18T00:00:00Z", "schema": "session/v1", "cwd": "/workspace", "version": "0.1.0"}
+{"type": "message", "id": "m1", "parentId": "s1", "timestamp": "2026-10-18T00:00:00Z", "role": "user", "content": "完成任务"}
+{"type": "tool_call", "id": "tc-r1", "parentId": "m1", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r1", "name": "read", "arguments": {"path": "a.txt"}, "env": "local"}
+{"type": "tool_result", "id": "tr-r1", "parentId": "tc-r1", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r1", "name": "read", "ok": true, "content": "内容", "durationMs": 3, "env": "local"}
+{"type": "event", "id": "g1", "parentId": "tr-r1", "timestamp": "2026-10-18T00:00:00Z", "kind": "guardrail", "layer": "planning", "guard": "terminate", "message": "规划层终止：连续 3 次重复操作", "count": 3, "threshold": 3}
+{"type": "message", "id": "m2", "parentId": "g1", "timestamp": "2026-10-18T00:00:00Z", "role": "assistant", "content": "停止执行。"}

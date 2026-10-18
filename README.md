@@ -115,6 +115,27 @@ All tasks are complete: bug fixed, check passes, notes.txt written.
 - judge 跑数：[evals/runs/20261018T123909Z-5264236/report.md](evals/runs/20261018T123909Z-5264236/report.md)
 - 操作手册：[evals/run.md](evals/run.md) §4.7
 
+### 失败归因 + 回归任务（2026-10-18）
+
+失败不再只有一个 ❌：跑完案例后，从会话轨迹自动判断“病在哪一层”：
+
+- **五类归因**：模型误判 / 工具 schema / 上下文丢失 / 循环 / 环境；每条结论带一句话
+  证据与置信度，规则确定性、零额外成本。优先级：环境 > 循环 > 工具 schema >
+  上下文丢失 > 模型兜底。
+- **进报表**：`report.md` 新增“失败归因”段（五类分布 + 逐条证据），
+  `report.json` 的案例带 `failure_*` 字段。
+- **准确率**：15 条标注失败轨迹（五类各 3 条），规则分类 **15/15（100%）**，
+  混淆矩阵与逐条证据：[evals/attribution/attribution-report.md](evals/attribution/attribution-report.md)。
+  标注是作者草稿（`author-draft`），所以报告标 ⚠、命令退出码 1。
+- **失败 → 回归任务**：`codelotte eval regression` 保留原任务的 setup/verifier，
+  只换 id，生成可直接跑的 TOML；示例
+  [evals/regressions/regression-002-fix-off-by-one.toml](evals/regressions/regression-002-fix-off-by-one.toml)。
+- **不证明什么**：语料是按五类构造的，有天花板效应；真实失败上的准确率待作者
+  复核标注后重测。
+
+- 操作手册：[evals/attribution.md](evals/attribution.md)
+- 语料与报告：[evals/attribution/](evals/attribution/)
+
 ## 架构
 
 ```mermaid
@@ -220,7 +241,8 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 23 张曳光弹票据与状态 |
-| [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、任务格式、pass^k、CI 冒烟 |
+| [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、失败归因、任务格式、pass^k、CI 冒烟 |
+| [evals/attribution.md](evals/attribution.md) | 失败归因规则、标注语料与准确率、失败 → 回归任务 |
 | [evals/compaction.md](evals/compaction.md) | 专用测评 - 压缩回归 v0：机制、评分、基线、人工标注 |
 | [evals/record.md](evals/record.md) | 评测跑数记录：索引、目录约定、已入库基线 |
 | [docs/tech/configuration.md](docs/tech/configuration.md) | 配置取值链与每个设置项 |
@@ -238,10 +260,12 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 mini-swe-agent / 裸单轮 API）与控制 agent 自检（`codelotte eval controls`），三组对照与
 oracle/no-op/cheating 均已真实跑通。票据 17 交付 LLM judge 兜底与 κ 校准
 （`codelotte eval judge`；确定性检查优先，judge 仅在 `[verifier.judge]` 声明时启用；
-20 条 `author-draft` 样本 κ=1.000，真实 judge 任务通过）。票据 18–23 覆盖失败归因、
-E1–E5 实验与最终材料包。
+20 条 `author-draft` 样本 κ=1.000，真实 judge 任务通过）。票据 18 交付失败归因分类器
+（五类病位 + 证据 + 置信度，自动进报表）与失败 → 回归任务命令
+（`codelotte eval attribute` / `codelotte eval regression`）；15 条作者草稿语料准确率
+15/15，真实失败上的准确率待复核。票据 19–23 覆盖 E1–E5 实验与最终材料包。
 
-当前工作树的工程检查：`528 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
+当前工作树的工程检查：`569 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。

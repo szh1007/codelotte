@@ -1,0 +1,3 @@
+{"type": "session", "id": "s1", "parentId": null, "timestamp": "2026-10-18T00:00:00Z", "schema": "session/v1", "cwd": "/workspace", "version": "0.1.0"}
+{"type": "message", "id": "m1", "parentId": "s1", "timestamp": "2026-10-18T00:00:00Z", "role": "user", "content": "完成任务"}
+{"type": "message", "id": "m2", "parentId": "m1", "timestamp": "2026-10-18T00:00:00Z", "role": "assistant", "content": "已写入结果。"}

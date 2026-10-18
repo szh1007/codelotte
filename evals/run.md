@@ -5,6 +5,7 @@
 > - 专用测评 - 压缩回归 v0（强制压缩 k 次、checkpoint 保留率、v0 基线）：
 >   [compaction.md](compaction.md)
 > - 对照组与控制 agent 自检（票据 16）：本文件 §4.5 / §4.6
+> - 失败归因与回归任务（票据 18）：本文件 §4.8 / [attribution.md](attribution.md)
 > - 跑数记录：[record.md](record.md)
 > - 任务定义：[evals/tasks/*.toml](tasks/)
 
@@ -37,13 +38,19 @@ uv run codelotte eval judge
 # 8. 跑 judge 任务（不在默认任务目录里，避免控制组依赖模型）
 uv run codelotte eval run --tasks evals/judge-tasks --task 006-code-review --repeat 1 --no-sandbox
 
-# 9. 打开最新 run 的报表
+# 9. 失败归因准确率（离线；用 15 条标注样本算混淆矩阵）
+uv run codelotte eval attribute
+
+# 10. 把一条失败案例转成回归任务（默认写到 evals/regressions/）
+uv run codelotte eval regression --run evals/runs/<run-id> --task 002-fix-off-by-one
+
+# 11. 打开最新 run 的报表
 #    evals/runs/<新目录>/report.md
 ```
 
 已经装有 `codelotte` 命令时，把 `uv run codelotte` 换成 `codelotte` 即可。
 
-## 1. 五个命令在干什么
+## 1. 七个命令在干什么
 
 - `eval run`（票据 15）：**通用测评**。任务按生产默认策略跑 N 次，回答“当前 harness
   能不能过、每条任务花多少钱/多久、pass^N 是多少”。
@@ -55,10 +62,14 @@ uv run codelotte eval run --tasks evals/judge-tasks --task 006-code-review --rep
   cheating 应 0% 且被标记；先证明评测器不瞎打分，再相信任何真实跑分。
 - `eval judge`（票据 17）：**LLM judge 校准**。用 ≥20 条人工标注样本算 Cohen's κ；
   评测运行时 judge 的分数/理由/κ 进报表，κ 低标 ⚠。
+- `eval attribute`（票据 18）：**失败归因准确率**。用标注失败轨迹跑五类规则分类器，
+  写混淆矩阵；评测报表自动带“失败归因”段。
+- `eval regression`（票据 18）：**失败 → 回归任务**。保留原任务的 setup/verifier，
+  只换 id，生成可直接 `eval run` 的 TOML。
 
-五者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
+七者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
 压缩专项用 `eval compaction`（细节见 [compaction.md](compaction.md)）；对照与自检
-见 §4.5 / §4.6；judge 见 §4.7。
+见 §4.5 / §4.6；judge 见 §4.7；归因与回归见 §4.8。
 
 ## 2. 目录地图
 
@@ -67,6 +78,8 @@ uv run codelotte eval run --tasks evals/judge-tasks --task 006-code-review --rep
 | `evals/tasks/*.toml` | **题目定义**：初始文件/仓库快照、指令、验收器、checkpoint |
 | `evals/judge-tasks/*.toml` | **LLM judge 题目**：单独目录，避免 `eval controls` 依赖模型 |
 | `evals/judges/<task>/` | 校准样本（`samples.jsonl`）与结果（`calibration.json/.md`） |
+| `evals/attribution/` | 失败归因标注语料（`labels.jsonl` + `sessions/`）与准确率报告 |
+| `evals/regressions/` | 由失败案例生成的回归任务（不参与默认 `eval run`） |
 | `evals/runs/<run-id>/` | **一次跑数的全部证据**；每次新建，不覆盖 |
 | `src/codelotte/evals/` | 实现：加载任务、通用测评、强制压缩、探针、评分、judge、报表 |
 | `evals/compaction.md` | 专用测评 - 压缩回归 v0 手册（机制、评分、基线、人工标注） |
@@ -527,7 +540,35 @@ uv run codelotte eval judge
   因为控制组必须离线零成本。`eval run` / `eval compare` 会配置 judge 模型；
   `eval compaction` 是确定性压缩套件，不配置 judge（`judge-tasks` 不要拿去跑 compaction）。
 
-### 4.8 已知局限
+### 4.8 失败归因与回归任务（`eval attribute` / `eval regression`）
+
+失败不再只有一个 ❌：跑完案例后自动给出五类病位之一 + 证据。规则、优先级、局限
+与语料格式见 [attribution.md](attribution.md)。
+
+```bash
+# 准确率（离线；15 条标注样本，作者草稿所以退出码 1）
+uv run codelotte eval attribute
+uv run codelotte eval attribute --dry-run
+
+# 失败 → 回归任务（默认 evals/regressions/<新 id>.toml）
+uv run codelotte eval regression --run evals/runs/<run-id> --task <任务 id> --dry-run
+uv run codelotte eval regression --run evals/runs/<run-id> --task <任务 id>
+
+# 生成的回归任务单独跑
+uv run codelotte eval run --tasks evals/regressions --dry-run
+```
+
+- 五类：`model` / `tool_schema` / `context_loss` / `loop` / `environment`。
+  只对 codelotte 轨迹归因；mini/raw 的轨迹格式不同，报表里记“未归因”。
+- 报表的“失败归因”段给分布与逐条证据；`report.json` 带 `failure_*` 字段。
+  归因不调用模型、不增加成本。
+- 首版语料 15 条、五类各 3 条，准确率 15/15；**`labeler=author-draft`，报告标 ⚠、
+  命令退出码 1**，作者复核后重跑。语料是构造样本，有天花板效应。
+- 回归任务保留原任务的 setup/verifier/预算/参考解，只换 `id` 并加来源头；
+  绝不覆盖已有文件，写盘后再用 `load_task` 校验。
+- `evals/regressions/` 不参与默认任务集，避免改变历史 pass^k 口径。
+
+### 4.9 已知局限
 
 - judge 校准样本目前是作者草拟（`author-draft`），不是作者已复核的人工标签；
   κ=1.0 是清晰样本上的天花板，不代表 judge 在模糊样本上也可靠。
@@ -539,8 +580,11 @@ uv run codelotte eval judge
   raw 没有工具；对照回答的是“最终状态 + 成本/耗时”，不是同策略 A/B。
 - mini 的思考参数沿用它的默认请求；codelotte 用 `reasoning_effort` 配置。同模型，
   但请求参数不保证逐字段一致。
+- 失败归因是规则版 v0：只看会话与案例级事实，模糊失败会落到 `model` 兜底；
+  `context_loss` 使用“压缩后重读”作代理，可能漏判。首版语料是作者草稿，
+  真实失败上的准确率尚未测量。
 
-### 4.9 代码地图
+### 4.10 代码地图
 
 | 文件 | 职责 |
 |---|---|
@@ -555,11 +599,15 @@ uv run codelotte eval judge
 | `src/codelotte/evals/mini_proxy.py` | 本地录制代理（假 key、真实 usage） |
 | `src/codelotte/evals/runner.py` | 通用 harness 编排（任务 × 重复、pass^k 数据） |
 | `src/codelotte/evals/compare.py` | 多组对照、控制 agent 自检、并列报表 |
-| `src/codelotte/evals/eval_report.py` | 单组报表（Markdown/JSON） |
+| `src/codelotte/evals/eval_report.py` | 单组报表（Markdown/JSON，含失败归因段） |
 | `src/codelotte/evals/regression.py` | 压缩回归（强制压缩 + checkpoint 探针） |
+| `src/codelotte/evals/attribution.py` | 五类失败归因、样本科普与混淆矩阵 |
+| `src/codelotte/evals/promote.py` | 失败案例 → 回归任务 TOML |
 | `evals/tasks/*.toml` | 确定性任务定义 |
 | `evals/judge-tasks/*.toml` | judge 任务定义（控制组不加载） |
 | `evals/judges/<task>/` | 人工标注样本与校准结果 |
+| `evals/attribution/` | 归因语料与准确率报告 |
+| `evals/regressions/` | 由失败生成的回归任务 |
 | `evals/runs/<run-id>/` | 跑数证据 |
 
 ## 5. 专用测评 - 压缩回归 v0（`eval compaction`）
@@ -579,10 +627,11 @@ uv run codelotte eval compaction --k 0,1,3,5 --out evals/runs
 
 接手的人按这个顺序看：
 
-1. 本文件（通用测评、对照、自检、judge：操作、任务格式、CI）；
+1. 本文件（通用测评、对照、自检、judge、归因：操作、任务格式、CI）；
 2. [compaction.md](compaction.md)（专用测评 - 压缩回归 v0：机制、评分、基线、局限）；
-3. 最近一次跑数的 `report.md`；
-4. `src/codelotte/evals/`（按 tasks → workspace → execution → judge → runner/regression → report 读）；
-5. [record.md](record.md)（跑数目录、记录表与复现约定）。
+3. [attribution.md](attribution.md)（失败归因规则、语料、回归任务）；
+4. 最近一次跑数的 `report.md`；
+5. `src/codelotte/evals/`（按 tasks → workspace → execution → judge → attribution → runner/regression → report 读）；
+6. [record.md](record.md)（跑数目录、记录表与复现约定）。
 
 跑之前先 `--dry-run`；动代码后跑 `uv run pytest tests/test_eval_*.py`。

@@ -124,6 +124,59 @@ def test_report_includes_judge_scores_reasons_and_kappa_warning(tmp_path: Path) 
     assert "judge" in markdown
 
 
+def test_report_includes_failure_attribution_distribution(tmp_path: Path) -> None:
+    cases = [
+        _case("a", 1, passed=True),
+        replace(
+            _case("a", 2, passed=False),
+            failure_class="loop",
+            failure_confidence="high",
+            failure_evidence="工具层拦截：重复调用 read",
+            failure_signals=("guardrail:tool:repeat",),
+        ),
+        replace(
+            _case("b", 1, passed=False),
+            failure_class="model",
+            failure_confidence="low",
+            failure_evidence="确定性验收失败：内容不符",
+        ),
+        replace(
+            _case("b", 2, passed=False),
+            failure_class="environment",
+            failure_confidence="medium",
+            failure_evidence="运行错误指向基础设施（Docker）：daemon 不可用",
+        ),
+    ]
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    write_eval_report(run_dir, _meta(), cases)
+
+    markdown = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "## 失败归因" in markdown
+    assert "循环" in markdown and "模型误判" in markdown and "环境" in markdown
+    assert "工具层拦截：重复调用 read" in markdown
+    assert "| 循环 (`loop`) | 1 | 33%" in markdown
+    assert "`a` r2" in markdown
+
+    data = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    assert data["cases"][1]["failure_class"] == "loop"
+    assert data["cases"][1]["failure_confidence"] == "high"
+    assert data["cases"][1]["failure_signals"] == ["guardrail:tool:repeat"]
+
+
+def test_report_attribution_notes_unattributed_failures(tmp_path: Path) -> None:
+    cases = [_case("a", 1, passed=False)]
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    write_eval_report(run_dir, _meta(), cases)
+
+    markdown = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "## 失败归因" in markdown
+    assert "未归因" in markdown
+
+
 def test_write_eval_report_contains_failure_session_and_periods(tmp_path: Path) -> None:
     cases = [
         _case("a", 1, passed=True),

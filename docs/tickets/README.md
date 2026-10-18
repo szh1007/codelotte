@@ -52,7 +52,7 @@
 | [15](15-eval-runner.md) | 评测 runner（任务格式 + pass^k + CI 冒烟） | 10, 12 | ✅ done（2026-10-18；CI eval-smoke 全绿） |
 | [16](16-baselines-and-control-agents.md) | 对照组 + 控制 agent 自检 | 15 | ✅ done（2026-10-18；三组对照与 oracle/no-op/cheating 自检均跑通） |
 | [17](17-llm-judge-kappa.md) | LLM judge 兜底（κ 校准） | 15 | ✅ done（2026-10-18；20 条 `author-draft` 样本 κ=1.000，待作者复核标注后重跑） |
-| [18](18-failure-attribution.md) | 失败归因分类器（D5） | 15 | ready-for-agent |
+| [18](18-failure-attribution.md) | 失败归因分类器（D5） | 15 | ✅ done（2026-10-18；五类规则 + 失败分布进报表 + 失败 → 回归任务；15 条 `author-draft` 语料 15/15，待复核真实失败） |
 | [19](19-experiment-e4-scaffolding-tax.md) | 实验 E4：scaffolding tax 对照 | 16 | ready-for-agent |
 | [20](20-experiment-e1-e2-compaction-cost.md) | 实验 E1+E2：压缩回归 + 成本曲线 | 13, 15 | ready-for-agent |
 | [21](21-experiment-e3-e5-attribution-defense.md) | 实验 E3+E5：归因准确率 + 防御有效性 | 18, 11 | ready-for-agent |

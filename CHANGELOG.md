@@ -5,6 +5,7 @@
 
 ## [Unreleased]
 
+- 失败归因与回归任务：失败案例自动归入五类病位（模型误判/工具 schema/上下文丢失/循环/环境），带证据与置信度进 `report.md`“失败归因”段与 `report.json` 的 `failure_*` 字段；`codelotte eval attribute` 用标注语料算准确率/混淆矩阵；`codelotte eval regression` 把失败案例转成可直接跑的回归任务（保留原 setup/verifier，只换 id）；规则见 `evals/attribution.md`（票据 18）
 - LLM judge 兜底与 κ 校准：任务可声明 `[verifier.judge]` 评分卡（维度分数 + 理由）；确定性检查优先，确定性失败不调用 judge；`codelotte eval judge` 用 ≥20 条人工标注样本算 Cohen's κ，低 κ/样本不足/校准缺失在报表标 ⚠；judge 成本/分数/理由进报表（票据 17）
 - 对照组与控制 agent 自检：`codelotte eval compare`（codelotte / mini-swe-agent / 裸单轮 API 同任务集并列对比，任务级成功率/成本/耗时）与 `codelotte eval controls`（oracle 应 100%、no-op 应 0%、cheating 应 0% 且被标记；离线零成本）；抽出 harness 协议，mini-swe-agent 走独立解释器 + 本地录制代理（假 key、真实 usage），任务增加 `[control.oracle.files]` 参考解与只读输入 `unchanged` 保护（票据 16）
 - 修复：嵌套评测 run 的会话目录曾把完整工作区绝对路径编码进目录名，Windows 上超过 260 字符；eval 会话改用短案例名目录（`SessionStore.start(directory_name=...)`），生产路径的 `--continue/--resume` 约定不变

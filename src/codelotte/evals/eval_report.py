@@ -6,12 +6,18 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from codelotte.cost import format_money
+from codelotte.evals.attribution import (
+    CONFIDENCE_LABELS,
+    FAILURE_CLASSES,
+    FAILURE_HINTS,
+    FAILURE_LABELS,
+)
 from codelotte.evals.meta import EvalRunMeta
 from codelotte.evals.report_utils import (
     dirty_text,
@@ -236,6 +242,66 @@ def _judge_section(cases: Sequence[EvalCaseResult]) -> list[str]:
     return lines
 
 
+def _attribution_section(cases: Sequence[EvalCaseResult]) -> list[str]:
+    """失败分布段（票据 18）：五类病位的计数与逐条证据。"""
+    failures = [case for case in cases if not case.passed]
+    lines = ["## 失败归因", ""]
+    if not failures:
+        lines.extend(["无失败案例。", ""])
+        return lines
+    attributed = [case for case in failures if case.failure_class is not None]
+    if not attributed:
+        lines.extend(
+            [
+                f"未归因：{len(failures)} 条失败来自非 codelotte harness"
+                "（轨迹格式不同，规则不适用）；见下方失败案例。",
+                "",
+            ]
+        )
+        return lines
+    counts = Counter(case.failure_class for case in attributed)
+    lines.extend(
+        [
+            "| 归因 | 次数 | 占已归因失败 | 含义 |",
+            "|---|---|---|---|",
+        ]
+    )
+    for failure_class in FAILURE_CLASSES:
+        count = counts.get(failure_class, 0)
+        share = f"{count / len(attributed):.0%}" if count else "—"
+        lines.append(
+            f"| {FAILURE_LABELS[failure_class]} (`{failure_class}`) | {count} | "
+            f"{share} | {FAILURE_HINTS[failure_class]} |"
+        )
+    missing = len(failures) - len(attributed)
+    if missing:
+        lines.append("")
+        lines.append(
+            f"未归因：{missing} 条（非 codelotte harness，轨迹格式不同，规则不适用）。"
+        )
+    lines.extend(["", "逐条归因："])
+    for case in attributed:
+        assert case.failure_class is not None
+        confidence = CONFIDENCE_LABELS.get(
+            case.failure_confidence or "", case.failure_confidence or "—"
+        )
+        label = FAILURE_LABELS.get(case.failure_class, case.failure_class)
+        lines.append(
+            f"- `{case.task_id}` r{case.repetition}："
+            f"{label}（置信度 {confidence}）"
+            f"—— {case.failure_evidence or '无证据'}"
+        )
+    lines.extend(
+        [
+            "",
+            "口径：规则版 v0，只读会话轨迹与案例级错误，不调用模型；"
+            "规则与优先级见 `evals/attribution.md`。",
+            "",
+        ]
+    )
+    return lines
+
+
 def _failure_section(cases: Sequence[EvalCaseResult], run_dir: Path) -> list[str]:
     failures = [case for case in cases if not case.passed]
     lines = ["## 失败案例", ""]
@@ -299,6 +365,7 @@ def render_eval_markdown(
         *_case_table(cases, run_dir, meta.currency),
         "",
         *_judge_section(cases),
+        *_attribution_section(cases),
         *_failure_section(cases, run_dir),
         "## 口径",
         "",

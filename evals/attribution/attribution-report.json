@@ -1,0 +1,227 @@
+{
+  "samples": "evals/attribution/labels.jsonl",
+  "total": 15,
+  "correct": 15,
+  "accuracy": 1.0,
+  "min_accuracy": 0.8,
+  "draft_labels": true,
+  "confusion": {
+    "model": {
+      "model": 3,
+      "tool_schema": 0,
+      "context_loss": 0,
+      "loop": 0,
+      "environment": 0
+    },
+    "tool_schema": {
+      "model": 0,
+      "tool_schema": 3,
+      "context_loss": 0,
+      "loop": 0,
+      "environment": 0
+    },
+    "context_loss": {
+      "model": 0,
+      "tool_schema": 0,
+      "context_loss": 3,
+      "loop": 0,
+      "environment": 0
+    },
+    "loop": {
+      "model": 0,
+      "tool_schema": 0,
+      "context_loss": 0,
+      "loop": 3,
+      "environment": 0
+    },
+    "environment": {
+      "model": 0,
+      "tool_schema": 0,
+      "context_loss": 0,
+      "loop": 0,
+      "environment": 3
+    }
+  },
+  "results": [
+    {
+      "id": "model-wrong-edit",
+      "session": "evals/attribution/sessions/model-wrong-edit.jsonl",
+      "human_class": "model",
+      "labeler": "author-draft",
+      "predicted": "model",
+      "confidence": "low",
+      "evidence": "确定性验收失败：内容不符：notes.txt 缺少 for i in range(n):",
+      "signals": []
+    },
+    {
+      "id": "model-ignored-constraint",
+      "session": "evals/attribution/sessions/model-ignored-constraint.jsonl",
+      "human_class": "model",
+      "labeler": "author-draft",
+      "predicted": "model",
+      "confidence": "medium",
+      "evidence": "保护文件被改动（模型越界）：内容不符：check.py 被改动",
+      "signals": [
+        "flagged"
+      ]
+    },
+    {
+      "id": "model-no-tool-use",
+      "session": "evals/attribution/sessions/model-no-tool-use.jsonl",
+      "human_class": "model",
+      "labeler": "author-draft",
+      "predicted": "model",
+      "confidence": "low",
+      "evidence": "确定性验收失败：内容不符：out.txt 不存在",
+      "signals": []
+    },
+    {
+      "id": "schema-malformed-json",
+      "session": "evals/attribution/sessions/schema-malformed-json.jsonl",
+      "human_class": "tool_schema",
+      "labeler": "author-draft",
+      "predicted": "tool_schema",
+      "confidence": "high",
+      "evidence": "工具参数不是合法 JSON（最近一次：edit）",
+      "signals": [
+        "parse_error:edit",
+        "tool_argument:edit"
+      ]
+    },
+    {
+      "id": "schema-missing-argument",
+      "session": "evals/attribution/sessions/schema-missing-argument.jsonl",
+      "human_class": "tool_schema",
+      "labeler": "author-draft",
+      "predicted": "tool_schema",
+      "confidence": "medium",
+      "evidence": "工具参数错误：错误：缺少必需参数 old_string（应为非空字符串）",
+      "signals": [
+        "tool_argument:edit"
+      ]
+    },
+    {
+      "id": "schema-unknown-tool",
+      "session": "evals/attribution/sessions/schema-unknown-tool.jsonl",
+      "human_class": "tool_schema",
+      "labeler": "author-draft",
+      "predicted": "tool_schema",
+      "confidence": "medium",
+      "evidence": "调用了未知工具：search",
+      "signals": [
+        "unknown_tool:search"
+      ]
+    },
+    {
+      "id": "context-reread-a",
+      "session": "evals/attribution/sessions/context-reread-a.jsonl",
+      "human_class": "context_loss",
+      "labeler": "author-draft",
+      "predicted": "context_loss",
+      "confidence": "high",
+      "evidence": "压缩 1 次后重新读取 a.txt（这些内容压缩前已经读过）",
+      "signals": [
+        "compaction:1",
+        "reread:a.txt"
+      ]
+    },
+    {
+      "id": "context-reread-two",
+      "session": "evals/attribution/sessions/context-reread-two.jsonl",
+      "human_class": "context_loss",
+      "labeler": "author-draft",
+      "predicted": "context_loss",
+      "confidence": "high",
+      "evidence": "压缩 1 次后重新读取 notes.txt（这些内容压缩前已经读过）",
+      "signals": [
+        "compaction:1",
+        "reread:notes.txt"
+      ]
+    },
+    {
+      "id": "context-reread-hard",
+      "session": "evals/attribution/sessions/context-reread-hard.jsonl",
+      "human_class": "context_loss",
+      "labeler": "author-draft",
+      "predicted": "context_loss",
+      "confidence": "high",
+      "evidence": "压缩 1 次后重新读取 requirements.txt（这些内容压缩前已经读过）",
+      "signals": [
+        "compaction:1",
+        "reread:requirements.txt"
+      ]
+    },
+    {
+      "id": "loop-repeat-block",
+      "session": "evals/attribution/sessions/loop-repeat-block.jsonl",
+      "human_class": "loop",
+      "labeler": "author-draft",
+      "predicted": "loop",
+      "confidence": "medium",
+      "evidence": "工具层拦截：重复调用 read(a.txt) 3 次",
+      "signals": [
+        "guardrail:tool:repeat"
+      ]
+    },
+    {
+      "id": "loop-iteration-limit",
+      "session": "evals/attribution/sessions/loop-iteration-limit.jsonl",
+      "human_class": "loop",
+      "labeler": "author-draft",
+      "predicted": "loop",
+      "confidence": "high",
+      "evidence": "触发迭代上限（模型/工具循环未在预算内收敛）",
+      "signals": [
+        "iteration_limit"
+      ]
+    },
+    {
+      "id": "loop-planning-terminate",
+      "session": "evals/attribution/sessions/loop-planning-terminate.jsonl",
+      "human_class": "loop",
+      "labeler": "author-draft",
+      "predicted": "loop",
+      "confidence": "high",
+      "evidence": "规划层终止：连续 3 次重复操作",
+      "signals": [
+        "guardrail:planning:terminate"
+      ]
+    },
+    {
+      "id": "env-missing-trajectory",
+      "session": "evals/attribution/sessions/env-missing-trajectory.jsonl",
+      "human_class": "environment",
+      "labeler": "author-draft",
+      "predicted": "environment",
+      "confidence": "medium",
+      "evidence": "运行错误指向基础设施（FileNotFoundError）：FileNotFoundError: 轨迹文件缺失",
+      "signals": [
+        "infra_error"
+      ]
+    },
+    {
+      "id": "env-docker-error",
+      "session": "evals/attribution/sessions/env-docker-error.jsonl",
+      "human_class": "environment",
+      "labeler": "author-draft",
+      "predicted": "environment",
+      "confidence": "medium",
+      "evidence": "运行错误指向基础设施（Docker）：RuntimeError: Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+      "signals": [
+        "infra_error"
+      ]
+    },
+    {
+      "id": "env-verifier-crash",
+      "session": "evals/attribution/sessions/env-verifier-crash.jsonl",
+      "human_class": "environment",
+      "labeler": "author-draft",
+      "predicted": "environment",
+      "confidence": "high",
+      "evidence": "验收设施失败：验收异常：FileNotFoundError: python 不在 PATH",
+      "signals": [
+        "verifier_error"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{"type": "session", "id": "s1", "parentId": null, "timestamp": "2026-10-18T00:00:00Z", "schema": "session/v1", "cwd": "/workspace", "version": "0.1.0"}
+{"type": "message", "id": "m1", "parentId": "s1", "timestamp": "2026-10-18T00:00:00Z", "role": "user", "content": "完成任务"}
+{"type": "tool_call", "id": "tc-r1", "parentId": "m1", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r1", "name": "read", "arguments": {"path": "policy.txt"}, "env": "local"}
+{"type": "tool_result", "id": "tr-r1", "parentId": "tc-r1", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r1", "name": "read", "ok": true, "content": "只允许改 allowed.txt", "durationMs": 3, "env": "local"}
+{"type": "tool_call", "id": "tc-r2", "parentId": "tr-r1", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r2", "name": "read", "arguments": {"path": "notes.txt"}, "env": "local"}
+{"type": "tool_result", "id": "tr-r2", "parentId": "tc-r2", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r2", "name": "read", "ok": true, "content": "约束：不要改 protected.txt", "durationMs": 3, "env": "local"}
+{"type": "compaction", "id": "cp1", "parentId": "tr-r2", "timestamp": "2026-10-18T00:00:00Z", "summary": "压缩摘要", "firstKeptEntryId": "m1", "constraints": "硬约束", "mode": "soft", "window": 1000, "beforeTokens": 900, "estimatedAfterTokens": 300, "summaryModel": "fake", "warning": null}
+{"type": "tool_call", "id": "tc-r3", "parentId": "cp1", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r3", "name": "read", "arguments": {"path": "notes.txt"}, "env": "local"}
+{"type": "tool_result", "id": "tr-r3", "parentId": "tc-r3", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r3", "name": "read", "ok": true, "content": "约束：不要改 protected.txt", "durationMs": 3, "env": "local"}
+{"type": "message", "id": "m2", "parentId": "tr-r3", "timestamp": "2026-10-18T00:00:00Z", "role": "assistant", "content": "已修改 protected.txt。"}

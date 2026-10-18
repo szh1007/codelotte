@@ -14,7 +14,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from codelotte import __version__
@@ -27,6 +27,18 @@ from codelotte.config import (
     record_changelog_version,
 )
 from codelotte.cost import Catalog, load_catalog
+from codelotte.evals.attribution import (
+    DEFAULT_MIN_ACCURACY,
+    FAILURE_CLASSES,
+    FAILURE_LABELS,
+    MIN_CORPUS_SAMPLES,
+    Attribution,
+    AttributionError,
+    build_attribution_report,
+    classify_failure,
+    evaluate_corpus,
+    load_attribution_samples,
+)
 from codelotte.evals.compare import run_comparison
 from codelotte.evals.execution import CodelotteHarness
 from codelotte.evals.judge import (
@@ -56,9 +68,15 @@ from codelotte.evals.mini_baseline import (
     MiniSweAgentHarness,
     resolve_mini_command,
 )
+from codelotte.evals.promote import (
+    RegressionTaskError,
+    build_regression_task,
+    next_regression_id,
+    write_regression_task,
+)
 from codelotte.evals.runner import run_eval_suite
 from codelotte.evals.suite import run_suite
-from codelotte.evals.tasks import Task, TaskFileError, load_tasks
+from codelotte.evals.tasks import Task, TaskFileError, load_task, load_tasks
 from codelotte.export import render_session_html, render_session_markdown
 from codelotte.guardrails import GuardrailLimits
 from codelotte.models import ModelSpec, resolve
@@ -425,6 +443,72 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="只校验样本数量/路径并打印计划，不调用模型、不写校准文件",
+    )
+
+    attribute_parser = eval_sub.add_parser(
+        "attribute",
+        help="失败归因准确率：用人工标注样本跑五类分类器，写混淆矩阵报告",
+    )
+    attribute_parser.add_argument(
+        "--samples",
+        metavar="文件",
+        help="标注样本 JSONL（默认仓库根下的 evals/attribution/labels.jsonl）",
+    )
+    attribute_parser.add_argument(
+        "--out",
+        metavar="目录",
+        help="报告输出目录（默认样本文件所在目录）",
+    )
+    attribute_parser.add_argument(
+        "--min-accuracy",
+        type=float,
+        default=DEFAULT_MIN_ACCURACY,
+        metavar="比例",
+        help=f"达标阈值 0–1（默认 {DEFAULT_MIN_ACCURACY}）",
+    )
+    attribute_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只校验样本类别/数量并打印计划，不跑分类、不写报告",
+    )
+
+    regression_parser = eval_sub.add_parser(
+        "regression",
+        help="失败案例 → 回归任务：生成可被 eval run 直接读取的 TOML",
+    )
+    regression_parser.add_argument(
+        "--run",
+        required=True,
+        metavar="目录",
+        help="跑数目录（含 report.json）",
+    )
+    regression_parser.add_argument(
+        "--task",
+        required=True,
+        metavar="ID",
+        help="失败案例的任务 id",
+    )
+    regression_parser.add_argument(
+        "--repetition",
+        type=int,
+        default=1,
+        metavar="N",
+        help="失败案例的重复序号（默认 1）",
+    )
+    regression_parser.add_argument(
+        "--tasks",
+        metavar="目录",
+        help="原任务定义目录（默认搜索 evals/tasks 与 evals/judge-tasks）",
+    )
+    regression_parser.add_argument(
+        "--out",
+        metavar="文件",
+        help="输出 TOML（默认 evals/regressions/<新 id>.toml）",
+    )
+    regression_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只打印将生成的任务摘要，不写文件",
     )
     return parser
 
@@ -1039,6 +1123,198 @@ def _judge_context(runtime: _EvalRuntime) -> JudgeContext:
     )
 
 
+def _run_eval_attribute(args: argparse.Namespace) -> int:
+    """用人工标注的失败轨迹跑分类器，写准确率/混淆矩阵报告。"""
+    try:
+        repo_root = find_repo_root(Path.cwd())
+        samples_path = (
+            Path(args.samples)
+            if args.samples
+            else repo_root / "evals" / "attribution" / "labels.jsonl"
+        )
+        if not 0 <= args.min_accuracy <= 1:
+            raise AttributionError(
+                f"--min-accuracy 要在 0–1 之间（给了 {args.min_accuracy}）"
+            )
+        samples = load_attribution_samples(samples_path)
+        if len(samples) < MIN_CORPUS_SAMPLES:
+            raise AttributionError(
+                f"归因样本只有 {len(samples)} 条，至少需要 {MIN_CORPUS_SAMPLES} 条"
+            )
+        counts: dict[str, int] = {failure_class: 0 for failure_class in FAILURE_CLASSES}
+        for sample in samples:
+            counts[sample.human_class] += 1
+        missing = [name for name, count in counts.items() if count == 0]
+        if missing:
+            raise AttributionError(
+                f"归因样本缺少这些类别：{missing}（五类都要有样本）"
+            )
+        if args.dry_run:
+            print(f"样本文件：{samples_path}")
+            for failure_class in FAILURE_CLASSES:
+                print(
+                    f"- {FAILURE_LABELS[failure_class]}（{failure_class}）："
+                    f"{counts[failure_class]} 条"
+                )
+            print("dry-run：样本类别/数量校验通过，未跑分类、未写报告。")
+            return 0
+        run = evaluate_corpus(samples, base_dir=repo_root)
+        out_dir = Path(args.out) if args.out else samples_path.parent
+        report_path = build_attribution_report(
+            out_dir,
+            run,
+            samples_path=samples_path,
+            min_accuracy=args.min_accuracy,
+        )
+        draft = run.has_draft_labels
+        passed = run.is_acceptable(args.min_accuracy)
+        print(
+            f"[attribute] 准确率 {run.correct}/{run.total}（{run.accuracy:.1%}），"
+            f"阈值 {args.min_accuracy:.0%}；"
+            f"{'⚠ 草稿标注' if draft else '✅ 已复核'}"
+        )
+        print(report_path)
+        return 0 if passed else 1
+    except (AttributionError, ValueError, OSError) as exc:
+        return _fail(exc)
+
+
+def _find_source_task(
+    task_id: str, directories: Sequence[Path]
+) -> tuple[Path, Task, set[str]]:
+    """在给定目录里按 id 找原任务；返回 (路径, 任务, 已有 id 集合)。"""
+    index: dict[str, tuple[Path, Task]] = {}
+    for directory in directories:
+        if not directory.is_dir():
+            raise RegressionTaskError(f"任务目录不存在：{directory}")
+        for path in sorted(directory.glob("*.toml")):
+            task = load_task(path)
+            index.setdefault(task.id, (path, task))
+    if task_id not in index:
+        raise RegressionTaskError(
+            f"找不到任务 {task_id!r} 的原始定义；可选：{sorted(index)}"
+        )
+    path, task = index[task_id]
+    return path, task, set(index)
+
+
+def _run_eval_regression(args: argparse.Namespace) -> int:
+    """把一条失败案例转成可跑的回归任务（保留原 setup/verifier，只换 id）。"""
+    try:
+        if args.repetition < 1:
+            raise RegressionTaskError(
+                f"--repetition 要 ≥1（给了 {args.repetition}）"
+            )
+        repo_root = find_repo_root(Path.cwd())
+        run_dir = Path(args.run)
+        report_path = run_dir / "report.json"
+        if not report_path.is_file():
+            raise RegressionTaskError(f"跑数目录里没有 report.json：{run_dir}")
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RegressionTaskError(
+                f"report.json 不是合法 JSON：{report_path}（{exc}）"
+            ) from exc
+        cases = payload.get("cases") if isinstance(payload, dict) else None
+        if not isinstance(cases, list):
+            raise RegressionTaskError(f"report.json 缺少 cases 数组：{report_path}")
+        case = next(
+            (
+                item
+                for item in cases
+                if isinstance(item, dict)
+                and item.get("task_id") == args.task
+                and item.get("repetition") == args.repetition
+            ),
+            None,
+        )
+        if case is None:
+            raise RegressionTaskError(
+                f"报表里没有案例 {args.task} r{args.repetition}"
+            )
+        if case.get("passed") is True:
+            raise RegressionTaskError(
+                f"{args.task} r{args.repetition} 是通过的案例；回归任务只从失败生成"
+            )
+
+        directories = (
+            [Path(args.tasks)]
+            if args.tasks
+            else [repo_root / "evals" / "tasks", repo_root / "evals" / "judge-tasks"]
+        )
+        source_path, source, existing_ids = _find_source_task(args.task, directories)
+        meta = payload.get("meta")
+        regressions_dir = repo_root / "evals" / "regressions"
+        if regressions_dir.is_dir():
+            for path in sorted(regressions_dir.glob("*.toml")):
+                existing_ids.add(load_task(path).id)
+        new_id = next_regression_id(source.id, existing_ids)
+        out_path = (
+            Path(args.out) if args.out else regressions_dir / f"{new_id}.toml"
+        )
+
+        attribution: Attribution | None = None
+        if case.get("failure_class"):
+            attribution = Attribution(
+                failure_class=str(case["failure_class"]),
+                confidence=str(case.get("failure_confidence") or "low"),
+                evidence=str(case.get("failure_evidence") or ""),
+                signals=tuple(case.get("failure_signals") or ()),
+            )
+        elif case.get("harness", "codelotte") == "codelotte":
+            attribution = classify_failure(
+                case.get("session_path"),
+                error=case.get("error"),
+                verifier_detail=str(case.get("verifier_detail") or ""),
+                flagged=bool(case.get("flagged")),
+            )
+        detail = str(case.get("verifier_detail") or case.get("error") or "")
+        run_id = (
+            str(meta.get("run_id") or run_dir.name)
+            if isinstance(meta, dict)
+            else run_dir.name
+        )
+        text = build_regression_task(
+            source_path,
+            source_id=source.id,
+            new_id=new_id,
+            run_id=run_id,
+            repetition=args.repetition,
+            attribution=attribution,
+            detail=detail,
+            generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+        if attribution is None:
+            attribution_text = "归因不可用（非 codelotte 轨迹）"
+        else:
+            attribution_text = (
+                f"{FAILURE_LABELS.get(attribution.failure_class, attribution.failure_class)}"
+                f"（{attribution.confidence}）：{attribution.evidence}"
+            )
+        if args.dry_run:
+            print(f"[regression] 将生成 {new_id}")
+            print(f"- 来源：run {run_id} / {source.id} r{args.repetition}")
+            print(f"- 归因：{attribution_text}")
+            print(f"- 输出：{out_path}")
+            print("dry-run：未写文件。")
+            return 0
+        write_regression_task(out_path, text)
+        load_task(out_path)  # 写盘后再校验：生成的文件必须能被 eval run 直接读取
+        print(f"[regression] 来源 run {run_id} / {source.id} r{args.repetition}")
+        print(f"[regression] 归因：{attribution_text}")
+        print(out_path)
+        return 0
+    except (
+        AttributionError,
+        RegressionTaskError,
+        TaskFileError,
+        ValueError,
+        OSError,
+    ) as exc:
+        return _fail(exc)
+
+
 def _run_eval_compaction(
     args: argparse.Namespace, *, settings: Settings, argv: Sequence[str]
 ) -> int:
@@ -1366,10 +1642,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         if eval_command == "judge":
             return _run_eval_judge(args, settings=settings)
+        if eval_command == "attribute":
+            return _run_eval_attribute(args)
+        if eval_command == "regression":
+            return _run_eval_regression(args)
         parser.error(
-            "用法：codelotte eval {compaction,run,compare,controls,judge} …；"
+            "用法：codelotte eval {compaction,run,compare,controls,judge,attribute,regression} …；"
             "compaction 跑压缩回归，run 跑通用测评，compare 跑对照组，"
-            "controls 跑控制 agent 自检，judge 校准 LLM judge"
+            "controls 跑控制 agent 自检，judge 校准 LLM judge，"
+            "attribute 量归因准确率，regression 把失败转成回归任务"
         )
     if args.command == "export":
         return _run_export(args)

@@ -43,3 +43,9 @@ class EvalCaseResult:
     judge_samples: int | None = None
     judge_reliable: bool | None = None
     judge_warning: str | None = None
+    # 票据 18：失败归因（只对 codelotte 轨迹归类；非 codelotte harness 保持 None）。
+    # 扁平成四个字段：report.json 的 case 与 judge_* 一样直接可读，避免再包一层。
+    failure_class: str | None = None
+    failure_confidence: str | None = None
+    failure_evidence: str | None = None
+    failure_signals: tuple[str, ...] = ()

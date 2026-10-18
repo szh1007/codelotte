@@ -1,0 +1,6 @@
+{"type": "session", "id": "s1", "parentId": null, "timestamp": "2026-10-18T00:00:00Z", "schema": "session/v1", "cwd": "/workspace", "version": "0.1.0"}
+{"type": "message", "id": "m1", "parentId": "s1", "timestamp": "2026-10-18T00:00:00Z", "role": "user", "content": "完成任务"}
+{"type": "tool_call", "id": "tc-r1", "parentId": "m1", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r1", "name": "read", "arguments": {"path": "a.txt"}, "env": "local"}
+{"type": "tool_result", "id": "tr-r1", "parentId": "tc-r1", "timestamp": "2026-10-18T00:00:00Z", "toolCallId": "call-r1", "name": "read", "ok": true, "content": "内容", "durationMs": 3, "env": "local"}
+{"type": "event", "id": "g1", "parentId": "tr-r1", "timestamp": "2026-10-18T00:00:00Z", "kind": "guardrail", "layer": "tool", "guard": "repeat", "message": "工具层拦截：重复调用 read(a.txt) 3 次", "count": 3, "threshold": 3}
+{"type": "message", "id": "m2", "parentId": "g1", "timestamp": "2026-10-18T00:00:00Z", "role": "assistant", "content": "已读取 a.txt。"}
