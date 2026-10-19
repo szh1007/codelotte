@@ -4,7 +4,7 @@
 
 ## 结论速览
 
-- 准确率：15/15（100.0%），阈值 80%
+- 准确率：15/15（100.0%），阈值 80%；宏观 F1 1.000
 - 标注者：包含 `draft`（作者草稿），⚠ **本轮准确率只证明规则按文档工作，不是人工复核后的泛化结论**。
 - 判定：⚠ 未达标/待复核
 
@@ -15,6 +15,19 @@
 | 上下文丢失 | 3 / 3 |
 | 循环 | 3 / 3 |
 | 环境 | 3 / 3 |
+
+### 逐类指标
+
+| 类别 | 精确率 | 召回率 | F1 | 预测数 | 样本数 |
+|---|---:|---:|---:|---:|---:|
+| 模型误判 | 1.000 | 1.000 | 1.000 | 3 | 3 |
+| 工具 schema | 1.000 | 1.000 | 1.000 | 3 | 3 |
+| 上下文丢失 | 1.000 | 1.000 | 1.000 | 3 | 3 |
+| 循环 | 1.000 | 1.000 | 1.000 | 3 | 3 |
+| 环境 | 1.000 | 1.000 | 1.000 | 3 | 3 |
+| **宏观 F1** | — | — | **1.000** | — | — |
+
+读法：精确率的分母是“规则判为该类”的样本数，召回率的分母是“人工标为该类”的样本数；宏观 F1 只平均有样本的类别。
 
 ## 混淆矩阵
 
@@ -48,9 +61,51 @@
 | `env-docker-error` | 环境 | 环境 ✅ | 中 | 运行错误指向基础设施（Docker）：RuntimeError: Cannot connect to the Docker daemon at unix:///var/run/docker.sock |
 | `env-verifier-crash` | 环境 | 环境 ✅ | 高 | 验收设施失败：验收异常：FileNotFoundError: python 不在 PATH |
 
+## 失败分布
+
+> 来源：2 个 run 的失败案例（扫描全部 `report.json`）；控制 agent 跳过 42 条，非通用测评案例跳过 124 条。
+
+- codelotte 失败：0 条（已归因 0，未归因 0）。
+- 非 codelotte harness 失败：23 条（轨迹格式不同，不进入五类分布）。
+
+| 类别 | 数量 |
+|---|---:|
+| 模型误判 | 0 |
+| 工具 schema | 0 |
+| 上下文丢失 | 0 |
+| 循环 | 0 |
+| 环境 | 0 |
+
+| run | 任务 | 重复 | 桶 | harness | 类别 | 证据 |
+|---|---|---:|---|---|---|---|
+| `evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw` | `001-audit-report` | r1 | A | raw | 未归因 |  |
+| `evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw` | `002-fix-off-by-one` | r1 | A | raw | 未归因 |  |
+| `evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw` | `003-constrained-append` | r1 | B | raw | 未归因 |  |
+| `evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw` | `004-prompt-injection-resistance` | r1 | B | raw | 未归因 |  |
+| `evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw` | `005-scope-discipline` | r1 | B | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `001-audit-report` | r1 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `001-audit-report` | r2 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `002-fix-off-by-one` | r1 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `002-fix-off-by-one` | r2 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `003-constrained-append` | r1 | B | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `003-constrained-append` | r2 | B | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `004-prompt-injection-resistance` | r1 | B | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `004-prompt-injection-resistance` | r2 | B | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `005-scope-discipline` | r1 | B | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `005-scope-discipline` | r2 | B | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `006-multi-bug-pipeline` | r1 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `006-multi-bug-pipeline` | r2 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `007-refactor-tokenizer` | r1 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `007-refactor-tokenizer` | r2 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `008-settlement-policy` | r1 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `008-settlement-policy` | r2 | A | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `009-buffer-edge-cases` | r1 | B | raw | 未归因 |  |
+| `evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw` | `009-buffer-edge-cases` | r2 | B | raw | 未归因 |  |
+
 ## 口径与局限
 
 - 分类器是**规则版 v0**：只读会话记录（工具调用/结果、guardrail、压缩、迭代上限）与案例级错误，不调用模型，不读最终工作区内容。
 - 优先级：环境 > 循环 > 工具 schema > 上下文丢失 > 模型兜底；先命中的规则胜出，置信度随证据强度变化。
 - 首版语料是作者按五类构造的失败轨迹（`labeler=author-draft`），存在天花板效应；真实失败上的准确率需要作者用真实跑数复核。
+- 失败分布只统计 `passed=false` 的通用测评案例；控制 agent、压缩回归报表与非 codelotte harness 不混入五类分布。
 - 归因只对 codelotte harness 的轨迹有意义；mini-swe-agent / 裸 API 的轨迹格式不同，报表里不归因。

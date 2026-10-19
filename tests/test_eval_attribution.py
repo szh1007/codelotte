@@ -15,10 +15,15 @@ import pytest
 
 from codelotte.evals.attribution import (
     FAILURE_CLASSES,
+    Attribution,
     AttributionError,
+    AttributionSample,
+    CorpusRun,
+    SampleResult,
     build_attribution_report,
     classify_entries,
     classify_failure,
+    collect_failure_distribution,
     evaluate_corpus,
     load_attribution_samples,
     render_attribution_markdown,
@@ -436,3 +441,147 @@ def test_build_attribution_report_writes_md_and_json(tmp_path: Path) -> None:
     payload = json.loads((path.parent / "attribution-report.json").read_text("utf-8"))
     assert payload["accuracy"] == 1.0
     assert payload["confusion"]["loop"]["loop"] == 1
+
+
+def _result(sample_id: str, human: str, predicted: str) -> SampleResult:
+    return SampleResult(
+        sample=AttributionSample(
+            id=sample_id,
+            session=f"{sample_id}.jsonl",
+            human_class=human,
+            labeler="tester",
+        ),
+        attribution=Attribution(predicted, "high", "evidence"),
+    )
+
+
+def _mixed_run() -> CorpusRun:
+    results = (
+        _result("m1", "model", "model"),
+        _result("m2", "model", "loop"),
+        _result("l1", "loop", "loop"),
+        _result("t1", "tool_schema", "model"),
+        _result("c1", "context_loss", "context_loss"),
+        _result("e1", "environment", "environment"),
+    )
+    confusion: dict[tuple[str, str], int] = {}
+    for result in results:
+        key = (result.sample.human_class, result.attribution.failure_class)
+        confusion[key] = confusion.get(key, 0) + 1
+    return CorpusRun(results=results, confusion=confusion)
+
+
+def test_per_class_metrics_and_macro_f1() -> None:
+    metrics = {item.failure_class: item for item in _mixed_run().class_metrics()}
+
+    assert metrics["model"].precision == pytest.approx(0.5)
+    assert metrics["model"].recall == pytest.approx(0.5)
+    assert metrics["model"].f1 == pytest.approx(0.5)
+    assert metrics["loop"].precision == pytest.approx(0.5)
+    assert metrics["loop"].recall == pytest.approx(1.0)
+    assert metrics["loop"].f1 == pytest.approx(2 / 3)
+    assert metrics["tool_schema"].f1 == 0.0
+    assert _mixed_run().macro_f1 == pytest.approx(
+        (0.5 + 2 / 3 + 0.0 + 1.0 + 1.0) / 5
+    )
+
+
+def _write_report(
+    path: Path,
+    cases: list[dict[str, object]],
+    *,
+    harness_kind: str = "agent",
+    harness: str = "codelotte",
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "meta": {"run_id": path.parent.name, "harness": harness, "harness_kind": harness_kind},
+        "cases": cases,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_collect_failure_distribution_skips_controls_and_incompatible_reports(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "run-1"
+    _write_report(
+        run / "report.json",
+        [
+            {
+                "task_id": "004-prompt-injection-resistance",
+                "bucket": "B",
+                "repetition": 1,
+                "passed": False,
+                "harness": "codelotte",
+                "failure_class": "loop",
+                "failure_evidence": "工具层拦截",
+            },
+            {
+                "task_id": "002-fix-off-by-one",
+                "bucket": "A",
+                "repetition": 2,
+                "passed": False,
+                "harness": "codelotte",
+                "failure_class": None,
+                "failure_evidence": None,
+            },
+        ],
+    )
+    _write_report(
+        run / "harnesses" / "raw" / "report.json",
+        [
+            {
+                "task_id": "002-fix-off-by-one",
+                "bucket": "A",
+                "repetition": 1,
+                "passed": False,
+                "harness": "raw",
+            }
+        ],
+        harness="raw",
+    )
+    _write_report(
+        tmp_path / "controls" / "report.json",
+        [
+            {
+                "task_id": "002-fix-off-by-one",
+                "bucket": "A",
+                "repetition": 1,
+                "passed": False,
+                "harness": "no-op",
+            }
+        ],
+        harness_kind="control",
+        harness="no-op",
+    )
+    _write_report(
+        tmp_path / "compaction" / "report.json",
+        [{"task_id": "001-audit-report", "bucket": "A", "k": 1, "completed": True}],
+    )
+
+    distribution = collect_failure_distribution([run, tmp_path / "controls", tmp_path / "compaction"])
+
+    assert distribution.total_failures == 3  # 2 codelotte + 1 raw；控制组/压缩报表跳过
+    assert distribution.attributed["loop"] == 1
+    assert distribution.unattributed == 1
+    assert distribution.non_codelotte == 1
+    assert distribution.skipped_control == 1
+    assert distribution.skipped_incompatible == 1
+    assert distribution.by_bucket["B"]["loop"] == 1
+    assert distribution.by_bucket["A"]["unattributed"] == 1
+    assert len(distribution.cases) == 3
+
+
+def test_render_includes_failure_distribution() -> None:
+    run = _mixed_run()
+    distribution = collect_failure_distribution([])
+    text = render_attribution_markdown(
+        run,
+        samples_path=Path("labels.jsonl"),
+        distribution=distribution,
+    )
+
+    assert "## 失败分布" in text
+    assert "所选 run 没有 codelotte 失败" in text
+    assert "宏观 F1" in text or "macro F1" in text

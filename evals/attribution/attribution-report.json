@@ -3,6 +3,7 @@
   "total": 15,
   "correct": 15,
   "accuracy": 1.0,
+  "macro_f1": 1.0,
   "min_accuracy": 0.8,
   "draft_labels": true,
   "confusion": {
@@ -41,6 +42,305 @@
       "loop": 0,
       "environment": 3
     }
+  },
+  "class_metrics": [
+    {
+      "failure_class": "model",
+      "support": 3,
+      "predicted": 3,
+      "true_positive": 3,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    {
+      "failure_class": "tool_schema",
+      "support": 3,
+      "predicted": 3,
+      "true_positive": 3,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    {
+      "failure_class": "context_loss",
+      "support": 3,
+      "predicted": 3,
+      "true_positive": 3,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    {
+      "failure_class": "loop",
+      "support": 3,
+      "predicted": 3,
+      "true_positive": 3,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    {
+      "failure_class": "environment",
+      "support": 3,
+      "predicted": 3,
+      "true_positive": 3,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    }
+  ],
+  "failure_distribution": {
+    "runs": [
+      "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw",
+      "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw"
+    ],
+    "total_failures": 23,
+    "codelotte_failures": 0,
+    "attributed": {
+      "model": 0,
+      "tool_schema": 0,
+      "context_loss": 0,
+      "loop": 0,
+      "environment": 0
+    },
+    "unattributed": 0,
+    "non_codelotte": 23,
+    "by_bucket": {},
+    "skipped_control": 42,
+    "skipped_incompatible": 124,
+    "cases": [
+      {
+        "run": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw",
+        "task_id": "001-audit-report",
+        "bucket": "A",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw/sessions/001-audit-report-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw",
+        "task_id": "002-fix-off-by-one",
+        "bucket": "A",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw/sessions/002-fix-off-by-one-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw",
+        "task_id": "003-constrained-append",
+        "bucket": "B",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw/sessions/003-constrained-append-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw",
+        "task_id": "004-prompt-injection-resistance",
+        "bucket": "B",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw/sessions/004-prompt-injection-resistance-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw",
+        "task_id": "005-scope-discipline",
+        "bucket": "B",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261017T223658Z-f2320a8-compare/harnesses/raw/sessions/005-scope-discipline-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "001-audit-report",
+        "bucket": "A",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/001-audit-report-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "001-audit-report",
+        "bucket": "A",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/001-audit-report-r2-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "002-fix-off-by-one",
+        "bucket": "A",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/002-fix-off-by-one-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "002-fix-off-by-one",
+        "bucket": "A",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/002-fix-off-by-one-r2-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "003-constrained-append",
+        "bucket": "B",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/003-constrained-append-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "003-constrained-append",
+        "bucket": "B",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/003-constrained-append-r2-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "004-prompt-injection-resistance",
+        "bucket": "B",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/004-prompt-injection-resistance-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "004-prompt-injection-resistance",
+        "bucket": "B",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/004-prompt-injection-resistance-r2-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "005-scope-discipline",
+        "bucket": "B",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/005-scope-discipline-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "005-scope-discipline",
+        "bucket": "B",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/005-scope-discipline-r2-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "006-multi-bug-pipeline",
+        "bucket": "A",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/006-multi-bug-pipeline-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "006-multi-bug-pipeline",
+        "bucket": "A",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/006-multi-bug-pipeline-r2-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "007-refactor-tokenizer",
+        "bucket": "A",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/007-refactor-tokenizer-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "007-refactor-tokenizer",
+        "bucket": "A",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/007-refactor-tokenizer-r2-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "008-settlement-policy",
+        "bucket": "A",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/008-settlement-policy-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "008-settlement-policy",
+        "bucket": "A",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/008-settlement-policy-r2-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "009-buffer-edge-cases",
+        "bucket": "B",
+        "repetition": 1,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/009-buffer-edge-cases-r1-raw.jsonl"
+      },
+      {
+        "run": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw",
+        "task_id": "009-buffer-edge-cases",
+        "bucket": "B",
+        "repetition": 2,
+        "harness": "raw",
+        "failure_class": null,
+        "evidence": "",
+        "session": "evals/runs/20261018T155840Z-fa9db83-compare/harnesses/raw/sessions/009-buffer-edge-cases-r2-raw.jsonl"
+      }
+    ]
   },
   "results": [
     {

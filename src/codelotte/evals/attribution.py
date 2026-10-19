@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from codelotte.config import ConfigError
-from codelotte.evals.report_utils import short
+from codelotte.evals.report_utils import display_path, load_report, report_paths, short
 from codelotte.session.store import load_entries
 
 FAILURE_CLASSES: tuple[str, ...] = (
@@ -135,6 +135,19 @@ class SampleResult:
 
 
 @dataclass(frozen=True)
+class ClassMetrics:
+    """一个类别的精确率/召回率/F1（混淆矩阵的逐类展开）。"""
+
+    failure_class: str
+    support: int  # 人工标注为该类的样本数
+    predicted: int  # 规则判为该类的样本数
+    true_positive: int
+    precision: float
+    recall: float
+    f1: float
+
+
+@dataclass(frozen=True)
 class CorpusRun:
     """一轮语料评测：逐条结果 + 混淆矩阵。"""
 
@@ -174,6 +187,189 @@ class CorpusRun:
             if result.match:
                 bucket[0] += 1
         return {key: (value[0], value[1]) for key, value in totals.items()}
+
+    def class_metrics(self) -> tuple[ClassMetrics, ...]:
+        """逐类 precision / recall / F1；没有预测或没有样本时按 0 处理。"""
+        metrics: list[ClassMetrics] = []
+        for failure_class in FAILURE_CLASSES:
+            support = sum(
+                count
+                for (human, _predicted), count in self.confusion.items()
+                if human == failure_class
+            )
+            predicted = sum(
+                count
+                for (_human, guess), count in self.confusion.items()
+                if guess == failure_class
+            )
+            true_positive = self.confusion.get((failure_class, failure_class), 0)
+            precision = true_positive / predicted if predicted else 0.0
+            recall = true_positive / support if support else 0.0
+            f1 = (
+                2 * precision * recall / (precision + recall)
+                if precision + recall
+                else 0.0
+            )
+            metrics.append(
+                ClassMetrics(
+                    failure_class=failure_class,
+                    support=support,
+                    predicted=predicted,
+                    true_positive=true_positive,
+                    precision=precision,
+                    recall=recall,
+                    f1=f1,
+                )
+            )
+        return tuple(metrics)
+
+    @property
+    def macro_f1(self) -> float:
+        """有样本类别的 F1 算术平均；没有样本的类别不参与（无定义，不算 0）。"""
+        present = [item.f1 for item in self.class_metrics() if item.support > 0]
+        return sum(present) / len(present) if present else 0.0
+
+
+@dataclass(frozen=True)
+class FailureCase:
+    """一条真实跑数里的失败案例（失败分布的一行）。"""
+
+    run: str
+    task_id: str
+    bucket: str
+    repetition: int
+    harness: str
+    failure_class: str | None
+    evidence: str = ""
+    session: str | None = None
+
+
+@dataclass(frozen=True)
+class FailureDistribution:
+    """从若干 run 的 report.json 汇总的失败分布。
+
+    只统计 `passed is False` 的案例；控制 agent 与压缩回归报表跳过。
+    非 codelotte harness 的失败单独计数——归因分类器只读 codelotte 会话，
+    它们不能混进五类分布。
+    """
+
+    runs: tuple[str, ...]
+    cases: tuple[FailureCase, ...]
+    attributed: Mapping[str, int]
+    unattributed: int
+    non_codelotte: int
+    by_bucket: Mapping[str, Mapping[str, int]]
+    skipped_control: int = 0
+    skipped_incompatible: int = 0
+
+    @property
+    def total_failures(self) -> int:
+        return len(self.cases)
+
+    @property
+    def codelotte_failures(self) -> int:
+        return sum(self.attributed.values()) + self.unattributed
+
+
+def collect_failure_distribution(
+    run_dirs: Sequence[Path],
+) -> FailureDistribution:
+    """汇总若干 run 的失败案例；控制组/压缩报表跳过，坏报表直接报错。
+
+    Args:
+        run_dirs: run 目录或 runs 根目录；目录内的 report.json 会递归发现。
+
+    Returns:
+        FailureDistribution：五类计数、未归因数、非 codelotte 失败与桶分布。
+    """
+    attributed: dict[str, int] = {key: 0 for key in FAILURE_CLASSES}
+    by_bucket: dict[str, dict[str, int]] = {}
+    cases: list[FailureCase] = []
+    runs: list[str] = []
+    unattributed = 0
+    non_codelotte = 0
+    skipped_control = 0
+    skipped_incompatible = 0
+    seen_paths: set[Path] = set()
+
+    for root in run_dirs:
+        if not root.exists():
+            raise AttributionError(f"跑数目录不存在：{root}")
+        for path in report_paths(root):
+            resolved = path.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            try:
+                payload = load_report(path)
+            except ValueError as exc:
+                raise AttributionError(str(exc)) from exc
+            meta = payload.get("meta")
+            meta = meta if isinstance(meta, dict) else {}
+            raw_cases = payload.get("cases")
+            if not isinstance(raw_cases, list):
+                skipped_incompatible += 1
+                continue
+            if meta.get("harness_kind") == "control":
+                skipped_control += len(raw_cases)
+                continue
+            run_label = display_path(path.parent)
+            for raw in raw_cases:
+                if not isinstance(raw, dict):
+                    skipped_incompatible += 1
+                    continue
+                passed = raw.get("passed")
+                if not isinstance(passed, bool):
+                    # 压缩回归报表用 completed/checkpoints，不是通用测评的案例。
+                    skipped_incompatible += 1
+                    continue
+                if passed:
+                    continue
+                harness = str(raw.get("harness") or meta.get("harness") or "codelotte")
+                if harness in {"oracle", "no-op", "cheating"}:
+                    skipped_control += 1
+                    continue
+                failure_class = raw.get("failure_class")
+                if failure_class not in FAILURE_CLASSES:
+                    failure_class = None
+                case = FailureCase(
+                    run=run_label,
+                    task_id=str(raw.get("task_id") or "?"),
+                    bucket=str(raw.get("bucket") or "?"),
+                    repetition=int(raw.get("repetition") or 1),
+                    harness=harness,
+                    failure_class=failure_class,
+                    evidence=str(raw.get("failure_evidence") or ""),
+                    session=(
+                        display_path(Path(str(raw["session_path"])))
+                        if raw.get("session_path") is not None
+                        else None
+                    ),
+                )
+                cases.append(case)
+                if run_label not in runs:
+                    runs.append(run_label)
+                if harness != "codelotte":
+                    non_codelotte += 1
+                    continue
+                key = failure_class or "unattributed"
+                if failure_class is None:
+                    unattributed += 1
+                else:
+                    attributed[failure_class] += 1
+                bucket = by_bucket.setdefault(case.bucket, {})
+                bucket[key] = bucket.get(key, 0) + 1
+
+    return FailureDistribution(
+        runs=tuple(runs),
+        cases=tuple(cases),
+        attributed=attributed,
+        unattributed=unattributed,
+        non_codelotte=non_codelotte,
+        by_bucket={key: dict(value) for key, value in by_bucket.items()},
+        skipped_control=skipped_control,
+        skipped_incompatible=skipped_incompatible,
+    )
 
 
 def _environment(evidence: str, *, confidence: str = "high", signals: tuple[str, ...] = ()) -> Attribution:
@@ -561,14 +757,6 @@ def evaluate_corpus(
     return CorpusRun(results=tuple(results), confusion=dict(confusion))
 
 
-def _display_path(path: Path) -> str:
-    """报告里优先显示仓库相对路径（绝对路径不可移植）。"""
-    try:
-        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
-    except ValueError:
-        return str(path)
-
-
 def _confusion_table(run: CorpusRun) -> list[str]:
     header = "| 人工 \\ 规则 | " + " | ".join(
         FAILURE_LABELS[key] for key in FAILURE_CLASSES
@@ -586,26 +774,114 @@ def _confusion_table(run: CorpusRun) -> list[str]:
     return lines
 
 
+def _metrics_table(run: CorpusRun) -> list[str]:
+    lines = [
+        "| 类别 | 精确率 | 召回率 | F1 | 预测数 | 样本数 |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for item in run.class_metrics():
+        lines.append(
+            f"| {FAILURE_LABELS[item.failure_class]} | {item.precision:.3f} | "
+            f"{item.recall:.3f} | {item.f1:.3f} | {item.predicted} | {item.support} |"
+        )
+    lines.append(f"| **宏观 F1** | — | — | **{run.macro_f1:.3f}** | — | — |")
+    return lines
+
+
+def _distribution_section(distribution: FailureDistribution) -> list[str]:
+    lines = [
+        "## 失败分布",
+        "",
+        f"> 来源：{len(distribution.runs)} 个 run 的失败案例（扫描全部 `report.json`）；"
+        f"控制 agent 跳过 {distribution.skipped_control} 条，"
+        f"非通用测评案例跳过 {distribution.skipped_incompatible} 条。",
+        "",
+    ]
+    if distribution.total_failures == 0:
+        lines.extend(
+            [
+                "所选 run 没有 codelotte 失败案例；五类分布为空。"
+                "这不代表归因器在真实失败上可靠——该结论需要失败案例才能回答。",
+                "",
+            ]
+        )
+        return lines
+    lines.extend(
+        [
+            f"- codelotte 失败：{distribution.codelotte_failures} 条"
+            f"（已归因 {sum(distribution.attributed.values())}，"
+            f"未归因 {distribution.unattributed}）。",
+            f"- 非 codelotte harness 失败：{distribution.non_codelotte} 条"
+            "（轨迹格式不同，不进入五类分布）。",
+            "",
+            "| 类别 | 数量 |",
+            "|---|---:|",
+        ]
+    )
+    for failure_class in FAILURE_CLASSES:
+        lines.append(
+            f"| {FAILURE_LABELS[failure_class]} | {distribution.attributed[failure_class]} |"
+        )
+    if distribution.unattributed:
+        lines.append(f"| 未归因 | {distribution.unattributed} |")
+    lines.append("")
+    if distribution.by_bucket:
+        lines.extend(
+            [
+                "| 桶 | 失败数 | 类别分布 |",
+                "|---|---:|---|",
+            ]
+        )
+        for bucket in sorted(distribution.by_bucket):
+            counts = distribution.by_bucket[bucket]
+            total = sum(counts.values())
+            detail = " · ".join(
+                f"{FAILURE_LABELS.get(key, key)} {value}"
+                for key, value in sorted(counts.items())
+            )
+            lines.append(f"| {bucket} | {total} | {detail} |")
+        lines.append("")
+    lines.extend(
+        [
+            "| run | 任务 | 重复 | 桶 | harness | 类别 | 证据 |",
+            "|---|---|---:|---|---|---|---|",
+        ]
+    )
+    for case in distribution.cases:
+        label = (
+            FAILURE_LABELS.get(case.failure_class, case.failure_class)
+            if case.failure_class
+            else "未归因"
+        )
+        lines.append(
+            f"| `{case.run}` | `{case.task_id}` | r{case.repetition} | "
+            f"{case.bucket} | {case.harness} | {label} | {short(case.evidence, 80)} |"
+        )
+    lines.append("")
+    return lines
+
+
 def render_attribution_markdown(
     run: CorpusRun,
     *,
     samples_path: Path,
     min_accuracy: float = DEFAULT_MIN_ACCURACY,
+    distribution: FailureDistribution | None = None,
 ) -> str:
-    """把语料评测渲染成可提交的报告（含混淆矩阵与逐条证据）。"""
+    """把语料评测渲染成可提交的报告（含混淆矩阵、逐类指标与失败分布）。"""
     draft = run.has_draft_labels
     passed = run.is_acceptable(min_accuracy)
     per_class = run.per_class_counts()
     lines = [
         "# 失败归因准确率（首版）",
         "",
-        f"> 语料：`{_display_path(samples_path)}` · {run.total} 条失败样本；"
+        f"> 语料：`{display_path(samples_path)}` · {run.total} 条失败样本；"
         f"规则见 `evals/attribution.md`。",
         "",
         "## 结论速览",
         "",
         f"- 准确率：{run.correct}/{run.total}（{run.accuracy:.1%}），"
-        f"阈值 {min_accuracy:.0%}",
+        f"阈值 {min_accuracy:.0%}；宏观 F1 {run.macro_f1:.3f}",
     ]
     if draft:
         lines.append(
@@ -628,6 +904,13 @@ def render_attribution_markdown(
     lines.extend(
         [
             "",
+            "### 逐类指标",
+            "",
+            *_metrics_table(run),
+            "",
+            "读法：精确率的分母是“规则判为该类”的样本数，召回率的分母是"
+            "“人工标为该类”的样本数；宏观 F1 只平均有样本的类别。",
+            "",
             "## 混淆矩阵",
             "",
             *_confusion_table(run),
@@ -649,9 +932,11 @@ def render_attribution_markdown(
             f"{CONFIDENCE_LABELS.get(result.attribution.confidence, result.attribution.confidence)} | "
             f"{result.attribution.evidence} |"
         )
+    lines.append("")
+    if distribution is not None:
+        lines.extend(_distribution_section(distribution))
     lines.extend(
         [
-            "",
             "## 口径与局限",
             "",
             "- 分类器是**规则版 v0**：只读会话记录（工具调用/结果、guardrail、压缩、"
@@ -660,6 +945,8 @@ def render_attribution_markdown(
             "先命中的规则胜出，置信度随证据强度变化。",
             "- 首版语料是作者按五类构造的失败轨迹（`labeler=author-draft`），"
             "存在天花板效应；真实失败上的准确率需要作者用真实跑数复核。",
+            "- 失败分布只统计 `passed=false` 的通用测评案例；控制 agent、压缩回归报表"
+            "与非 codelotte harness 不混入五类分布。",
             "- 归因只对 codelotte harness 的轨迹有意义；mini-swe-agent / 裸 API "
             "的轨迹格式不同，报表里不归因。",
             "",
@@ -668,17 +955,50 @@ def render_attribution_markdown(
     return "\n".join(lines)
 
 
+def _distribution_payload(distribution: FailureDistribution) -> dict[str, Any]:
+    return {
+        "runs": list(distribution.runs),
+        "total_failures": distribution.total_failures,
+        "codelotte_failures": distribution.codelotte_failures,
+        "attributed": dict(distribution.attributed),
+        "unattributed": distribution.unattributed,
+        "non_codelotte": distribution.non_codelotte,
+        "by_bucket": {
+            bucket: dict(counts) for bucket, counts in distribution.by_bucket.items()
+        },
+        "skipped_control": distribution.skipped_control,
+        "skipped_incompatible": distribution.skipped_incompatible,
+        "cases": [
+            {
+                "run": case.run,
+                "task_id": case.task_id,
+                "bucket": case.bucket,
+                "repetition": case.repetition,
+                "harness": case.harness,
+                "failure_class": case.failure_class,
+                "evidence": case.evidence,
+                "session": case.session,
+            }
+            for case in distribution.cases
+        ],
+    }
+
+
 def build_attribution_report(
     out_dir: Path,
     run: CorpusRun,
     *,
     samples_path: Path,
     min_accuracy: float = DEFAULT_MIN_ACCURACY,
+    distribution: FailureDistribution | None = None,
 ) -> Path:
     """写 attribution-report.md / .json，返回 Markdown 路径。"""
     out_dir.mkdir(parents=True, exist_ok=True)
     markdown = render_attribution_markdown(
-        run, samples_path=samples_path, min_accuracy=min_accuracy
+        run,
+        samples_path=samples_path,
+        min_accuracy=min_accuracy,
+        distribution=distribution,
     )
     path = out_dir / "attribution-report.md"
     path.write_text(markdown, encoding="utf-8", newline="\n")
@@ -690,13 +1010,31 @@ def build_attribution_report(
         for human in FAILURE_CLASSES
     }
     payload = {
-        "samples": _display_path(samples_path),
+        "samples": display_path(samples_path),
         "total": run.total,
         "correct": run.correct,
         "accuracy": run.accuracy,
+        "macro_f1": run.macro_f1,
         "min_accuracy": min_accuracy,
         "draft_labels": run.has_draft_labels,
         "confusion": confusion,
+        "class_metrics": [
+            {
+                "failure_class": item.failure_class,
+                "support": item.support,
+                "predicted": item.predicted,
+                "true_positive": item.true_positive,
+                "precision": item.precision,
+                "recall": item.recall,
+                "f1": item.f1,
+            }
+            for item in run.class_metrics()
+        ],
+        "failure_distribution": (
+            _distribution_payload(distribution)
+            if distribution is not None
+            else None
+        ),
         "results": [
             {
                 "id": result.sample.id,

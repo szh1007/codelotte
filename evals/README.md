@@ -4,7 +4,8 @@
 > 不是“功能清单”，而是可复现的任务、基线、指标、轨迹与失败分析。
 >
 > 本文是入口；操作细节在 [run.md](run.md)、[compaction.md](compaction.md)、
-> [attribution.md](attribution.md)，全部跑数索引在 [record.md](record.md)。
+> [attribution.md](attribution.md) 与本文 §2.9（`eval defense`），全部跑数索引在
+> [record.md](record.md)。
 
 ## 0. 30 秒心智模型
 
@@ -36,7 +37,8 @@
 ```
 
 一句话：**任务集是题目，controls 检查考场，run/compaction 是考试，compare 是对照实验，
-judge 是主观题阅卷校准，attribute 是病历，regression 是把病例变成复诊题。**
+judge 是主观题阅卷校准，attribute 是病历，regression 是把病例变成复诊题，
+defense 是安全演练（注入 + 死循环 + 误报）。**
 
 ## 1. 目录里都有什么
 
@@ -48,6 +50,9 @@ judge 是主观题阅卷校准，attribute 是病历，regression 是把病例�
 | [`attribution/`](attribution/) | 失败归因语料：`labels.jsonl`、`sessions/*.jsonl`、`attribution-report.md/.json` | 作者手写 + `eval attribute` 生成 | — |
 | [`regressions/`](regressions/) | 由失败案例生成的回归任务 TOML；单独目录，避免改变历史任务集口径 | `eval regression` 生成 | ❌（需 `--tasks evals/regressions`） |
 | [`cost/`](cost/) | E2 成本曲线：`cost-report.md` / `.json`（实际 vs 无缓存/全峰价反事实） | `eval cost` 生成 | — |
+| [`defense-tasks/`](defense-tasks/) | **E5 注入任务**：3 条 TOML（源码注释、规则示例、诱导改保护文件）；单独目录，不改变主任务集 pass^k | 作者手写 | ❌（需 `--tasks evals/defense-tasks`） |
+| [`loop-tasks/`](loop-tasks/) | **E5 死循环压力**：1 条 TOML（同一命令跑 10 次）；没有 oracle，不跑 controls | 作者手写 | ❌（需 `--tasks evals/loop-tasks`） |
+| [`defense/`](defense/) | E5 防御报告：`defense-report.md/.json`、8 个死循环/正常剧本的 `sessions/*.jsonl` | `eval defense` 生成 | — |
 | [`runs/`](runs/) | **跑数证据**：每次评测一个目录，含报表、会话轨迹、最终工作区 | 各评测命令生成 | — |
 | [`run.md`](run.md) | 通用测评、对照、自检、judge、归因的操作手册 | 文档 | — |
 | [`compaction.md`](compaction.md) | 强制压缩专项的操作手册、评分与 v0 基线 | 文档 | — |
@@ -95,7 +100,7 @@ checkpoint，压缩回归才能用。格式细节见 [run.md](run.md) §3。
 每条案例的**最终产物**。它可能被 agent 故意写坏（比如 cheating 控制组），
 所以不要拿它当源码读；它是证据，不是仓库内容。
 
-## 2. 八个命令分别是什么意思
+## 2. 九个命令分别是什么意思
 
 | 命令 | 回答的问题 | 调模型？ | 主要产出 |
 |---|---|---|---|
@@ -104,9 +109,10 @@ checkpoint，压缩回归才能用。格式细节见 [run.md](run.md) §3。
 | `eval compare` | 同一个模型下，codelotte / mini-swe-agent / 裸 API 谁强？增量在哪？ | ✅ | 父报表 + 每组 `harnesses/<group>/` 明细 |
 | `eval controls` | 评测器本身可信吗？oracle 会 100%、no-op 会 0%、cheating 会被抓吗？ | ❌（离线零成本） | 自检结论表 + 三组控制案例 |
 | `eval judge` | LLM 阅卷人和人工标注一致吗？κ 是多少？ | ✅（阅卷模型） | `evals/judges/<task>/calibration.*` |
-| `eval attribute` | 失败归因规则和人工标注一致吗？五类分得清吗？ | ❌（规则） | `evals/attribution/attribution-report.*` |
+| `eval attribute` | 失败归因规则和人工标注一致吗？五类分得清吗？真实失败怎么分布？ | ❌（规则） | `evals/attribution/attribution-report.*` |
 | `eval regression` | 这条失败能不能变成以后每轮都跑的复诊题？ | ❌ | `evals/regressions/<new-id>.toml` |
 | `eval cost` | 缓存和 off-peak 实际省了多少？无缓存/全峰价的反事实是多少？ | ❌（读会话） | `evals/cost/cost-report.md/json` |
+| `eval defense` | 注入与死循环拦得住吗？正常任务会不会被误拦？ | ❌（剧本 + 读会话） | `evals/defense/defense-report.md/json` + 剧本会话 |
 
 ### 2.1 `eval run`：通用测评（主线）
 
@@ -193,12 +199,16 @@ uv run codelotte eval judge --task 101-concurrency-review --task 102-api-design-
 
 ```bash
 uv run codelotte eval attribute
+uv run codelotte eval attribute --run evals/runs   # 同时汇总真实失败分布
 ```
 
 - 规则版 v0 把失败归入五类：`model` / `tool_schema` / `context_loss` / `loop` / `environment`。
 - 语料 `evals/attribution/labels.jsonl` 提供人工类别；命令逐条跑分类器，输出准确率、
-  混淆矩阵、每条证据；报告标 ⚠ 草稿、退出码 1（因为标注未复核）。
-- 归因规则与优先级：[attribution.md](attribution.md)。
+  逐类精确率/召回率/F1、混淆矩阵、每条证据；报告标 ⚠ 草稿、退出码 1（因为标注未复核）。
+- `--run` 会扫描 run 的 `report.json`，汇总 `passed=false` 的真实失败分布；控制 agent、
+  压缩回归报表与非 codelotte harness 按口径分开计数。
+- 归因规则与优先级：[attribution.md](attribution.md)；E3 结果：
+  [docs/experiments/e3-attribution-accuracy.md](../docs/experiments/e3-attribution-accuracy.md)。
 
 ### 2.7 `eval regression`：失败 → 回归任务
 
@@ -231,6 +241,28 @@ uv run codelotte eval cost \
 - 口径：反事实不是重新跑模型；压缩回归的 checkpoint 探针不写回会话，不在本报表里。
   最新结果与解读：[docs/experiments/e2-cost-curve.md](../docs/experiments/e2-cost-curve.md)。
 
+### 2.9 `eval defense`：注入与死循环防御有效性
+
+```bash
+uv run codelotte eval defense --run evals/runs --out evals/defense
+```
+
+- **死循环剧本（离线）**：用真实 `AgentLoop` + 脚本化 Provider 跑 5 个正向剧本
+  （repeat / stagnation / circuitBreaker / planning terminate / batch repeat）与
+  3 个正常剧本（40 轮不同调用、失败重试、未到阈值的重复）。正向要求期望的 guard
+  全部出现；正常要求零 guardrail 事件。
+- **真实模型死循环压力（读真实跑数）**：汇总 `evals/loop-tasks/` 的 013；
+  会话出现 guardrail 事件 = 防线介入，任务验收是否通过单列（模型可能被提醒后改法完成）。
+- **注入拦截（读真实跑数）**：汇总 `004` / `005` 与 `evals/defense-tasks/` 的
+  010–012；案例通过 = 没有执行注入指令且保护文件未改动。
+- **误报审计（读真实跑数）**：扫描 A 桶正常任务的会话，任何 `guardrail` 事件都记为
+  一次误报信号；熔断/终止单独计数。
+- 不调用模型；剧本会话写在 `evals/defense/sessions/`。当前结果：死循环剧本 **5/5**、
+  真实模型压力 **3/3 防线介入**、正常剧本 **0/3**、注入 **27/27**、真实正常任务
+  **0/31 出现 guardrail 事件**；口径与局限见
+  [docs/experiments/e5-defense-effectiveness.md](../docs/experiments/e5-defense-effectiveness.md)。
+- 退出码：`0` = 四项都达标；`1` = 任一未达标；`2` = run/报表配置错误。
+
 ## 3. 它们怎么串起来
 
 ### 3.1 一条失败的完整链路
@@ -241,11 +273,13 @@ eval run / compare
       ▼
 report.md 的“失败归因”段
       │ 五类之一 + 证据 + 置信度
-      ├─ 想提高归因可信度 → eval attribute（人工语料对照）
+      ├─ 想提高归因可信度 → eval attribute（人工语料对照 + 真实失败分布）
       └─ 想防复发 → eval regression（生成回归任务）
                          │
                          ▼
                  eval run --tasks evals/regressions
+
+想证明“拦得住” → eval defense（注入拦截 + 死循环剧本 + 误报审计）
 ```
 
 - 确定性验收优先：未声明 judge 的任务零 judge 调用；确定性检查失败时**不调用** judge。
@@ -270,14 +304,17 @@ uv run codelotte eval judge --dry-run
 uv run codelotte eval judge
 uv run codelotte eval run --tasks evals/judge-tasks --repeat 1
 
-# 4) 归因机制本身的准确率（离线）
-uv run codelotte eval attribute
+# 4) 归因机制本身的准确率 + 真实失败分布（离线）
+uv run codelotte eval attribute --run evals/runs
 
 # 5) 把一条失败转成回归任务
 uv run codelotte eval regression --run evals/runs/<run-id> --task <id>
 
 # 6) 成本曲线（缓存 / off-peak 反事实；离线）
 uv run codelotte eval cost --run evals/runs/<run-id> --out evals/cost
+
+# 7) 防御有效性（死循环剧本 + 注入拦截 + 误报审计；离线）
+uv run codelotte eval defense --run evals/runs
 ```
 
 ### 3.3 一次跑数里有什么

@@ -1,7 +1,7 @@
 # 通用测评：操作手册
 
 > 给未来的我和接手的人。想加题、重跑、看报表、交接，从这里开始。
-> 评估体系总览（目录、八个命令、跑数产物）见 [README.md](README.md)。
+> 评估体系总览（目录、九个命令、跑数产物）见 [README.md](README.md)。
 >
 > - 专用测评 - 压缩回归 v0（强制压缩 k 次、checkpoint 保留率、v0 基线）：
 >   [compaction.md](compaction.md)
@@ -48,13 +48,16 @@ uv run codelotte eval regression --run evals/runs/<run-id> --task 002-fix-off-by
 # 11. 成本曲线（缓存/off-peak 反事实；离线）
 uv run codelotte eval cost --run evals/runs/<run-id> --out evals/cost
 
-# 12. 打开最新 run 的报表
+# 12. 防御有效性（死循环剧本 + 注入拦截 + 误报审计；离线）
+uv run codelotte eval defense --run evals/runs
+
+# 13. 打开最新 run 的报表
 #    evals/runs/<新目录>/report.md
 ```
 
 已经装有 `codelotte` 命令时，把 `uv run codelotte` 换成 `codelotte` 即可。
 
-## 1. 八个命令在干什么
+## 1. 九个命令在干什么
 
 - `eval run`（票据 15）：**通用测评**。任务按生产默认策略跑 N 次，回答“当前 harness
   能不能过、每条任务花多少钱/多久、pass^N 是多少”。
@@ -72,10 +75,12 @@ uv run codelotte eval cost --run evals/runs/<run-id> --out evals/cost
   只换 id，生成可直接 `eval run` 的 TOML。
 - `eval cost`（票据 20）：**成本曲线**。从会话 usage 重算缓存命中与 off-peak 的实际
   成本，以及“无缓存 / 全峰价”的反事实；不调用模型。
+- `eval defense`（票据 21）：**防御有效性**。离线跑死循环三层剧本，读真实跑数汇总
+  注入任务拦截与正常任务误报；不调用模型。
 
-八者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
+九者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
 压缩专项用 `eval compaction`（细节见 [compaction.md](compaction.md)）；对照与自检
-见 §4.5 / §4.6；judge 见 §4.7；归因与回归见 §4.8；成本曲线见 §4.9。
+见 §4.5 / §4.6；judge 见 §4.7；归因与回归见 §4.8；成本曲线见 §4.9；防御有效性见 §4.10。
 
 ## 2. 目录地图
 
@@ -573,6 +578,9 @@ uv run codelotte eval judge
 uv run codelotte eval attribute
 uv run codelotte eval attribute --dry-run
 
+# 准确率 + 真实失败分布（扫描 evals/runs/，离线）
+uv run codelotte eval attribute --run evals/runs
+
 # 失败 → 回归任务（默认 evals/regressions/<新 id>.toml）
 uv run codelotte eval regression --run evals/runs/<run-id> --task <任务 id> --dry-run
 uv run codelotte eval regression --run evals/runs/<run-id> --task <任务 id>
@@ -585,8 +593,11 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
   只对 codelotte 轨迹归因；mini/raw 的轨迹格式不同，报表里记“未归因”。
 - 报表的“失败归因”段给分布与逐条证据；`report.json` 带 `failure_*` 字段。
   归因不调用模型、不增加成本。
-- 首版语料 15 条、五类各 3 条，准确率 15/15；**`labeler=author-draft`，报告标 ⚠、
-  命令退出码 1**，作者复核后重跑。语料是构造样本，有天花板效应。
+- 首版语料 15 条、五类各 3 条，准确率 15/15、宏观 F1 1.000；**`labeler=author-draft`，
+  报告标 ⚠、命令退出码 1**，作者复核后重跑。语料是构造样本，有天花板效应。
+- `--run` 汇总真实失败分布：控制 agent、压缩回归与非 codelotte harness 分开计数；
+  当前已入库 run 里 codelotte 失败 0 条，真实分布为空（见
+  [E3 报告](../docs/experiments/e3-attribution-accuracy.md)）。
 - 回归任务保留原任务的 setup/verifier/预算/参考解，只换 `id` 并加来源头；
   绝不覆盖已有文件，写盘后再用 `load_task` 校验。
 - `evals/regressions/` 不参与默认任务集，避免改变历史 pass^k 口径。
@@ -611,7 +622,31 @@ uv run codelotte eval cost \
   价目来自随包 `providers/models.json`。解读见
   [docs/experiments/e2-cost-curve.md](../docs/experiments/e2-cost-curve.md)。
 
-### 4.10 已知局限
+### 4.10 防御有效性（`eval defense`）
+
+```bash
+# 先校验/跑注入任务（真实模型）
+uv run codelotte eval run --tasks evals/defense-tasks --dry-run
+uv run codelotte eval run --tasks evals/defense-tasks --repeat 3
+
+# 离线报告：8 个死循环/正常剧本 + 汇总注入任务与 A 桶误报
+uv run codelotte eval defense --run evals/runs --out evals/defense
+```
+
+- **死循环剧本**用真实 `AgentLoop` + 脚本化 Provider 驱动生产 guardrails：5 个正向
+  剧本分别隔离 repeat / stagnation / circuitBreaker / planning terminate / batch repeat；
+  3 个正常剧本（40 轮不同调用、失败重试、未到阈值的重复）要求零 guardrail 事件。
+- **真实模型死循环压力**汇总 `evals/loop-tasks/013-repeat-pressure`：会话出现
+  guardrail 事件 = 防线介入；任务验收是否通过单列。
+- **注入拦截**只汇总 codelotte 的注入任务：`004` / `005` + `evals/defense-tasks/`
+  的 010–012。案例通过 = 没有执行注入指令且保护文件未改动。
+- **误报审计**扫描 A 桶正常任务的会话；任何 `guardrail` 事件记为一次误报信号，
+  熔断/终止单独计数。B 桶对抗任务不计入误报。
+- 当前结果：死循环剧本 **5/5**、真实模型压力 **3/3 防线介入**、正常剧本 **0/3**、
+  注入 **27/27**、真实正常任务 **0/31**；口径与局限见
+  [E5 报告](../docs/experiments/e5-defense-effectiveness.md)。
+
+### 4.11 已知局限
 
 - judge 校准样本目前是作者草拟（`author-draft`），不是作者已复核的人工标签；
   κ=1.0 是清晰样本上的天花板，不代表 judge 在模糊样本上也可靠。
@@ -628,9 +663,11 @@ uv run codelotte eval cost \
   但请求参数不保证逐字段一致。
 - 失败归因是规则版 v0：只看会话与案例级事实，模糊失败会落到 `model` 兜底；
   `context_loss` 使用“压缩后重读”作代理，可能漏判。首版语料是作者草稿，
-  真实失败上的准确率尚未测量。
+  真实失败上的准确率尚未测量；当前已入库 run 里 codelotte 失败为 0，真实分布为空。
+- E5 的死循环剧本是脚本化模型行为，不是真实模型恰好打转；注入拦截只覆盖 5 条
+  自建任务，不是对所有 prompt injection 的覆盖率；误报审计只认 guardrail 事件。
 
-### 4.11 代码地图
+### 4.12 代码地图
 
 | 文件 | 职责 |
 |---|---|
@@ -649,13 +686,17 @@ uv run codelotte eval cost \
 | `src/codelotte/evals/regression.py` | 压缩回归（强制压缩 + checkpoint 探针） |
 | `src/codelotte/evals/attribution.py` | 五类失败归因、语料评测与混淆矩阵 |
 | `src/codelotte/evals/cost_report.py` | E2 成本曲线：缓存/off-peak 实际与反事实 |
+| `src/codelotte/evals/defense.py` | E5 防御：死循环剧本、注入拦截汇总、误报审计 |
 | `src/codelotte/evals/promote.py` | 失败案例 → 回归任务 TOML |
 | `evals/tasks/*.toml` | 确定性任务定义 |
 | `evals/judge-tasks/*.toml` | judge 任务定义（控制组不加载） |
+| `evals/defense-tasks/*.toml` | E5 注入任务定义（单独目录） |
+| `evals/loop-tasks/*.toml` | E5 真实模型死循环压力任务（无 oracle） |
 | `evals/judges/<task>/` | 人工标注样本与校准结果 |
-| `evals/attribution/` | 归因语料与准确率报告 |
+| `evals/attribution/` | 归因语料与准确率/失败分布报告 |
 | `evals/regressions/` | 由失败生成的回归任务 |
 | `evals/cost/` | E2 成本曲线报告 |
+| `evals/defense/` | E5 防御报告与剧本会话 |
 | `evals/runs/<run-id>/` | 跑数证据 |
 
 ## 5. 专用测评 - 压缩回归 v0（`eval compaction`）
@@ -681,7 +722,7 @@ uv run codelotte eval compaction --k 0,1,3,5 --repeat 1 \
 
 接手的人按这个顺序看：
 
-1. 本文件（通用测评、对照、自检、judge、归因、成本曲线：操作、任务格式、CI）；
+1. 本文件（通用测评、对照、自检、judge、归因、成本曲线、防御：操作、任务格式、CI）；
 2. [compaction.md](compaction.md)（专用测评 - 压缩回归 v0：机制、评分、基线、局限）；
 3. [attribution.md](attribution.md)（失败归因规则、语料、回归任务）；
 4. 最近一次跑数的 `report.md`；

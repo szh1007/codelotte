@@ -1,7 +1,8 @@
 # 评测跑数记录
 
 > `evals/runs/` 下每一轮评测一个目录；本文是所有评测（通用测评 + 专用测评 +
-> 对照组 + 控制 agent 自检 + LLM judge + 失败归因 + 成本曲线）的索引与记录约定。
+> 对照组 + 控制 agent 自检 + LLM judge + 失败归因 + 成本曲线 + 防御有效性）的
+> 索引与记录约定。
 > 总览：[README.md](README.md)；操作手册：[run.md](run.md)（通用测评、对照、自检、
 > judge、归因、成本）·
 > [compaction.md](compaction.md)（专用测评 - 压缩回归 v0）·
@@ -32,7 +33,7 @@ evals/runs/
 - 归因语料在 `evals/attribution/`（可以重跑覆盖）；由失败生成的回归任务在
   `evals/regressions/`，它们是任务定义，不参与默认 `eval run`。
 
-## 2. 八类评测的产出
+## 2. 九类评测的产出
 
 | 评测 | 命令 | 产出 |
 |---|---|---|
@@ -44,6 +45,7 @@ evals/runs/
 | 失败归因准确率 | `eval attribute` | `evals/attribution/attribution-report.md` / `.json`（不是 run 目录） |
 | 失败 → 回归任务 | `eval regression` | `evals/regressions/<新 id>.toml`（不是 run 目录） |
 | 成本曲线 | `eval cost` | `evals/cost/cost-report.md` / `.json`（不是 run 目录） |
+| 防御有效性 | `eval defense` | `evals/defense/defense-report.md` / `.json` + 剧本 `sessions/`（不是 run 目录） |
 
 - **`report.md`**：人读报表。通用测评看 pass^N、成功率、成本/耗时；压缩回归看完成率、
   有效案例、状态保留率；声明了 judge 的任务另有“LLM judge”段（分数/理由/κ/⚠）；
@@ -72,6 +74,9 @@ evals/runs/
 | `20261018T155840Z-fa9db83-compare` | 对照组（E4） | 3 组 × 9 任务 × 2 次：codelotte 18/18（125 调用，¥0.128218，13.9s/案例）、mini-swe-agent 18/18（99 调用，¥0.111146，20.9s/案例）、裸 API 0/18（18 调用，¥0.280970，17.3s/案例）；实验报告 `docs/experiments/e4-scaffolding-tax.md` |
 | `20261018T165516Z-8a01d9f` | 压缩回归（E1 短任务） | 6 任务 × k=0/1/3/5 × 3 组合（minimal/seven、minimal/compact、wide/seven）× 1 次 = 72 条案例；651 任务调用 + 158 探针；主任务 ¥1.185327 + 探针 ¥0.374119 = ¥1.559446；完成率/有效保留率 100%（天花板），compact k=5 −22.8%，wide k=5 +15.8% 但 6/6 有效（按有效案例约 −3.5%；单次重复，k=0 噪声约 18%）；实验报告 `docs/experiments/e1-compaction-curve.md` |
 | `20261019T013233Z-8a01d9f` | 压缩回归（E1 长任务补充） | 007–009 × k=0/1/3/5 × 3 组合 × 1 次 = 36 条案例；311 任务调用，¥2.096687；完成率 100%，保留率 83–97%；compact 93.3% vs 基线 87.8%，总成本 −23.1%；wide 86.7%，+2.2% |
+| `20261019T023111Z-287e2cb` | 通用测评（E5 注入 004/005） | 2 任务 × 3 次：6/6 通过，30 次调用，¥0.035142，39.2s（峰值；Docker） |
+| `20261019T023154Z-287e2cb` | 通用测评（E5 注入 010–012） | 3 任务 × 3 次：9/9 通过，45 次调用，¥0.047238，49.4s（峰值；Docker） |
+| `20261019T024620Z-287e2cb` | 通用测评（E5 死循环压力 013） | 1 任务 × 3 次：3/3 通过（防线介入后模型改法），62 次调用，¥0.079322，74.6s（峰值；Docker） |
 
 E2 成本曲线记录（不是跑数目录）：
 
@@ -87,11 +92,17 @@ LLM judge 校准记录（不是跑数目录）：
 | 2026-10-18 | `101-concurrency-review` | 20 | `author-draft` | 1.000 | 100.0% | ¥0.071073 | ⚠ 草稿标注；10 好/10 坏样本，待作者复核 |
 | 2026-10-18 | `102-api-design-tradeoffs` | 20 | `author-draft` | 1.000 | 100.0% | ¥0.083567 | ⚠ 草稿标注；10 好/10 坏样本，待作者复核 |
 
-失败归因准确率记录（不是跑数目录）：
+失败归因准确率与失败分布记录（不是跑数目录）：
 
-| 日期 | 语料 | 样本 | 标注者 | 准确率 | 命令退出码 | 结论 |
+| 日期 | 语料 | 样本 | 标注者 | 准确率 / 宏观 F1 | 真实失败分布 | 命令退出码 | 结论 |
+|---|---|---|---|---|---|---|---|
+| 2026-10-19 | `evals/attribution/labels.jsonl` + `evals/runs/` | 15（五类各 3） | `author-draft` | 100.0% / 1.000 | codelotte 0 条；非 codelotte 23 条（raw）；控制 42 / 压缩 124 跳过 | 1 | ⚠ 草稿标注；构造语料有天花板效应，真实 codelotte 失败为 0，分布为空 |
+
+E5 防御有效性记录（不是跑数目录）：
+
+| 日期 | 死循环剧本 | 真实模型压力 | 正常剧本误报 | 注入任务 | 真实 A 桶误报 | 报告 |
 |---|---|---|---|---|---|---|
-| 2026-10-18 | `evals/attribution/labels.jsonl` | 15（五类各 3） | `author-draft` | 100.0% | 1 | ⚠ 草稿标注；构造语料有天花板效应，真实失败上的准确率待作者复核 |
+| 2026-10-19 | 5/5 拦截（repeat/stagnation/circuitBreaker/planning terminate/batch） | 3/3 防线介入（任务完成 3/3） | 0/3 | 27/27 未执行注入（5 任务 × 多 run） | 0/31 案例出现 guardrail 事件 | `evals/defense/defense-report.md` |
 
 回归任务示例：`evals/regressions/regression-002-fix-off-by-one.toml` 由
 `eval regression` 从 raw 对照的真实失败生成；raw 没有 codelotte 轨迹，归因段如实
@@ -130,9 +141,12 @@ uv run codelotte eval judge
 uv run codelotte eval run --tasks evals/judge-tasks --task 006-code-review \
   --repeat 1 --no-sandbox
 
-# 失败归因准确率（离线）与失败 → 回归任务
-uv run codelotte eval attribute
+# 失败归因准确率 + 真实失败分布（离线）与失败 → 回归任务
+uv run codelotte eval attribute --run evals/runs
 uv run codelotte eval regression --run evals/runs/<运行目录> --task <任务 id> --dry-run
+
+# 防御有效性（死循环剧本 + 注入拦截 + 误报审计；离线）
+uv run codelotte eval defense --run evals/runs
 
 # 打开最新报表
 # evals/runs/<新目录>/report.md

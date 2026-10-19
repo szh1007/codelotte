@@ -36,10 +36,21 @@ from codelotte.evals.attribution import (
     AttributionError,
     build_attribution_report,
     classify_failure,
+    collect_failure_distribution,
     evaluate_corpus,
     load_attribution_samples,
 )
 from codelotte.evals.compare import run_comparison
+from codelotte.evals.defense import (
+    DefenseError,
+    analyze_defense,
+    audit_false_positives,
+    collect_injection_results,
+    collect_loop_pressure_results,
+    defense_summary,
+    scenario_plan,
+    write_defense_report,
+)
 from codelotte.evals.cost_report import analyze_run, write_cost_report
 from codelotte.evals.execution import CodelotteHarness
 from codelotte.evals.judge import (
@@ -241,7 +252,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     eval_parser = subcommands.add_parser(
-        "eval", help="评测与回归实验（票据 13/15）：一条命令跑出完整报表"
+        "eval",
+        help="评测与回归实验（票据 13/15/18/20/21）：一条命令跑出完整报表",
     )
     eval_sub = eval_parser.add_subparsers(dest="eval_command", metavar="实验")
     compaction_parser = eval_sub.add_parser(
@@ -488,6 +500,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"达标阈值 0–1（默认 {DEFAULT_MIN_ACCURACY}）",
     )
     attribute_parser.add_argument(
+        "--run",
+        action="append",
+        metavar="目录",
+        help="跑数目录或 runs 根目录（可重复；给了才汇总真实失败分布）",
+    )
+    attribute_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="只校验样本类别/数量并打印计划，不跑分类、不写报告",
@@ -552,6 +570,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="只校验 run/report.json 并打印调用数，不写报告",
+    )
+
+    defense_parser = eval_sub.add_parser(
+        "defense",
+        help="防御有效性（E5）：死循环剧本拦截、注入任务拦截与正常任务误报审计",
+    )
+    defense_parser.add_argument(
+        "--run",
+        action="append",
+        metavar="目录",
+        help="跑数目录或 runs 根目录（可重复；默认仓库根下的 evals/runs）",
+    )
+    defense_parser.add_argument(
+        "--out",
+        metavar="目录",
+        help="报告输出目录（默认仓库根下的 evals/defense）",
+    )
+    defense_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只打印剧本与 run 计数，不执行剧本、不写报告",
     )
     return parser
 
@@ -1229,12 +1268,24 @@ def _run_eval_attribute(args: argparse.Namespace) -> int:
             raise AttributionError(
                 f"归因样本缺少这些类别：{missing}（五类都要有样本）"
             )
+        distribution = None
+        if args.run:
+            distribution = collect_failure_distribution(
+                [Path(item) for item in args.run]
+            )
         if args.dry_run:
             print(f"样本文件：{samples_path}")
             for failure_class in FAILURE_CLASSES:
                 print(
                     f"- {FAILURE_LABELS[failure_class]}（{failure_class}）："
                     f"{counts[failure_class]} 条"
+                )
+            if distribution is not None:
+                print(
+                    f"失败分布来源：{len(distribution.runs)} 个 run，"
+                    f"{distribution.codelotte_failures} 条 codelotte 失败"
+                    f"（未归因 {distribution.unattributed}），"
+                    f"非 codelotte {distribution.non_codelotte} 条"
                 )
             print("dry-run：样本类别/数量校验通过，未跑分类、未写报告。")
             return 0
@@ -1245,14 +1296,21 @@ def _run_eval_attribute(args: argparse.Namespace) -> int:
             run,
             samples_path=samples_path,
             min_accuracy=args.min_accuracy,
+            distribution=distribution,
         )
         draft = run.has_draft_labels
         passed = run.is_acceptable(args.min_accuracy)
         print(
             f"[attribute] 准确率 {run.correct}/{run.total}（{run.accuracy:.1%}），"
-            f"阈值 {args.min_accuracy:.0%}；"
+            f"宏观 F1 {run.macro_f1:.3f}，阈值 {args.min_accuracy:.0%}；"
             f"{'⚠ 草稿标注' if draft else '✅ 已复核'}"
         )
+        if distribution is not None:
+            print(
+                f"[attribute] 失败分布：{distribution.codelotte_failures} 条 codelotte 失败"
+                f"（未归因 {distribution.unattributed}），"
+                f"非 codelotte {distribution.non_codelotte} 条"
+            )
         print(report_path)
         return 0 if passed else 1
     except (AttributionError, ValueError, OSError) as exc:
@@ -1433,6 +1491,46 @@ def _run_eval_cost(args: argparse.Namespace, *, argv: Sequence[str]) -> int:
         print(path)
         return 0
     except (ConfigError, ValueError, OSError) as exc:
+        return _fail(exc)
+
+
+def _run_eval_defense(args: argparse.Namespace) -> int:
+    """E5 防御有效性：离线剧本 + 真实跑数的注入拦截/误报审计。"""
+    try:
+        repo_root = find_repo_root(Path.cwd())
+        run_dirs = (
+            [Path(raw) for raw in args.run]
+            if args.run
+            else [repo_root / "evals" / "runs"]
+        )
+        for run_dir in run_dirs:
+            if not run_dir.exists():
+                raise DefenseError(f"跑数目录不存在：{run_dir}")
+        if args.dry_run:
+            print("死循环剧本：")
+            for name, kind, expected in scenario_plan():
+                goal = " + ".join(expected) if expected else "无拦截"
+                print(f"- {name}（{kind}）：{goal}")
+            pressure = collect_loop_pressure_results(run_dirs)
+            injection = collect_injection_results(run_dirs)
+            audit = audit_false_positives(run_dirs)
+            print(
+                f"跑数：死循环压力 {pressure.attempts} 条，"
+                f"注入案例 {injection.attempts}；正常任务 {audit.normal_cases}"
+            )
+            print("dry-run：未执行剧本、未写报告。")
+            return 0
+        out_dir = (
+            Path(args.out) if args.out else repo_root / "evals" / "defense"
+        )
+        report = analyze_defense(
+            run_dirs=run_dirs, session_dir=out_dir / "sessions"
+        )
+        path = write_defense_report(out_dir, report)
+        print(defense_summary(report))
+        print(path)
+        return 0 if report.passed else 1
+    except (DefenseError, ValueError, OSError) as exc:
         return _fail(exc)
 
 
@@ -1776,12 +1874,14 @@ def main(argv: list[str] | None = None) -> int:
                 args,
                 argv=list(argv) if argv is not None else sys.argv[1:],
             )
+        if eval_command == "defense":
+            return _run_eval_defense(args)
         parser.error(
-            "用法：codelotte eval {compaction,run,compare,controls,judge,attribute,regression,cost} …；"
+            "用法：codelotte eval {compaction,run,compare,controls,judge,attribute,regression,cost,defense} …；"
             "compaction 跑压缩回归，run 跑通用测评，compare 跑对照组，"
             "controls 跑控制 agent 自检，judge 校准 LLM judge，"
             "attribute 量归因准确率，regression 把失败转成回归任务，"
-            "cost 重算缓存/off-peak 成本曲线"
+            "cost 重算缓存/off-peak 成本曲线，defense 量死循环/注入防御与误报"
         )
     if args.command == "export":
         return _run_export(args)

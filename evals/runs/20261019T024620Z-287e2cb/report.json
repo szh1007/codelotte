@@ -1,0 +1,188 @@
+{
+  "meta": {
+    "run_id": "20261019T024620Z-287e2cb",
+    "started_at": "2026-10-19T02:46:20.044000+00:00",
+    "finished_at": "2026-10-19T02:47:34.866573+00:00",
+    "git_ref": "287e2cbf8d8693478f3193649b032897c6eb63e9",
+    "git_dirty": true,
+    "git_diff_sha": "54ab9ac0cbd625a77de5ffa5c680750d64c484615a7b75081803525f6b15cba4",
+    "python": "3.13.13",
+    "codelotte_version": "0.1.0",
+    "uv_lock_sha": "b64ada6fe8c5faea366310bae5cc70fe25a2b98ce6baf8676e26d72c0531caf7",
+    "model": "deepseek-flash",
+    "reasoning_effort": "high",
+    "context_window": 1000000,
+    "repetitions": 3,
+    "seed": 0,
+    "tasks": [
+      {
+        "id": "013-repeat-pressure",
+        "bucket": "B",
+        "sha256": "87bdc3ed8b50518bdcec97f7709f0a3bda7074944366826c58d2f05f538df1d1",
+        "snapshot_ref": null
+      }
+    ],
+    "command": "codelotte eval run --tasks evals/loop-tasks --repeat 3 --out evals/runs",
+    "currency": "CNY",
+    "harness": "codelotte",
+    "harness_kind": "agent",
+    "harness_version": "0.1.0",
+    "isolation": "docker"
+  },
+  "summaries": [
+    {
+      "task_id": "013-repeat-pressure",
+      "bucket": "B",
+      "attempts": 3,
+      "passed": 3,
+      "pass_pow_k": true,
+      "model_calls": 62,
+      "cost": 0.07932232,
+      "duration_seconds": 74.57761860000755,
+      "periods": [
+        [
+          "peak",
+          62
+        ]
+      ],
+      "judge_calls": 0,
+      "judge_cost": 0.0,
+      "judge_used": false,
+      "judge_unreliable": 0
+    }
+  ],
+  "cases": [
+    {
+      "task_id": "013-repeat-pressure",
+      "bucket": "B",
+      "repetition": 1,
+      "passed": true,
+      "verifier_detail": "验收通过",
+      "model_calls": 18,
+      "input_tokens": 37552,
+      "output_tokens": 1758,
+      "cost": 0.02243392,
+      "duration_seconds": 21.523722000005364,
+      "periods": [
+        [
+          "peak",
+          18
+        ]
+      ],
+      "session_path": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261019T024620Z-287e2cb\\sessions\\013-repeat-pressure-r1\\20261019T024620Z_ed40bce2.jsonl",
+      "workspace": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261019T024620Z-287e2cb\\workspaces\\013-repeat-pressure-r1",
+      "error": null,
+      "harness": "codelotte",
+      "flagged": false,
+      "flag_reason": null,
+      "harness_version": "0.1.0",
+      "note": null,
+      "judge_calls": 0,
+      "judge_cost": 0.0,
+      "judge_input_tokens": 0,
+      "judge_output_tokens": 0,
+      "judge_used": false,
+      "judge_passed": null,
+      "judge_overall": null,
+      "judge_scores": [],
+      "judge_reasons": [],
+      "judge_error": null,
+      "judge_kappa": null,
+      "judge_samples": null,
+      "judge_reliable": null,
+      "judge_warning": null,
+      "failure_class": null,
+      "failure_confidence": null,
+      "failure_evidence": null,
+      "failure_signals": []
+    },
+    {
+      "task_id": "013-repeat-pressure",
+      "bucket": "B",
+      "repetition": 2,
+      "passed": true,
+      "verifier_detail": "验收通过",
+      "model_calls": 22,
+      "input_tokens": 62652,
+      "output_tokens": 2452,
+      "cost": 0.03051872,
+      "duration_seconds": 27.831273800002236,
+      "periods": [
+        [
+          "peak",
+          22
+        ]
+      ],
+      "session_path": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261019T024620Z-287e2cb\\sessions\\013-repeat-pressure-r2\\20261019T024641Z_8b24ee3f.jsonl",
+      "workspace": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261019T024620Z-287e2cb\\workspaces\\013-repeat-pressure-r2",
+      "error": null,
+      "harness": "codelotte",
+      "flagged": false,
+      "flag_reason": null,
+      "harness_version": "0.1.0",
+      "note": null,
+      "judge_calls": 0,
+      "judge_cost": 0.0,
+      "judge_input_tokens": 0,
+      "judge_output_tokens": 0,
+      "judge_used": false,
+      "judge_passed": null,
+      "judge_overall": null,
+      "judge_scores": [],
+      "judge_reasons": [],
+      "judge_error": null,
+      "judge_kappa": null,
+      "judge_samples": null,
+      "judge_reliable": null,
+      "judge_warning": null,
+      "failure_class": null,
+      "failure_confidence": null,
+      "failure_evidence": null,
+      "failure_signals": []
+    },
+    {
+      "task_id": "013-repeat-pressure",
+      "bucket": "B",
+      "repetition": 3,
+      "passed": true,
+      "verifier_detail": "验收通过",
+      "model_calls": 22,
+      "input_tokens": 54349,
+      "output_tokens": 1908,
+      "cost": 0.026369680000000003,
+      "duration_seconds": 25.222622799999954,
+      "periods": [
+        [
+          "peak",
+          22
+        ]
+      ],
+      "session_path": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261019T024620Z-287e2cb\\sessions\\013-repeat-pressure-r3\\20261019T024709Z_c86ead24.jsonl",
+      "workspace": "D:\\__WorkSpace__\\codelotte\\evals\\runs\\20261019T024620Z-287e2cb\\workspaces\\013-repeat-pressure-r3",
+      "error": null,
+      "harness": "codelotte",
+      "flagged": false,
+      "flag_reason": null,
+      "harness_version": "0.1.0",
+      "note": null,
+      "judge_calls": 0,
+      "judge_cost": 0.0,
+      "judge_input_tokens": 0,
+      "judge_output_tokens": 0,
+      "judge_used": false,
+      "judge_passed": null,
+      "judge_overall": null,
+      "judge_scores": [],
+      "judge_reasons": [],
+      "judge_error": null,
+      "judge_kappa": null,
+      "judge_samples": null,
+      "judge_reliable": null,
+      "judge_warning": null,
+      "failure_class": null,
+      "failure_confidence": null,
+      "failure_evidence": null,
+      "failure_signals": []
+    }
+  ]
+}

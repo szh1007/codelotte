@@ -289,3 +289,28 @@ def test_regression_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "dry-run" in result.stdout
     assert not out.exists()
+
+
+def test_attribute_command_includes_failure_distribution_from_runs(tmp_path: Path) -> None:
+    labels = _corpus(tmp_path)
+    out = tmp_path / "out"
+    run = _run_dir(tmp_path)
+
+    result = run_cli(
+        "eval",
+        "attribute",
+        "--samples",
+        str(labels),
+        "--out",
+        str(out),
+        "--run",
+        str(run),
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = (out / "attribution-report.md").read_text(encoding="utf-8")
+    assert "## 失败分布" in report
+    assert "循环" in report
+    payload = json.loads((out / "attribution-report.json").read_text(encoding="utf-8"))
+    assert payload["failure_distribution"]["attributed"]["loop"] == 1
+    assert payload["failure_distribution"]["total_failures"] == 1

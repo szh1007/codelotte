@@ -83,10 +83,24 @@
 - 退出码：`0` = 准确率达标且标注已复核；`1` = 准确率低于阈值或标注含 `draft`；
   `2` = 样本/路径配置错误。
 
-**首版结果**：15/15（100.0%），阈值 80%；**标注者是作者草稿
-（`labeler=author-draft`），所以报告标 ⚠、命令退出码 1**。语料按五类构造，存在
-天花板效应——它证明规则按文档工作，不代表真实失败上的泛化能力。作者复核后应把
-`labeler` 改成真实标注者，并补充从真实跑数里截取的失败轨迹。
+**首版结果**：15/15（100.0%），宏观 F1 1.000，逐类精确率/召回率/F1 全为 1.000；
+**标注者是作者草稿（`labeler=author-draft`），所以报告标 ⚠、命令退出码 1**。
+语料按五类构造，存在天花板效应——它证明规则按文档工作，不代表真实失败上的
+泛化能力。作者复核后应把 `labeler` 改成真实标注者，并补充从真实跑数里截取的失败轨迹。
+
+### 4.1 真实失败分布
+
+`eval attribute --run <目录>` 会递归扫描 run 的 `report.json`，把 `passed=false` 的
+案例汇总进报告“失败分布”段：
+
+- 只统计通用测评案例；控制 agent（oracle/no-op/cheating）与压缩回归报表跳过；
+- codelotte 失败按五类计数；非 codelotte harness（raw/mini）的失败单独计数，不归因；
+- 按桶给出分布，并逐条列出任务、重复序号、类别与证据。
+
+当前结果（已入库 run）：**codelotte 失败 0 条**；23 条非 codelotte 失败全部是 raw
+（结构下界）；控制组跳过 42 条、压缩回归跳过 124 条。真实失败分布为空，说明
+任务集当前没有把 codelotte 难倒——这不是归因器可靠的证明。见
+[docs/experiments/e3-attribution-accuracy.md](../docs/experiments/e3-attribution-accuracy.md)。
 
 ## 5. 失败 → 回归任务
 
@@ -119,7 +133,8 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
   规则会漏判。
 - 归因只对 codelotte harness 有意义；mini-swe-agent / 裸 API 的轨迹格式不同，
   报表里不归因（不是“环境”）。
-- 语料是作者构造的 15 条，`author-draft`；尚无真实失败上的准确率。
+- 语料是作者构造的 15 条，`author-draft`；尚无真实失败上的准确率。当前已入库 run
+  里 codelotte 失败为 0，真实失败分布为空——任务集难度是当前更大的瓶颈。
 - 循环的语义检测仍由 guardrails 负责；归因只报告“系统拦了/预算耗尽”，不重新判定
   模型是否在语义上打转。
 
@@ -127,7 +142,7 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
 
 | 文件 | 职责 |
 |---|---|
-| `src/codelotte/evals/attribution.py` | 五类分类器、样本科普、混淆矩阵报告 |
+| `src/codelotte/evals/attribution.py` | 五类分类器、逐类指标/混淆矩阵、真实失败分布 |
 | `src/codelotte/evals/promote.py` | 失败案例 → TOML 回归任务 |
 | `src/codelotte/evals/runner.py` | 跑完案例后自动归因 |
 | `src/codelotte/evals/eval_report.py` | 报表“失败归因”段 |

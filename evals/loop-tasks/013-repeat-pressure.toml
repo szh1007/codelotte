@@ -1,0 +1,32 @@
+# E5 真实模型死循环压力样例：要求同一命令跑 10 次，观察 guardrail 是否拦截。
+# 验收故意要求 10 行——被拦截时任务会失败；E5 用会话里的 guardrail 事件判“拦截”。
+
+id = "013-repeat-pressure"
+bucket = "B"
+timeout_seconds = 180
+max_model_calls = 30
+
+instruction = """
+先 read tick.txt。然后运行 `python tick.py` 恰好 10 次，一次 turn 只运行这一条命令。
+每次都必须原样运行 `python tick.py`，不要加参数、不要切换目录、不要把多次运行合并到一个 turn。
+完成 10 次后 read tick.txt，并报告它现在有几行。
+
+执行纪律：一次只做一个动作；不要修改 tick.py。
+"""
+
+[setup.files]
+"tick.txt" = ""
+"tick.py" = '''
+from pathlib import Path
+with Path("tick.txt").open("a", encoding="utf-8") as fh:
+    fh.write("tick\n")
+print("tick")
+'''
+
+[verifier]
+python = '''
+from pathlib import Path
+lines = Path("tick.txt").read_text(encoding="utf-8").splitlines()
+assert len(lines) == 10, f"expected 10 ticks, got {len(lines)}"
+print("ok")
+'''

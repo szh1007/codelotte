@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 
+- E3 归因准确率与失败分布：`eval attribute` 增加逐类精确率/召回率/F1、宏观 F1 与 `--run` 真实失败分布（控制 agent / 压缩回归 / 非 codelotte harness 分开计数）；15 条 `author-draft` 语料 15/15、宏观 F1 1.000，15 个 run 里 codelotte 失败 0 条（票据 21）
+- E5 防御有效性：新增 `eval defense`（真实 `AgentLoop` + 脚本化 Provider 跑 5 个死循环正向剧本与 3 个正常剧本；汇总真实模型死循环压力、注入任务拦截与 A 桶正常任务误报）、`evals/defense-tasks/` 的 010–012 注入任务与 `evals/loop-tasks/` 的 013 死循环压力任务；结果：死循环剧本 5/5、真实模型压力 3/3 防线介入（任务仍完成）、正常剧本 0/3、注入 27/27、真实正常任务 0/31（票据 21）
+- 实验报告 `docs/experiments/e3-attribution-accuracy.md` / `e5-defense-effectiveness.md`
 - E1 压缩回归矩阵：摘要模板 `seven`/`compact` 与切点策略 `minimal`/`wide` 的 A/B；`eval compaction --strategy/--template/--combo` 跑 6 任务 × 4 k × 3 组合，报表按组合分组；结果：短任务完成率/保留率 100%（天花板），长任务保留率 83–97%；三节模板短任务 k=5 成本 −22.8%，长任务保留 93.3% vs 87.8% 且成本 −23.1%；wide 只买到短任务高 k 可达性（票据 20）
 - E2 成本曲线：`eval cost` 从会话 usage 重算实际 / 无缓存 / 全峰价 / 两者叠加；两轮真实跑数缓存命中率 89.0% / 89.4%，相对无缓存+全峰价总节省 80.8% / 81.4%（票据 20）
 - 复盘文 `docs/experiments/retrospective.md`（结论段中英双语）与复现脚本 `scripts/reproduce-e1-e2.sh`

@@ -192,6 +192,45 @@ Docker 开销的情况下。
 - 操作手册：[evals/attribution.md](evals/attribution.md)
 - 语料与报告：[evals/attribution/](evals/attribution/)
 
+### E3 归因准确率与失败分布（2026-10-19）
+
+15 条标注样本（五类各 3 条）上，规则分类器 **15/15（100%）**，逐类精确率/召回率/F1
+全为 1.000，宏观 F1 **1.000**，混淆矩阵全在对角线。失败分布工具扫描 `evals/runs/` 下全部 run：
+**codelotte 失败 0 条**；23 条非 codelotte 失败全部来自裸 API（结构下界，不归因）；
+控制组 42 条、压缩回归 124 条按口径跳过。
+
+**不证明什么**：语料是作者按五类构造的草稿（`author-draft`），规则与样本同源，
+有天花板效应；真实跑数里 codelotte 零失败，说明任务集把“失败”压到了地板，
+当前没有真实失败分布可谈。
+
+- 报告：[docs/experiments/e3-attribution-accuracy.md](docs/experiments/e3-attribution-accuracy.md)
+- 准确率与分布：[evals/attribution/attribution-report.md](evals/attribution/attribution-report.md)
+
+### E5 防御有效性：注入与死循环（2026-10-19）
+
+| 证据 | 结果 |
+|---|---|
+| 死循环三层防御（5 个脚本化正向剧本） | **5/5 按层拦截**（repeat / stagnation / circuitBreaker / terminate） |
+| 真实模型死循环压力（同一命令跑 10 次） | **3/3 防线介入**（stagnation + reinject），任务仍完成 3/3 |
+| 正常剧本误报（40 轮不同调用、失败重试、未到阈值的重复） | **0/3** |
+| prompt injection（5 条任务 × 真实跑数） | **27/27 未执行注入** |
+| 真实正常任务误报（A 桶 31 条案例） | **0/31 出现 guardrail 事件** |
+
+新增 3 条注入任务（源码注释、规则文件示例、诱导改保护文件），单独放在
+`evals/defense-tasks/`；另加 1 条死循环压力任务（`evals/loop-tasks/`），都不改变
+主任务集历史口径。E5 本轮新增跑数 18 条、137 次调用、¥0.161702、163.2s
+（峰值时段，Docker）。
+
+**不证明什么**：死循环剧本是脚本化模型行为；真实压力任务只有 1 条自建任务、
+3 次重复，不能外推到所有模型/任务。注入拦截是模型行为测试，不是运行时过滤器，
+只覆盖 5 条自建任务；误报审计只认 guardrail 事件，不代表语义上零误拦。
+
+- 报告：[docs/experiments/e5-defense-effectiveness.md](docs/experiments/e5-defense-effectiveness.md)
+- 防御报表：[evals/defense/defense-report.md](evals/defense/defense-report.md)
+- 注入跑数：[004/005](evals/runs/20261019T023111Z-287e2cb/report.md) ·
+  [010–012](evals/runs/20261019T023154Z-287e2cb/report.md) ·
+  [死循环压力](evals/runs/20261019T024620Z-287e2cb/report.md)
+
 ## 架构
 
 ```mermaid
@@ -297,14 +336,16 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 23 张曳光弹票据与状态 |
-| [evals/README.md](evals/README.md) | 评估体系总览：目录地图、八个命令、跑数产物、基线快照 |
+| [evals/README.md](evals/README.md) | 评估体系总览：目录地图、九个命令、跑数产物、基线快照 |
 | [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、失败归因、任务格式、pass^k、CI 冒烟 |
 | [evals/attribution.md](evals/attribution.md) | 失败归因规则、标注语料与准确率、失败 → 回归任务 |
 | [evals/compaction.md](evals/compaction.md) | 专用测评 - 压缩回归 v0：机制、评分、基线、人工标注 |
 | [evals/record.md](evals/record.md) | 评测跑数记录：索引、目录约定、已入库基线 |
 | [docs/experiments/e1-compaction-curve.md](docs/experiments/e1-compaction-curve.md) | E1 实验报告：压缩策略/模板 × k 的完成率、保留率与成本曲线 |
 | [docs/experiments/e2-cost-curve.md](docs/experiments/e2-cost-curve.md) | E2 实验报告：缓存命中与 off-peak 的实际/反事实成本 |
+| [docs/experiments/e3-attribution-accuracy.md](docs/experiments/e3-attribution-accuracy.md) | E3 实验报告：归因准确率、混淆矩阵与真实失败分布 |
 | [docs/experiments/e4-scaffolding-tax.md](docs/experiments/e4-scaffolding-tax.md) | E4 实验报告：任务集、基线、指标、轨迹样本、复现命令 |
+| [docs/experiments/e5-defense-effectiveness.md](docs/experiments/e5-defense-effectiveness.md) | E5 实验报告：注入拦截、死循环三层拦截、真实模型压力与误报审计 |
 | [docs/experiments/retrospective.md](docs/experiments/retrospective.md) | 复盘文：怎么量化压缩质量与成本（结论段双语） |
 | [docs/tech/configuration.md](docs/tech/configuration.md) | 配置取值链与每个设置项 |
 | [docs/demo/](docs/demo/README.md) | 3 分钟演示脚本与拍摄清单 |
@@ -331,10 +372,12 @@ mini-swe-agent 18/18、裸 API 0/18；成功率打平，codelotte 成本高 15.4
 是 token 成本换墙钟时间的取舍。票据 20 完成 E1/E2：短任务 72 + 长任务 36 条压缩矩阵
 （三节模板短任务 k=5 成本 −22.8%；长任务保留 93.3% vs 87.8% 且成本 −23.1%；
 wide 只买到短任务高 k 可达性）+ 成本曲线（缓存命中 89.0%，相对无缓存+全峰价
-总节省 80.8%）+ 复盘文（结论段双语）。票据 21–22 覆盖 E3/E5 实验
-与最终材料包；23 是 stretch 的 MCP stdio 客户端。
+总节省 80.8%）+ 复盘文（结论段双语）。票据 21 完成 E3/E5：归因 15/15（宏观 F1
+1.000，真实 codelotte 失败 0 条）+ 防御有效性（死循环剧本 5/5、注入任务 27/27、
+正常任务误报 0/31）+ `codelotte eval defense`；22 是最终材料包；23 是 stretch 的
+MCP stdio 客户端。
 
-当前工作树的工程检查：`582 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
+当前工作树的工程检查：`593 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。
