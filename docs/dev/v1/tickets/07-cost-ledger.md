@@ -16,10 +16,10 @@
 
 ## 实施记录（2026-10-15）
 
-- **价目表数据化**（[models.json](../../src/codelotte/providers/models.json)，随包内置）：**人民币元**峰价表（flash 命中 0.04 / 未命中 2 / 输出 8；v4-pro 0.30 / 9.0 / 27.0，出处：官方定价页 api-docs.deepseek.com/zh-cn/quick_start/pricing，2026-10-16 核对）+ 峰谷窗口 + 节假日表 + `offPeakMultiplier: 0.5`。**谷价不存第二份**：它是"峰价 × 系数"这条规则——数据里存规则，同一个事实只有一个来源。可被 `~/.codelotte/models.json` **整份覆写**（节假日表"可配置"的落实；坏文件以 ConfigError 报出，退出码 2）。账单带货币标识（记录里落 `currency`，导出/审计可追溯——本票刚发生了"误记美元"这一课，见下）。
+- **价目表数据化**（[models.json](../../../../src/codelotte/providers/models.json)，随包内置）：**人民币元**峰价表（flash 命中 0.04 / 未命中 2 / 输出 8；v4-pro 0.30 / 9.0 / 27.0，出处：官方定价页 api-docs.deepseek.com/zh-cn/quick_start/pricing，2026-10-16 核对）+ 峰谷窗口 + 节假日表 + `offPeakMultiplier: 0.5`。**谷价不存第二份**：它是"峰价 × 系数"这条规则——数据里存规则，同一个事实只有一个来源。可被 `~/.codelotte/models.json` **整份覆写**（节假日表"可配置"的落实；坏文件以 ConfigError 报出，退出码 2）。账单带货币标识（记录里落 `currency`，导出/审计可追溯——本票刚发生了"误记美元"这一课，见下）。
 - **定价更正（2026-10-16，用户指出）**：首版按早期调研笔记记的是美元换算值；官方定价页实际以人民币元计价。全链路已改：`models.json` 换成官方元价目、账单/状态栏按目录货币渲染（`format_money`，¥）、usage 记录字段 `usd` → `cost` + 新增 `currency`（记录自描述）；docs/tech/deepseek-api.md §2 留更正说明与出处链接。教训：**价目这类会变的事实，写进数据文件不够，还要给事实源留链接与核对日期**。
 - **时区用固定 +8 而非 tzdata 库**：中国无夏令时，固定偏移是精确的；不为一个时区新增依赖。（2026 全年法定节假日 + 调休上班日已按国办发明电〔2025〕7 号核录；调休周末按 DeepSeek 规则仍算空闲价——规则只说"不含法定节假日"，这处口径写进了 `holidaysNote`，对账时若发现不符由此入手。）
-- **判定与计价是纯函数**（[cost.py](../../src/codelotte/cost.py) `Catalog.period_at` / `price_call`）：传时刻即可复算任意一次调用；`period_at` 拒绝 naive datetime（防"按系统时区误解"这一类静默错账）。
+- **判定与计价是纯函数**（[cost.py](../../../../src/codelotte/cost.py) `Catalog.period_at` / `price_call`）：传时刻即可复算任意一次调用；`period_at` 拒绝 naive datetime（防"按系统时区误解"这一类静默错账）。
 - **计价口径的兜底**：provider 没拆缓存时（hit+miss 盖不住 input），差额按**未命中**记——不拆的部分按贵的那档算，估价宁高不低。DeepSeek 实际总会拆（`_parse_usage` 也补过一道），这是防御性口径。
 - **落盘与广播**：usage 记录新增 `period`（peak/offpeak）、`cost`（目录里没有该模型则 None——token 照记，不瞎估价）、`requestFingerprint`（sha256 前 16 位，SPEC §I；同一状态两次运行指纹一致、历史一变就变）。事件流新增 `CostRecorded`（loop 层事件）而不是改 Provider 层的 `UsageEvent`——计价是应用层事实，不该污染 provider 抽象；TUI/无头都只消费，不自己算账。
 - **账单三组口径一致**：按模型/按时段/按缓存三组金额都**逐次调用按各自时段折算后相加**——不会出现"分类加起来不等于合计"的时段折扣错位。老记录（票据 05 时代无 period/cost）token 照统计、金额置 None，不按今天的价目回溯改账。
@@ -54,4 +54,4 @@
 
 ## 后续变更（2026-10-17，配置 v3）
 
-随包目录移到 **`src/codelotte/providers/models.json`**（provider 的数据随 providers 包走），且与用户级文件的"整份覆写/逐字段合入"关系**已取消**：随包文件只用于计费、展示与上限参考（纯函数逻辑），运行参数（端点/密钥/模型清单）只从 `~/.codelotte/models.json` 读，模型 id 必须在随包目录已适配；窗口/输出上限用户可下调不可上调。细节见 [docs/tech/configuration.md](../tech/configuration.md)。本文上行"可被 `~/.codelotte/models.json` 整份覆写"按此理解。
+随包目录移到 **`src/codelotte/providers/models.json`**（provider 的数据随 providers 包走），且与用户级文件的"整份覆写/逐字段合入"关系**已取消**：随包文件只用于计费、展示与上限参考（纯函数逻辑），运行参数（端点/密钥/模型清单）只从 `~/.codelotte/models.json` 读，模型 id 必须在随包目录已适配；窗口/输出上限用户可下调不可上调。细节见 [docs/tech/configuration.md](../../../tech/configuration.md)。本文上行"可被 `~/.codelotte/models.json` 整份覆写"按此理解。

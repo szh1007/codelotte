@@ -20,7 +20,7 @@
   - 三档判定**全局合并**（deny > ask > allow，SPEC 原文“冲突时 deny > ask > allow”）。
   - 来源分层决定**信任门槛与审计出处**——“任一来源的 deny 不可被更低层级放行”落实为更强的一刀：deny 不被**任何**来源放行（含 CLI，宁严勿松；恶意仓库的通配 allow 压不过用户文件里的 deny，测试钉死）。
   - 无规则命中默认 **ask**（“未命中 allow 的调用一律拒绝”是 headless fail-closed 的前提）。
-- **规则语法**（[permissions.py](../../src/codelotte/permissions.py)）：
+- **规则语法**（[permissions.py](../../../../src/codelotte/permissions.py)）：
   - `tool(pattern)` 或裸 `tool`；pattern 是 shell 风格通配（`*` 跨路径分隔符）。
   - 匹配主体 = 工具的主参数（bash → command，read/write/edit → path）。
   - 规则文件每行 `[allow|ask|deny] 规则`（缺省 allow、`#` 注释、坏行跳过并汇报，不静默）。

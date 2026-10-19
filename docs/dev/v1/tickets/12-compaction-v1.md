@@ -18,7 +18,7 @@
 
 ## 实施记录（2026-10-17）
 
-**模块**：新增 [compaction/](../../src/codelotte/compaction/)——`trigger.py` 纯判定（双触发/
+**模块**：新增 [compaction/](../../../../src/codelotte/compaction/)——`trigger.py` 纯判定（双触发/
 任务边界/最小保留集/上下文大小恢复），`summarize.py` 七项摘要模板与压缩后上下文装配。
 `session/context.py` 负责从记录重装配（最后一条 compaction 生效），`loop.py` 在**每次请求前**
 调用压缩；`cli` 把 `spec.context_window` 同时传给 loop 与 TUI（与状态栏同源）。

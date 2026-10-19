@@ -55,9 +55,9 @@
   `test_eval_mini_baseline.py`（录制代理 + 假 mini 进程 + 轨迹/usage 解析）、
   `test_eval_compare.py`（三组并列报表与自检判定）；CLI 端到端覆盖 `eval controls`
   与 `eval compare`（含 raw 基线）。全量测试从 476 增至 498。
-- **文档**：[evals/run.md](../../evals/run.md) §4.5/§4.6（对照与自检操作、mini 安装、
-  口径与限制）、[evals/record.md](../../evals/record.md)（新目录布局与跑数记录）、
-  [SPEC.md](../../SPEC.md) 测试缝段补充“评测 harness 缝不属于生产测试开关”。
+- **文档**：[evals/run.md](../../../../evals/run.md) §4.5/§4.6（对照与自检操作、mini 安装、
+  口径与限制）、[evals/record.md](../../../../evals/record.md)（新目录布局与跑数记录）、
+  [SPEC.md](../SPEC.md) 测试缝段补充“评测 harness 缝不属于生产测试开关”。
 - **已知局限**：v0 任务太短，codelotte 与 mini 都是 5/5，这一轮证明对照管线与成本口径
   可用，还不足以证明 scaffolding tax；更难的任务集与正式 E4 在票据 19/20。
   另：任务里的“执行纪律”（必须用 read/write）不在验收范围内，三组不是同策略 A/B。

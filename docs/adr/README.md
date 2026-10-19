@@ -1,6 +1,6 @@
 # 架构决策记录（ADR）
 
-> 一条决策一个文件，状态写在文件头的 `Status:` 行。新决策从 0006 起编号；
+> 一条决策一个文件，状态写在文件头的 `Status:` 行。新决策从 0010 起编号；
 > 改变已接受的决定时新增一条，并在旧文末标注 `superseded by NNNN`，不改写历史。
 
 | # | 决策 | 状态 | 日期 | 一句话后果 |
@@ -10,6 +10,10 @@
 | [0003](0003-session-model.md) | append-only JSONL 树 + 压缩即条目 | accepted | 2026-10-13 | 消息、工具调用、usage、压缩、分支同源；导出 / 评测 / 归因共用一份轨迹 |
 | [0004](0004-self-built-llm-adapter.md) | 自研薄 adapter（httpx2 + 内联 SSE），不用 SDK / litellm | accepted（部分实现） | 2026-10-13 | 缓存命中与峰谷计价字段可见；已实现并实测 `openai-completions`，`anthropic-messages` 协议抽象预留、未实现 |
 | [0005](0005-two-layer-execution-security.md) | 权限层与沙箱层相互独立 | accepted | 2026-10-13 | 审批弹窗不是安全边界；bash 默认进 Docker 长驻容器 |
+| [0006](0006-mcp-integration-and-trust.md) | MCP 外部工具适配与项目信任 | accepted | 2026-10-20 | tools-only + stdio/Streamable HTTP + 官方 SDK；项目级 mcp.json 必须 trust，stdio server 在宿主机运行 |
+| [0007](0007-permission-scopes-and-command-classes.md) | 权限：显式决策、命令类与会话规则 | accepted | 2026-10-20 | deny > 显式批准 > ask > allow；bash 按 segment/命令类匹配，文件工具按工作区路径范围；会话规则可重放 |
+| [0008](0008-system-prompt-and-session-v2.md) | 系统提示词组装与 session/v2 | accepted | 2026-10-20 | prompt 请求时组装、不写消息树、与压缩摘要合并；写 v2、读 v1+v2，不重写历史 run |
+| [0009](0009-skills-loading-and-invocation.md) | Skill：SKILL.md 渐进加载与显式调用 | accepted | 2026-10-20 | 不新增 skill 工具，正文用 read 加载；`/skill:<name>` 显式调用并把正文写入会话 |
 
 ## 如何新增
 

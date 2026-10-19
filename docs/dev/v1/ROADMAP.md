@@ -14,9 +14,9 @@
   `eval run / compaction / compare / controls / judge / attribute / regression / cost / defense`
   九个命令；pass^k、控制 agent 自检、κ 校准、失败归因与回归任务。
 - **五组实验**：E1 压缩曲线、E2 成本曲线、E3 归因准确率、E4 scaffolding tax、
-  E5 防御有效性；结论与「不证明什么」都写在 [docs/experiments/](docs/experiments/README.md)。
-- **治理文档**：本文件、[SECURITY.md](SECURITY.md)、[CONTRIBUTING.md](CONTRIBUTING.md)。
-- **面试材料**：[interview/](interview/README.md)（数据表、20 分钟 walkthrough、简历 bullet）。
+  E5 防御有效性；结论与「不证明什么」都写在 [docs/experiments/](../../experiments/README.md)。
+- **治理文档**：本文件、[SECURITY.md](../../../SECURITY.md)、[CONTRIBUTING.md](../../../CONTRIBUTING.md)。
+- **面试材料**：[interview/](../../../interview/README.md)（数据表、20 分钟 walkthrough、简历 bullet）。
 
 ## 下一步：先补证据，再加功能
 
@@ -36,7 +36,7 @@
 
 ### 2. Dogfood 变成连续记录
 
-- 从 2026-10-18 起已有日志脚手架（[docs/dogfood/](docs/dogfood/README.md)），
+- 从 2026-10-18 起已有日志脚手架（[docs/dogfood/](../../dogfood/README.md)），
   但记录仍为空。目标：每天至少一条真实任务，记录成本、耗时与翻车点。
 - 把 dogfood 中重复出现的问题变成票据；修完后补回归任务。
 
@@ -62,7 +62,7 @@
 - **网络白名单**：v1 只有 deny-all；补容器内代理与证书信任，让装依赖不必走
   `--no-sandbox`。
 - **文件工具工作区围栏**：`read` / `write` / `edit` 目前在宿主机执行、接受绝对路径；
-  增加可选的「只在工作区内」模式（见 [SECURITY.md](SECURITY.md) 已知限制 1）。
+  增加可选的「只在工作区内」模式（见 [SECURITY.md](../../../SECURITY.md) 已知限制 1）。
 - **OS 级沙箱后端**：在 Linux 上评估 bubblewrap、macOS 上评估 seatbelt，
   作为 Docker 之外的轻量选项。
 - **导出脱敏**：提供可选的 key/token 扫描与脱敏，降低分享会话时的泄露风险。
@@ -89,7 +89,7 @@
 ## 怎么影响优先级
 
 - 开 issue 说明使用场景、复现步骤与期望结果；安全相关问题走私密渠道（见
-  [SECURITY.md](SECURITY.md)）。
+  [SECURITY.md](../../../SECURITY.md)）。
 - 带数据的 issue 优先：一个可复现的失败轨迹 + 会话文件，比功能愿望更有用。
 - 超期时的砍单顺序沿用 PLAN.md：E5 → E3 → C 桶任务 → Responses 协议 → TUI 视觉打磨；
   E1/E2/E4 是核心，必须完成。

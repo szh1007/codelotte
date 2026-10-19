@@ -127,9 +127,9 @@
 |---|---|---|
 | 项目定位 / 差异化 | [README.md](../README.md) | 一句话定位、30 秒演示、证据段 |
 | 设计来源 / Pi 对比 | [pi-agent-and-claude-code.md](pi-agent-and-claude-code.md) | Pi agent 极简主义、codelotte 参考点、Claude Code 对比 |
-| 技术规格 | [SPEC.md](../SPEC.md) | 完整技术规格与实现决策 |
+| 技术规格 | [SPEC.md](../docs/dev/v1/SPEC.md) | 完整技术规格与实现决策 |
 | 架构决策 | [docs/adr/](../docs/adr/README.md) | ADR 0001–0005 |
-| 票据与状态 | [docs/tickets/](../docs/tickets/README.md) | 22 张票据与验收项 |
+| 票据与状态 | [docs/dev/v1/tickets/](../docs/dev/v1/tickets/README.md) | 22 张票据与验收项 |
 | Agent 循环 | [src/codelotte/loop.py](../src/codelotte/loop.py#L249) | `AgentLoop`、事件流、run 生命周期 |
 | 会话树 | [session/store.py](../src/codelotte/session/store.py#L270) · [session/context.py](../src/codelotte/session/context.py#L29) | append-only JSONL、活动分支重建 |
 | 四个工具 | [src/codelotte/tools/](../src/codelotte/tools/) | `read` / `write` / `edit` / `bash` |
@@ -152,7 +152,7 @@
 | 演示会话 | [interview/rehearsal-session-20261019.md](rehearsal-session-20261019.md) | 12.3s / ¥0.009622 / 87% |
 | 安全模型 | [SECURITY.md](../SECURITY.md) | 威胁模型、已知限制、报告途径 |
 | 协作方式 | [CONTRIBUTING.md](../CONTRIBUTING.md) | 环境、测试、PR 流程 |
-| 路线图 | [ROADMAP.md](../ROADMAP.md) | 下一步与明确不做 |
+| 路线图 | [ROADMAP.md](../docs/dev/v1/ROADMAP.md) | 下一步与明确不做 |
 | 操作手册 | [evals/README.md](../evals/README.md) · [evals/run.md](../evals/run.md) | 九个命令与报表 |
 | 跑数记录 | [evals/record.md](../evals/record.md) | 已入库基线索引 |
 | 快速开始 | [README.md#快速开始](../README.md#快速开始) | 配置与运行 |

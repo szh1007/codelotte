@@ -35,3 +35,55 @@ _Avoid_: 把归因当作根因证明（它是可解释的代理证据）
 **Regression task（回归任务）**:
 由一条失败案例生成的独立评测任务：保留原任务的 setup/verifier/预算，只换 id；用于修好之后防止复发。
 _Avoid_: 把回归任务混进原任务集（默认放 `evals/regressions/`）
+
+**MCP Server**:
+通过 Model Context Protocol 向 codelotte 提供外部工具的服务或进程；传输为 stdio 或 Streamable HTTP。项目级配置只有在该项目被 trust 后生效。
+_Avoid_: MCP 插件、工具服务器（指 codelotte 内建工具时）
+
+**MCP Tool**:
+MCP Server 暴露的单个工具；在工具列表、权限规则与会话记录中用 `mcp__<server>__<tool>` 全名标识，避免与内建工具或其他 server 重名。
+_Avoid_: 外部工具（太泛）
+
+**Skill**:
+以目录承载的可复用任务说明，入口是目录内的 `SKILL.md`，名称取目录名。codelotte 先看元数据，任务匹配或用户显式调用时再加载正文与资源。Skill 是上下文，不是工具，也不等同于 Slash Command。
+_Avoid_: 技能包、插件（plugin）
+
+**Skill Listing（技能清单）**:
+系统提示词中呈现给模型的 Skill 元数据摘要（name / description / location）。正文不常驻上下文。
+_Avoid_: 技能列表（指 `/skills` 的 TUI 输出时）
+
+**Skill Invocation（显式技能调用）**:
+用户以 `/skill:<name> [args]` 主动加载某个 Skill；与模型依据 description 自动加载相对。技能正文作为一条用户消息进入当前 Run，并写入 Session。
+_Avoid_: 把显式调用当作普通 Slash Command 别名
+
+**System Prompt**:
+每次请求前由 codelotte 组装的行为说明（身份、工具规则、权限与沙箱约束、技能清单、项目指令、cwd）。它不属于 Session 的消息树，不参与压缩，也不随 fork 复制。
+_Avoid_: 系统消息（指压缩摘要那条 system message 时）
+
+**Prompt Version（提示词版本）**:
+System Prompt 内容与来源的标识（版本 + hash）；写入 Session 元数据，用于回放告警与跨版本对比。
+_Avoid_: 模型版本
+
+**Permission Verdict（权限判定）**:
+规则求值得到的三档结果：allow / ask / deny。它回答「按规则该怎么处理」。
+_Avoid_: 把 verdict 与用户决策混为一谈
+
+**Permission Decision（权限决策）**:
+用户对一次 ask 的选择：once / session / always / deny / feedback。它回答「这一次实际怎么处理」。
+_Avoid_: 审批结果（可用于界面文案，不作为术语）
+
+**Session Rule（会话规则）**:
+由 session 决策产生的显式放行，只在本会话内有效；resume/fork 时从 Session 的 permission 记录重放，不跨会话。
+_Avoid_: 临时规则（含义不清）
+
+**Command Class（命令类）**:
+一条 shell segment 解析后的「可执行文件 + 子命令」组合（如 `git status`）。本会话放行以命令类为单位，不以原始字符串前缀为单位；复合命令逐段匹配。
+_Avoid_: 命令前缀（会误导为字符串前缀匹配）
+
+**Project Trust（项目信任）**:
+用户对某个工作目录的显式信任标记；项目级权限规则、MCP 配置、Skill 与项目指令文件只有在该目录被 trust 后才加载。
+_Avoid_: 授权（指单次工具调用时）
+
+**Slash Command**:
+TUI 中以 `/` 开头、由 codelotte 解析而不发给模型的内建命令（如 `/model`、`/clear`）。Skill 显式调用是其中一种特殊形式。
+_Avoid_: 命令（指 bash 命令时）

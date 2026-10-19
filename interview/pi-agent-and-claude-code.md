@@ -117,8 +117,8 @@ JS 沙箱（quickjs-wasi）用来组合/编排工具调用；MCP 工具 schema �
 
 | Pi 的机制 | codelotte 的对应 | 参考程度 | 证据 |
 |---|---|---|---|
-| 4 工具 minimal core | `read` / `write` / `edit` / `bash`；grep/find/ls 不走专用工具，统一走 bash | **直接参考** | [README](../README.md) · [SPEC §D](../SPEC.md) |
-| 系统提示 + 工具定义 <1000 token | 同一目标：把每轮固定成本压低 | **目标参考** | [SPEC §B](../SPEC.md) |
+| 4 工具 minimal core | `read` / `write` / `edit` / `bash`；grep/find/ls 不走专用工具，统一走 bash | **直接参考** | [README](../README.md) · [SPEC §D](../docs/dev/v1/SPEC.md) |
+| 系统提示 + 工具定义 <1000 token | 同一目标：把每轮固定成本压低 | **目标参考** | [SPEC §B](../docs/dev/v1/SPEC.md) |
 | append-only JSONL + `id/parentId` 树 | 同构；`--continue` / `--resume` / `--fork` | **直接参考** | [ADR-0003](../docs/adr/0003-session-model.md) · [session/store.py](../src/codelotte/session/store.py#L270) |
 | compaction 即 entry | 同构；存 `summary` / `firstKeptEntryId` / `constraints` | **直接参考** | [ADR-0003](../docs/adr/0003-session-model.md) · [compaction/](../src/codelotte/compaction/) |
 | HTML 导出回放 | 自包含 HTML / Markdown 导出，纯函数、逐字来自会话 | **直接参考** | [export.py](../src/codelotte/export.py#L339) |
@@ -133,7 +133,7 @@ JS 沙箱（quickjs-wasi）用来组合/编排工具调用；MCP 工具 schema �
 |---|---|---|
 | TypeScript ESM monorepo | Python 3.13 + uv | 目标岗位以 Python 为主；Textual 在 Windows 终端成熟（[ADR-0002](../docs/adr/0002-python-over-typescript.md)） |
 | 10 个 api / 4 种 wire protocol | 只实现 `openai-completions`；`anthropic-messages` 预留 | 没有第二把 key；先把一条路径做透，协议抽象留槽（[ADR-0004 实现状态](../docs/adr/0004-self-built-llm-adapter.md)） |
-| MCP + Codemode | v1 不做 MCP | SPEC 明确列为 Out of Scope；先把 minimal core 与评测做扎实（[ROADMAP](../ROADMAP.md)） |
+| MCP + Codemode | v1 不做 MCP | SPEC 明确列为 Out of Scope；先把 minimal core 与评测做扎实（[ROADMAP](../docs/dev/v1/ROADMAP.md)） |
 | AGENTS.md / skills / `context_edit` | v1 不做 | 同上；压缩与 checkpoint 先落地 |
 | 反对权限弹窗 | 保留权限层 + Docker 两层 | 同意“弹窗不是安全边界”，但规则层仍用于**策略表达与审计**；Docker 才是后果边界 |
 | 极简作为产品卖点 | 极简作为**测量底座** | 仓库调研结论：极简本身不构成差异化；差异化是评测与实验（[ADR-0001](../docs/adr/0001-portfolio-positioning.md)） |
@@ -243,7 +243,7 @@ codelotte 既不试图成为 Pi，也不试图成为 Claude Code：
 | 会话模型 | [ADR-0003](../docs/adr/0003-session-model.md) | JSONL 树 + compaction 即 entry |
 | LLM adapter | [ADR-0004](../docs/adr/0004-self-built-llm-adapter.md) | 自研 adapter 与协议实现状态 |
 | 双层安全 | [ADR-0005](../docs/adr/0005-two-layer-execution-security.md) | 权限层 × 沙箱层 |
-| 技术规格 | [SPEC.md](../SPEC.md) | Minimal Core、工具、压缩、评测 |
+| 技术规格 | [SPEC.md](../docs/dev/v1/SPEC.md) | Minimal Core、工具、压缩、评测 |
 | 四工具 | [src/codelotte/tools/](../src/codelotte/tools/) | `read` / `write` / `edit` / `bash` |
 | 会话树 | [session/store.py](../src/codelotte/session/store.py#L270) | append-only JSONL、分支 |
 | 压缩 | [compaction/trigger.py](../src/codelotte/compaction/trigger.py#L178) | 双触发与切点 |

@@ -17,7 +17,7 @@
 
 ## 实施记录（2026-10-17）
 
-**模块**：新增 [guardrails.py](../../src/codelotte/guardrails.py)（纯状态机，不碰会话/网络）。
+**模块**：新增 [guardrails.py](../../../../src/codelotte/guardrails.py)（纯状态机，不碰会话/网络）。
 loop 在每次工具调用前后喂它，按结论记录事件；阈值来自 settings.json，`AgentLoop` 默认值兜底。
 
 **阈值（settings.json，均为 2–100，未写用默认）**：

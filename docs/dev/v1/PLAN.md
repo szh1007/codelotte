@@ -2,20 +2,20 @@
 
 > 本文档是三轮设计访谈（grilling + domain-modeling）收敛后的完整方案。
 >
-> - **关键决策**：[docs/adr/](docs/adr/)（0001–0005）
-> - **术语表**：[CONTEXT.md](CONTEXT.md)
+> - **关键决策**：[docs/adr/](../../adr/)（0001–0005）
+> - **术语表**：[CONTEXT.md](../../../CONTEXT.md)
 > - **技术规格**：[SPEC.md](SPEC.md)
-> - **任务拆解**：[docs/tickets/](docs/tickets/README.md)
+> - **任务拆解**：[tickets/](tickets/README.md)
 > - **事实依据**：
->   - [技术栈调研](docs/research/README.md)
->   - [pi 设计笔记](docs/research/pi-agent-design.md)
->   - [岗位 JD 调研](docs/research/agent-job-market.md)
->   - [生态差异化扫描](docs/research/portfolio-differentiation.md)
->   - [DeepSeek API 笔记](docs/tech/deepseek-api.md)
->   - [Python 栈笔记](docs/tech/python-stack.md)
+>   - [技术栈调研](../../research/README.md)
+>   - [pi 设计笔记](../../research/pi-agent-design.md)
+>   - [岗位 JD 调研](../../research/agent-job-market.md)
+>   - [生态差异化扫描](../../research/portfolio-differentiation.md)
+>   - [DeepSeek API 笔记](../../tech/deepseek-api.md)
+>   - [Python 栈笔记](../../tech/python-stack.md)
 >
 > **执行状态（2026-10-19）**：本文是原始方案，保留目标与取舍的历史记录；实际交付以
-> [README](README.md)、[CHANGELOG](CHANGELOG.md) 与 [面试数据表](interview/data-sheet.md) 为准。
+> [README](../../../README.md)、[CHANGELOG](../../../CHANGELOG.md) 与 [面试数据表](../../../interview/data-sheet.md) 为准。
 > 未达成的计划项（如 dogfood ≥4 周、任务集 30+）不作为已完成成果宣传。
 
 ## 0. 一页速览
@@ -25,7 +25,7 @@
 | 是什么 | codelotte——minimal-core、可扩展的终端 coding agent；Agent 开发岗求职作品 |
 | 目标市场 | 国内为主（Agent 平台/应用方向，大厂 + AI 创业双投），海外加分 |
 | 成功标准 | 一句话：「**把 harness 的成本/成功率/失败率从 A 改到 B，并知道为什么**」——用实验报告证明 |
-| 深度押注 | D1 评测闭环 / D2 权限沙箱 / D4 压缩质量 / D5 轨迹归因（详见 [定位 ADR](docs/adr/0001-portfolio-positioning.md)） |
+| 深度押注 | D1 评测闭环 / D2 权限沙箱 / D4 压缩质量 / D5 轨迹归因（详见 [定位 ADR](../../adr/0001-portfolio-positioning.md)） |
 | 技术栈 | Python 3.13 + uv 0.13 + Textual 8.2.8 + httpx2 + Docker；模型走 DeepSeek（`openai-completions` 已实测；`anthropic-messages` 协议抽象预留，未实现） |
 | 节奏 | 约 6 周；**W4 开始投递**，边走边迭代 |
 | 形态 | CLI-first + TUI + 自包含 HTML 会话导出；public repo 第 1 天起 |
@@ -76,7 +76,7 @@ codelotte/
                           evals（直接读 Session 作为轨迹）
 ```
 
-**关键不变量**：一切经过 Session——消息、工具调用、usage、压缩、分支。评测与归因共用同一数据源（[ADR-0003](docs/adr/0003-session-model.md)）。
+**关键不变量**：一切经过 Session——消息、工具调用、usage、压缩、分支。评测与归因共用同一数据源（[ADR-0003](../../adr/0003-session-model.md)）。
 
 ## 2. 核心机制（第 3 轮定案）
 
@@ -150,7 +150,7 @@ codelotte/
 ✅ 验收：实验报告落库，数据进 README
 
 **W6 打磨与材料**：security policy / roadmap / CONTRIBUTING ｜ 简历材料包 + 面试 walkthrough 脚本（20 分钟动线：数据表 → demo → 代码走读 → 失败分析）｜ 数据刷新
-✅ 验收：材料包完整，可投二面（2026-10-19 已完成，见 [interview/](interview/README.md)、[SECURITY.md](SECURITY.md)、[CONTRIBUTING.md](CONTRIBUTING.md)、[ROADMAP.md](ROADMAP.md)）
+✅ 验收：材料包完整，可投二面（2026-10-19 已完成，见 [interview/](../../../interview/README.md)、[SECURITY.md](../../../SECURITY.md)、[CONTRIBUTING.md](../../../CONTRIBUTING.md)、[ROADMAP.md](ROADMAP.md)）
 
 ## 6. 交付物清单（DoD）
 
@@ -174,7 +174,7 @@ codelotte/
 | 自研 adapter | Function Calling/协议理解、多模型接入 |
 | ADR 全集 | 「为什么这么设计」的每一个追问 |
 
-## 8. 简历 bullet（最终版见 [interview/resume.md](interview/resume.md)）
+## 8. 简历 bullet（最终版见 [interview/resume.md](../../../interview/resume.md)）
 
 1. 独立设计开发 **codelotte**：一款 minimal-core 终端 coding agent（Python 3.13 / Textual / 自研 LLM 接入层），从 0 实现 agent loop、会话树、权限沙箱与评测体系，开源 **1 star**（2026-10-19）
 2. 构建 agent 质量闭环：9 条任务 × 3 次正式评测 **27/27、pass^3 9/9**；量化 harness 改进——长任务压缩保留率 **87.8% → 93.3%**、成本 **−23.1%**；实际成本较无缓存+全峰价反事实 **−80.8%**（¥1.0717 → ¥0.2058）
@@ -182,7 +182,7 @@ codelotte/
 4. （暂不投递）连续 **0 周**以自研 agent 开发自身（dogfood），累计合并 **0 个**自产 PR；
    dogfood 日志已有脚手架，但尚未开始记录。补齐后再按日志填写
 
-> 数字来源、分母与「不能证明什么」见 [interview/resume.md](interview/resume.md)；
+> 数字来源、分母与「不能证明什么」见 [interview/resume.md](../../../interview/resume.md)；
 > 该文件是维护入口，PLAN 只保留摘要。
 
 ## 9. 风险与应对

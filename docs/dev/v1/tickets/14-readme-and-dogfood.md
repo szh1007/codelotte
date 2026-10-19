@@ -22,20 +22,20 @@
 
 **实现记录**：
 
-- 中文 README：[README.md](../../README.md)（2026-10-18 按用户决定删除英文镜像）；
+- 中文 README：[README.md](../../../../README.md)（2026-10-18 按用户决定删除英文镜像）；
   结构为「一句话定位 → 30 秒演示 → 证据数据表 → 架构图 → 快速开始 → 文档索引」。
-- ADR 索引：[docs/adr/README.md](../adr/README.md)，串联 0001–0005，并写明新增/取代规则。
-- 真实导出样例：[docs/examples/](../examples/README.md)——一次真实修复任务（7 次调用 / 约 9 秒 /
+- ADR 索引：[docs/adr/README.md](../../../adr/README.md)，串联 0001–0005，并写明新增/取代规则。
+- 真实导出样例：[docs/examples/](../../../examples/README.md)——一次真实修复任务（7 次调用 / 约 9 秒 /
   ¥0.004394）与 v0 基线的 k=5 压缩案例（5 次压缩 / 11 次调用）；HTML 单文件零外链，Markdown 可直接读。
   生成命令与来源会话写在同一目录的 README。
-- 演示材料：[docs/demo/](../demo/README.md) 含 3 分钟分镜、可复现的示例工程
+- 演示材料：[docs/demo/](../../../demo/README.md) 含 3 分钟分镜、可复现的示例工程
   `docs/demo/sample/`、录屏后要改的两处 README 链接、临时导出忽略规则。
-- dogfood：[docs/dogfood/README.md](../dogfood/README.md) 与 [log.md](../dogfood/log.md)（起始 2026-10-18；
+- dogfood：[docs/dogfood/README.md](../../../dogfood/README.md) 与 [log.md](../../../dogfood/log.md)（起始 2026-10-18；
   表头为空，等待真实任务逐条填写，不预造数据）。
 - 快速开始实测：工作树快照 `git init` + 提交后 `git clone` 到空目录（216 个文件）→
   `uv sync --locked` 3 秒 → `--version` 1 秒 → `eval compaction --dry-run` 1 秒 →
   在演示工程跑完整修复任务 12 秒、¥0.005663，退出码 0；总计 17 秒。
-  详见 [docs/demo/quickstart-validation.md](../demo/quickstart-validation.md)（本机 uv 缓存已热、
+  详见 [docs/demo/quickstart-validation.md](../../../demo/quickstart-validation.md)（本机 uv 缓存已热、
   使用作者已有配置；冷机器与公开 clone 需 push 后复验）。
 - 暂忽略项（用户 2026-10-18 决定）：3 分钟录屏与连续 ≥3 天 dogfood 暂不阻塞本票，
   验收项已勾选并标注“暂时忽略”；录屏脚本、空日志表和 README 占位都已就绪，

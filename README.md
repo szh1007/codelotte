@@ -333,14 +333,15 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | 文档 | 内容 |
 |---|---|
 | [CONTEXT.md](CONTEXT.md) | 术语表：session、run vs. turn、harness、minimal core |
-| [SPEC.md](SPEC.md) | 完整技术规格与实现决策 |
-| [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
+| [docs/dev/v1/SPEC.md](docs/dev/v1/SPEC.md) | v1 完整技术规格与实现决策（归档） |
+| [docs/dev/v1/PLAN.md](docs/dev/v1/PLAN.md) | v1 里程碑、实验计划、作品定位（归档） |
 | [SECURITY.md](SECURITY.md) | 安全模型、威胁边界、漏洞报告途径与已知限制 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试/评测约定、代码风格与 PR 流程 |
-| [ROADMAP.md](ROADMAP.md) | 未来方向、明确不做的事与优先级规则 |
+| [docs/dev/v1/ROADMAP.md](docs/dev/v1/ROADMAP.md) | v1 未来方向、明确不做的事与优先级规则（归档） |
+| [docs/dev/v2/](docs/dev/v2/README.md) | v0.2.0 开发资料与票据（计划中） |
 | [interview/](interview/README.md) | 面试材料包：一页数据表、20 分钟 walkthrough、简历 bullet、简历项目经历 v1、Pi/Claude Code 对比 |
-| [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
-| [docs/tickets/](docs/tickets/README.md) | 22 张曳光弹票据与状态 |
+| [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0009 与索引 |
+| [docs/dev/v1/tickets/](docs/dev/v1/tickets/README.md) | v1 的 22 张曳光弹票据与状态（归档） |
 | [evals/README.md](evals/README.md) | 评估体系总览：目录地图、九个命令、跑数产物、基线快照 |
 | [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、失败归因、任务格式、pass^k、CI 冒烟 |
 | [evals/attribution.md](evals/attribution.md) | 失败归因规则、标注语料与准确率、失败 → 回归任务 |
@@ -384,7 +385,7 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 
 ### 3. 材料收口（票据 22）
 
-14. 治理文档三件套：[SECURITY.md](SECURITY.md) / [CONTRIBUTING.md](CONTRIBUTING.md) / [ROADMAP.md](ROADMAP.md)。
+14. 治理文档三件套：[SECURITY.md](SECURITY.md) / [CONTRIBUTING.md](CONTRIBUTING.md) / [v1 ROADMAP（归档）](docs/dev/v1/ROADMAP.md)。
 15. 面试材料：[一页数据表](interview/data-sheet.md)、[20 分钟 walkthrough](interview/walkthrough.md)、[简历 bullet](interview/resume.md)、[简历项目经历 v1](interview/project-experience-v1.md)、[Pi/Claude Code 对比](interview/pi-agent-and-claude-code.md)。
 16. README / PLAN / SPEC / ADR 数据刷新；明确当前只实现 `openai-completions`，`anthropic-messages` 为协议抽象预留。
 17. 当前票据规划至此收口；MCP 接入等后续功能留待下一版本。

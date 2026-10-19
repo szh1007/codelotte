@@ -617,4 +617,4 @@ evals/runs/<run-id>/
 | 跑注入/死循环/误报实验，新增防御任务 | [defense.md](defense.md) |
 | 查历史跑数、目录约定、基线记录 | [record.md](record.md) |
 | 看 E1–E5 实验结论与口径 | [docs/experiments/](../docs/experiments/README.md) |
-| 看项目整体定位与里程碑 | [../README.md](../README.md) · [../PLAN.md](../PLAN.md) |
+| 看项目整体定位与里程碑 | [../README.md](../README.md) · [../PLAN.md](../docs/dev/v1/PLAN.md) |

@@ -9,7 +9,7 @@
 | 指标 | 数值 | 来源 / 口径 |
 |---|---|---|
 | 版本 | `0.1.1` | [CHANGELOG.md](../CHANGELOG.md) |
-| 票据 | 01–22 均标记 done（含作者待补：录屏、dogfood、整场口述计时） | [docs/tickets/README.md](../docs/tickets/README.md) |
+| 票据 | 01–22 均标记 done（含作者待补：录屏、dogfood、整场口述计时） | [docs/dev/v1/tickets/README.md](../docs/dev/v1/tickets/README.md) |
 | 提交 | 39 个（数据快照，材料提交前；`main`，无 merge commit） | `git log --oneline`，2026-10-13 起 |
 | 公开 PR | 0（个人开发，直接提交） | 同上 |
 | GitHub stars / forks | 1 / 0 | `gh api repos/szh1007/codelotte`，2026-10-19 |

@@ -2,7 +2,7 @@
 
 codelotte 是一个个人求职作品，同时按可协作的开源仓库维护。Issue 与 PR 都欢迎，
 但响应是尽力而为，没有 SLA。改动前请先读 [CONTEXT.md](CONTEXT.md)（术语）、
-[SPEC.md](SPEC.md)（技术规格）与 [docs/adr/](docs/adr/README.md)（已定的架构决策）。
+[docs/dev/v1/SPEC.md](docs/dev/v1/SPEC.md)（v1 技术规格，归档）与 [docs/adr/](docs/adr/README.md)（已定的架构决策）。
 
 ## 环境
 
@@ -69,7 +69,7 @@ src/codelotte/
 ## 改动流程
 
 1. **先对齐问题。** 小修可以直接提 PR；行为变化、接口变化或新实验先开 issue 或更新
-   [docs/tickets/](docs/tickets/README.md) 中的票据，说清楚验收标准。
+   [docs/dev/v2/tickets/](docs/dev/v2/tickets/README.md) 中的票据，说清楚验收标准。
 2. **测试先行。** 修 bug 先写复现测试；新功能先写行为测试。测试名描述行为
    （`test_returns_401_when_token_expired` 风格），一个测试只验证一件事。
 3. **最小改动。** 不顺手重构无关代码，不引入未使用的依赖或抽象；匹配现有风格。
@@ -116,7 +116,8 @@ src/codelotte/
 
 - 架构决策记录在 [docs/adr/](docs/adr/README.md)：新增/推翻一个关键决策时先写 ADR。
 - 票据是施工单元：开始实现时把状态改为进行中，完成后更新验收项与
-  [docs/tickets/README.md](docs/tickets/README.md) 的状态表。
+  [docs/dev/v2/tickets/README.md](docs/dev/v2/tickets/README.md) 的状态表；v1 票据已归档在
+  [docs/dev/v1/tickets/](docs/dev/v1/tickets/README.md)。
 - 数字（成功率、成本、拦截率、测试数）只从报表与命令输出更新；实验结论必须写明
   「证明了什么、不证明什么」。
 

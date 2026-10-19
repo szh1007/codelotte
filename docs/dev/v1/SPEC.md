@@ -1,7 +1,7 @@
 # codelotte 技术规格（Spec v1）
 
 > 本文档把 [PLAN.md](PLAN.md) 的开发计划展开成**可实现的完整技术规格**。假设读者此前从未接触过 coding agent——所有关键概念都会先用大白话解释，再进入设计决策。
-> 状态：ready-for-agent ｜ 日期：2026-10-13 ｜ 配套：[PLAN.md](PLAN.md)（计划与里程碑）· [CONTEXT.md](CONTEXT.md)（术语表）· [docs/adr/](docs/adr/)（决策记录）· [docs/tech/](docs/tech/)（实现事实笔记）
+> 状态：ready-for-agent ｜ 日期：2026-10-13 ｜ 配套：[PLAN.md](PLAN.md)（计划与里程碑）· [CONTEXT.md](../../../CONTEXT.md)（术语表）· [docs/adr/](../../adr/)（决策记录）· [docs/tech/](../../tech/)（实现事实笔记）
 
 ---
 
@@ -201,12 +201,12 @@
 
 **概念**：每个厂商的 HTTP API 格式不同；流式响应中**工具调用的参数是分片到达的**（要先攒齐再解析 JSON）；用量（token 数、缓存命中数）藏在流的特定字段里。
 
-**决策**（依据 [ADR-0004](docs/adr/0004-self-built-llm-adapter.md)）：
+**决策**（依据 [ADR-0004](../../adr/0004-self-built-llm-adapter.md)）：
 
 - **自研薄 adapter**：HTTP 客户端用 `httpx2`（httpx 的 stable 分支已停更 22 个月，OpenAI/Anthropic 官方 SDK 均已迁移至 pydantic 维护的 httpx2）；SSE 解码器**内联自写**（约 100 行，参考 OpenAI SDK 的做法），不引入 httpx-sse（它硬依赖旧 httpx）。
 - **协议抽象**：内部统一为"标准流事件"（文本增量 / 工具调用增量 / 用量 / 结束原因）。v1 计划实现两条 wire protocol：`openai-completions` 与 `anthropic-messages`，两条都用 DeepSeek 自家端点做端到端验证（DeepSeek 同时提供 OpenAI 兼容与 `/anthropic` 兼容端点）。**实现状态（2026-10-19）**：只有 `openai-completions` 已落地并实测；`anthropic-messages` 是协议抽象预留，未实现、未验证。面试材料与简历不得声称双协议已实现；后续工作见 [ROADMAP.md](ROADMAP.md)。
 - **模型目录数据化**：每个模型的元数据（上下文窗口、输入/输出/缓存单价、峰谷时段规则、能力标记如是否支持视觉）存为配置文件，代码不硬编码。默认只配 DeepSeek 两个模型（`deepseek-flash`、`deepseek-v4-pro`）；Anthropic / OpenAI 的目录条目位置已留，但对应的 wire protocol 适配器尚未实现——密钥到位也不可直接使用（见上一条实现状态）。
-- **已知雷区写入适配层与单元测试**（来自 [docs/tech/deepseek-api.md](docs/tech/deepseek-api.md)）：
+- **已知雷区写入适配层与单元测试**（来自 [docs/tech/deepseek-api.md](../../tech/deepseek-api.md)）：
   1. 带工具调用的请求必须把历史中所有 assistant 的 `reasoning_content` 原样回传，否则 API 直接 400——这是 agent 循环最容易踩的坑；
   2. 思考模式下 `tool_choice=required`（强制调工具）不被支持（与 Anthropic 5.5 的约束同构），循环设计不能依赖"强制调工具"；
   3. `max_tokens` 必须显式设置（默认值远小于上限，会静默截断长输出）。
@@ -229,7 +229,7 @@
 
 **概念**：如果只把对话存在内存数组里，你将失去：崩溃恢复、分支实验、精确归因、压缩审计。Session 就是为此而生的数据结构。
 
-**决策**（依据 [ADR-0003](docs/adr/0003-session-model.md)）：
+**决策**（依据 [ADR-0003](../../adr/0003-session-model.md)）：
 
 - **append-only JSONL**：一行一条记录（entry），永不改写。entry 公共字段：`type`（类型）/ `id` / `parentId`（父条目，构成树）/ `timestamp`；典型类型与独有字段：
   - `session`：会话头（schema 版本、工作目录、创建时间）；
@@ -263,7 +263,7 @@
   - 报告三项：① pass 率衰减曲线；② **关键状态保留率**——压缩后注入 checkpoint 问题（“任务目标 / 已完成 / 约束”），用确定性比对 + 人工标注评分；③ 触发策略 × 摘要模板的 A/B 对照。
   - 目标：产出一张“压缩次数 → 质量”的曲线。
   - v0（票据 13）已落地为 `codelotte eval compaction`：3 条任务 × k=0/1/3/5（0 为不压缩对照）；`CompactionPolicy` 注入强制压缩、每次压缩后带外探针、报表四件套。
-  - 口径与基线见 [evals/compaction.md](evals/compaction.md)。
+  - 口径与基线见 [evals/compaction.md](../../../evals/compaction.md)。
 - 用户在 TUI 中可见压缩发生（事件标记），导出 HTML 中高亮压缩点——透明性是产品立场。
 - **v1 实现（票据 12）**：
   - **触发**：分子 = 上一次请求的实际 usage（恢复时取最后 usage；其后有 compaction 则取估算值）；分母 = 用户级生效窗口。
@@ -289,7 +289,7 @@
 
 **概念**：容器是一台"轻量的一次性小电脑"——进程、文件系统、网络都与宿主机隔离。让 agent 的命令跑在容器里，就算模型被骗执行了恶意命令，损失也被限制在盒子里。
 
-**决策**（依据 [ADR-0005](docs/adr/0005-two-layer-execution-security.md)）：
+**决策**（依据 [ADR-0005](../../adr/0005-two-layer-execution-security.md)）：
 
 - **每会话一个长驻 Docker 容器**，命令通过 `docker exec` 复用（避免"每条命令冷启动一个容器"的秒级开销）。容器生命周期 = 会话生命周期。
 - **挂载**：工作目录读写挂载进容器（v1 固定映射到 `/workspace`）；其余文件系统只读；家目录不自动挂载（**宿主机的密钥、`.ssh`、`.env` 不在任何挂载里**）。注意工作区挂载的是启动目录整棵树——从家目录启动时家目录就是工作区，应始终在项目子目录里启动。
@@ -317,7 +317,7 @@
 
 **决策**：
 
-- 框架 **Textual**（依据 [docs/tech/python-stack.md](docs/tech/python-stack.md)：2026 年 Python agent 的事实标准；自带 Windows console driver，规避了 prompt_toolkit 系"事件循环与子进程互斥"的 Windows 陷阱）。
+- 框架 **Textual**（依据 [docs/tech/python-stack.md](../../tech/python-stack.md)：2026 年 Python agent 的事实标准；自带 Windows console driver，规避了 prompt_toolkit 系"事件循环与子进程互斥"的 Windows 陷阱）。
 - 布局：上方滚动区（消息流 + 可折叠工具调用块）｜中部审批弹层（按需出现）｜底部状态栏（模型、token 用量、缓存命中率、本次花费）+ 输入框。
 - **流式渲染**用 Textual 内置的流式 Markdown 能力；代码块语法高亮。
 - 键盘：Enter 发送、Ctrl+C 中断当前 run（不退出会话）、审批弹层快捷键 y/a/A/n（本次/本会话/始终/拒绝）。
@@ -399,7 +399,7 @@
   - 权限规则走 `permissions.json` + 项目级信任门槛（票据 09）。
   - **配置一律只从用户级目录读取**（固定的系统家目录下的 `~/.codelotte/`）：settings/models 能决定请求去向与所用密钥，放进项目目录等于让陌生仓库遥控你的请求。
   - 没有任何开关能把这个目录重定位。
-- 完整键表与示例见 [docs/tech/configuration.md](docs/tech/configuration.md)。
+- 完整键表与示例见 [docs/tech/configuration.md](../../tech/configuration.md)。
 
 ### N. 可靠性与错误处理
 
@@ -450,7 +450,7 @@
 
 ## Further Notes（补充说明）
 
-- **术语与文档**：本文档用词以 [CONTEXT.md](CONTEXT.md) 为准（codelotte / Harness / Minimal Core / Session 有严格定义）；根决策的完整论证见 [docs/adr/0001–0005](docs/adr/)；事实依据（pi 设计、岗位需求、生态、DeepSeek API、Python 栈）见 [docs/research/](docs/research/README.md) 与 [docs/tech/](docs/tech/)。
+- **术语与文档**：本文档用词以 [CONTEXT.md](../../../CONTEXT.md) 为准（codelotte / Harness / Minimal Core / Session 有严格定义）；根决策的完整论证见 [docs/adr/0001–0005](../../adr/)；事实依据（pi 设计、岗位需求、生态、DeepSeek API、Python 栈）见 [docs/research/](../../research/README.md) 与 [docs/tech/](../../tech/)。
 - **文档维护规则**：实现中若推翻本文档任一决策，先补/改 ADR 再改代码；本文档本身不记录代码细节（文件布局以仓库现状为准），避免过期。
 - **与 PLAN.md 的关系**：PLAN.md 管"什么时候做什么"（里程碑、实验排期、砍单顺序、简历与面试材料）；本规格管"技术上做成什么样"。两者冲突时以本规格 + ADR 为准，并同步修订 PLAN。
-- **发布状态**：本规格的目标读者是"实现者"（人或有能力的 agent）。待 issue tracker 配置后，本规格应发布为 issue 并加 `ready-for-agent` 标签（当前已拆分为 22 张票据发布在 [docs/tickets/](docs/tickets/README.md)，随仓库提交；日后配置 issue tracker 可同步为 issue）。
+- **发布状态**：本规格的目标读者是"实现者"（人或有能力的 agent）。待 issue tracker 配置后，本规格应发布为 issue 并加 `ready-for-agent` 标签（当前已拆分为 22 张票据发布在 [tickets/](tickets/README.md)，随仓库提交；日后配置 issue tracker 可同步为 issue）。

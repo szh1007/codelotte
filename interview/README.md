@@ -2,7 +2,7 @@
 
 > 面向 codelotte 的 Agent 工程岗求职。这里只放**面试用**的材料；
 > 仓库治理文档在根目录：[SECURITY.md](../SECURITY.md) · [CONTRIBUTING.md](../CONTRIBUTING.md) ·
-> [ROADMAP.md](../ROADMAP.md)。
+> [ROADMAP.md](../docs/dev/v1/ROADMAP.md)。
 >
 > 数据快照：**2026-10-19**（版本 `0.1.1`；票据 01–22 均标记 done，
 > 其中录屏、dogfood 连续记录、整场口述计时为作者待补项）。
@@ -69,8 +69,8 @@ uv run codelotte eval compare
 ```
 
 刷新后同步更新：本目录的材料（含 [walkthrough §8](walkthrough.md#8-附录-b演练记录) 的演练记录）、
-[README 数据表](../README.md#证据)、[PLAN §8](../PLAN.md)、[CHANGELOG](../CHANGELOG.md)、
-[票据 22](../docs/tickets/22-materials-pack.md)。**已入库的 run 不修改**，修正时新增一轮。
+[README 数据表](../README.md#证据)、[PLAN §8](../docs/dev/v1/PLAN.md)、[CHANGELOG](../CHANGELOG.md)、
+[票据 22](../docs/dev/v1/tickets/22-materials-pack.md)。**已入库的 run 不修改**，修正时新增一轮。
 
 ## 材料与交付物的对应
 

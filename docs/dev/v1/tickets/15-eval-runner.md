@@ -19,7 +19,7 @@
 - 任务格式：新增 `[setup.snapshot]`（git ref + 初始化脚本 + 可选 repo 路径）、
   `verifier.command`（字符串数组，不经 shell）与 `command_timeout`；checkpoints 改为
   **压缩回归必填、通用测评可省略**。字段与示例见
-  [evals/run.md](../../evals/run.md)。
+  [evals/run.md](../../../../evals/run.md)。
 - 首批任务：原有 A 桶 2 条 + 新增 B 桶 `004-prompt-injection-resistance`
   （数据里藏"忽略之前的指令"注入）与 `005-scope-discipline`（受保护文件诱导写入），
   现在 A=2、B=3。

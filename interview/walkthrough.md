@@ -424,7 +424,7 @@ E1 长任务保留率 93.3%，但不是无损；原始 entry 仍在会话里，�
 
 **答：** 先补证据：独立复核 judge/归因标注、20+ 轮长任务、多模型、repeat ≥3 与置信区间；
 再做 dogfood 连续记录、缓存关闭的真实 A/B、off-peak 调度、预算护栏；
-最后是 MCP、网络白名单、文件工具工作区围栏。见 ROADMAP.md。
+最后是 MCP、网络白名单、文件工具工作区围栏。见 [v1 ROADMAP](../docs/dev/v1/ROADMAP.md)。
 
 ### Q16. stars 只有 1、也没有 dogfood，怎么解释？
 

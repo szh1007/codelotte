@@ -24,4 +24,4 @@ Status: accepted (2026-10-13)
 v1 实际落地的是 `openai-completions` 一条路径（`src/codelotte/providers/openai_completions.py`，
 配 `sse.py` 与 `tool_calls.py`）。`anthropic-messages` 的位置在协议抽象里预留，但**未实现、
 未端到端验证**；Responses 同样未实现。因此材料与简历中不得声称「双协议已实现」。
-补齐第二条协议与第二模型是后续工作，见 [ROADMAP](../../ROADMAP.md)。
+补齐第二条协议与第二模型是后续工作，见 [ROADMAP](../dev/v1/ROADMAP.md)。
