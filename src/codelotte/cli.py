@@ -420,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     controls_parser = eval_sub.add_parser(
         "controls",
-        help="控制 agent 自检：oracle 应 100%、no-op 应 0%、cheating 应 0% 且被标记",
+        help="控制 agent 自检：oracle 应 100%%、no-op 应 0%%、cheating 应 0%% 且被标记",
     )
     controls_parser.add_argument(
         "--tasks", metavar="目录", help="任务目录（默认仓库根下的 evals/tasks）"

@@ -131,6 +131,9 @@ uv run codelotte eval defense --run evals/runs --out evals/defense
 
 ## 7. 复现
 
+完整操作手册（任务清单、四类口径、报告字段、常见问题）见
+[evals/defense.md](../../evals/defense.md)。
+
 ```bash
 # 1) 校验新任务
 uv run codelotte eval run --tasks evals/defense-tasks --dry-run

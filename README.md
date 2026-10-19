@@ -340,6 +340,7 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、失败归因、任务格式、pass^k、CI 冒烟 |
 | [evals/attribution.md](evals/attribution.md) | 失败归因规则、标注语料与准确率、失败 → 回归任务 |
 | [evals/compaction.md](evals/compaction.md) | 专用测评 - 压缩回归 v0：机制、评分、基线、人工标注 |
+| [evals/defense.md](evals/defense.md) | 防御有效性 E5：注入任务、死循环压力、剧本、误报审计与复现 |
 | [evals/record.md](evals/record.md) | 评测跑数记录：索引、目录约定、已入库基线 |
 | [docs/experiments/e1-compaction-curve.md](docs/experiments/e1-compaction-curve.md) | E1 实验报告：压缩策略/模板 × k 的完成率、保留率与成本曲线 |
 | [docs/experiments/e2-cost-curve.md](docs/experiments/e2-cost-curve.md) | E2 实验报告：缓存命中与 off-peak 的实际/反事实成本 |
@@ -377,7 +378,7 @@ wide 只买到短任务高 k 可达性）+ 成本曲线（缓存命中 89.0%，�
 正常任务误报 0/31）+ `codelotte eval defense`；22 是最终材料包。当前票据规划至此收口，
 MCP 接入等后续功能留待下一版本规划。
 
-当前工作树的工程检查：`593 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
+当前工作树的工程检查：`594 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。

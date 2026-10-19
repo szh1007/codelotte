@@ -553,6 +553,13 @@ def test_permission_writer_refuses_to_clobber_broken_file(tmp_path: Path) -> Non
     assert _rules_file(home).read_text(encoding="utf-8") == "[1, 2]"  # 原文件不动
 
 
+def test_eval_help_formats_without_crashing() -> None:
+    """help 字符串里的百分号要转义，否则 argparse 格式化时直接 traceback。"""
+    result = run_cli("eval", "--help")
+    assert result.returncode == 0
+    assert "run" in result.stdout and "defense" in result.stdout
+
+
 def test_eval_compaction_parser_defaults() -> None:
     from codelotte.cli import build_parser
 

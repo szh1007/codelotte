@@ -6,7 +6,8 @@
 > 总览：[README.md](README.md)；操作手册：[run.md](run.md)（通用测评、对照、自检、
 > judge、归因、成本）·
 > [compaction.md](compaction.md)（专用测评 - 压缩回归 v0）·
-> [attribution.md](attribution.md)（归因规则与回归任务）。
+> [attribution.md](attribution.md)（归因规则与回归任务）·
+> [defense.md](defense.md)（注入与死循环防御）。
 
 ## 1. 目录约定
 
@@ -46,6 +47,10 @@ evals/runs/
 | 失败 → 回归任务 | `eval regression` | `evals/regressions/<新 id>.toml`（不是 run 目录） |
 | 成本曲线 | `eval cost` | `evals/cost/cost-report.md` / `.json`（不是 run 目录） |
 | 防御有效性 | `eval defense` | `evals/defense/defense-report.md` / `.json` + 剧本 `sessions/`（不是 run 目录） |
+
+命令的输入材料、执行步骤与报告字段见 [README.md](README.md) §2/§5，以及
+[run.md](run.md)、[compaction.md](compaction.md)、[attribution.md](attribution.md)、
+[defense.md](defense.md)。
 
 - **`report.md`**：人读报表。通用测评看 pass^N、成功率、成本/耗时；压缩回归看完成率、
   有效案例、状态保留率；声明了 judge 的任务另有“LLM judge”段（分数/理由/κ/⚠）；
