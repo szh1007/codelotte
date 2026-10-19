@@ -12,5 +12,7 @@
 | E5 | 注入拦截、死循环三层拦截、真实模型死循环压力与正常任务误报审计 | [e5-defense-effectiveness.md](e5-defense-effectiveness.md) | `evals/defense/defense-report.md` |
 
 复盘文：[retrospective.md](retrospective.md)（结论段双语）。
-材料包（票据 22）从这里取 E1–E5 的数字与链接；E3/E5 已就位，材料包的治理文档与
-面试脚本待票据 22 完成。
+材料包（票据 22）从这里取 E1–E5 的数字与链接：一页数据表见
+[interview/data-sheet.md](../../interview/data-sheet.md)，20 分钟动线见
+[interview/walkthrough.md](../../interview/walkthrough.md)。所有结论都以本目录报告的
+「证明了什么 / 不证明什么」为准。

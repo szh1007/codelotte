@@ -55,7 +55,7 @@
 | [19](19-experiment-e4-scaffolding-tax.md) | 实验 E4：scaffolding tax 对照 | 16 | ✅ done（2026-10-18；任务集扩到 9 条、新增 2 条 judge 任务；三组 repeat 2：codelotte 18/18、mini 18/18、raw 0/18；成功率打平，成本 +15.4%、耗时 −33.5%） |
 | [20](20-experiment-e1-e2-compaction-cost.md) | 实验 E1+E2：压缩回归 + 成本曲线 | 13, 15 | ✅ done（2026-10-19；短任务 72 + 长任务 36：compact 长任务保留 93.3% vs 87.8%、成本 −23.1%；成本曲线命中率 89%、总节省 80.8%；复盘文双语） |
 | [21](21-experiment-e3-e5-attribution-defense.md) | 实验 E3+E5：归因准确率 + 防御有效性 | 18, 11 | ✅ done（2026-10-19；归因 15/15、宏观 F1 1.000，真实 codelotte 失败 0 条；死循环剧本 5/5、真实模型压力 3/3、注入 27/27、正常任务误报 0/31） |
-| [22](22-materials-pack.md) | 材料包：治理文档 + 面试脚本 + 数据刷新 | 14, 19, 20, 21 | ready-for-agent |
+| [22](22-materials-pack.md) | 材料包：治理文档 + 面试脚本 + 数据刷新 | 14, 19, 20, 21 | ✅ done（2026-10-19；SECURITY/ROADMAP/CONTRIBUTING + `interview/` 三份材料 + README/PLAN/ADR/SPEC 数据刷新；演示段实测 12.3s；整场口述计时与 dogfood 记录待作者） |
 
 ## 使用方式
 

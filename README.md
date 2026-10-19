@@ -15,9 +15,9 @@ HTML / Markdown 会话导出。
 agent 做过的每件事——消息、工具调用、token 用量、压缩、防御拦截——都落在同一个会话文件里。
 同一份记录同时驱动回放、记账和评测。
 
-差异化不在循环本身（那部分已经被教程商品化），而在**测量**：仓库里有一套可复现的
-专用测评 - 压缩回归 v0，
-包含原始轨迹、已入库的基线，以及一份明确写出「这些数字不能证明什么」的报表。证据先于功能。
+差异化不在循环本身（那部分已经被教程商品化），而在**测量**：仓库里有可复现的评测套件
+（9 条通用任务 + 压缩/注入/死循环专项）与五组实验（E1–E5），包含原始轨迹、已入库的基线、
+对照组与反事实分析，以及明确写出「这些数字不能证明什么」的报表。证据先于功能。
 
 ## 30 秒演示
 
@@ -237,7 +237,7 @@ Docker 开销的情况下。
 flowchart LR
     U[用户] --> I[TUI / -p]
     I --> L[Agent Loop<br/>三层防御]
-    L --> P[Provider Adapter<br/>openai-completions / anthropic-messages]
+    L --> P[Provider Adapter<br/>openai-completions<br/>（anthropic-messages 协议抽象预留）]
     L --> A[工具<br/>read / write / edit / bash]
     A --> R[权限规则<br/>+ 审批]
     R --> S[Docker 沙箱<br/>仅 bash]
@@ -317,8 +317,9 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 ```
 
 `eval run` 每个任务重复 3 次，输出 `pass^3`、每任务成本与耗时；`eval compaction` 是票据 13 的
-专用测评 - 压缩回归 v0。v0 基线（12 条案例）当时约 ¥0.27；当前 9 条任务的压缩全量是
-36 条案例。加题与读报表见 [evals/run.md](evals/run.md)。
+专用测评 - 压缩回归 v0。v0 基线（12 条案例）当时约 ¥0.27；当前 `eval compaction` 的
+9 条任务全量（单组合）是 36 条案例；E1 的三组合矩阵另计（短任务 72 + 长任务 36）。
+加题与读报表见 [evals/run.md](evals/run.md)。
 
 | 现象 | 处理 |
 |---|---|
@@ -334,6 +335,10 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [CONTEXT.md](CONTEXT.md) | 术语表：session、run vs. turn、harness、minimal core |
 | [SPEC.md](SPEC.md) | 完整技术规格与实现决策 |
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
+| [SECURITY.md](SECURITY.md) | 安全模型、威胁边界、漏洞报告途径与已知限制 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试/评测约定、代码风格与 PR 流程 |
+| [ROADMAP.md](ROADMAP.md) | 未来方向、明确不做的事与优先级规则 |
+| [interview/](interview/README.md) | 面试材料包：一页数据表、20 分钟 walkthrough、简历 bullet、简历项目经历 v1 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 22 张曳光弹票据与状态 |
 | [evals/README.md](evals/README.md) | 评估体系总览：目录地图、九个命令、跑数产物、基线快照 |
@@ -355,30 +360,39 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 
 ## 状态
 
-票据 01–13 已实现：循环、四个工具、会话树与 fork、TUI、成本记账、HTML 导出、权限层、Docker 沙箱、
-死循环三层防御、压缩 v1、专用测评 - 压缩回归 v0（个别真机验证备注见票据索引）。票据 14、15 已完成：
-票据 14 交付 README、ADR 索引、演示材料与 dogfood 日志（3 分钟录屏与连续 dogfood 暂时忽略，
-作者后续补充）；票据 15 交付通用测评（`codelotte eval run`、`pass^k`、仓库快照、每任务成本/时段）
-与 B 桶 CI 冒烟，CI 已全绿。票据 16 交付对照组（`codelotte eval compare`：codelotte /
-mini-swe-agent / 裸单轮 API）与控制 agent 自检（`codelotte eval controls`），三组对照与
-oracle/no-op/cheating 均已真实跑通。票据 17 交付 LLM judge 兜底与 κ 校准
-（`codelotte eval judge`；确定性检查优先，judge 仅在 `[verifier.judge]` 声明时启用；
-20 条 `author-draft` 样本 κ=1.000，真实 judge 任务通过）。票据 18 交付失败归因分类器
-（五类病位 + 证据 + 置信度，自动进报表）与失败 → 回归任务命令
-（`codelotte eval attribute` / `codelotte eval regression`）；15 条作者草稿语料准确率
-15/15，真实失败上的准确率待复核。票据 19 完成 E4：任务集扩到 9 条（新增多文件调试、
-规格重构、长规则结算、边界条件 4 条），新增 2 条主观 judge 任务（并发 review / API 设计，
-各 20 条 `author-draft` 样本 κ=1.000）；三组对照 `repeat 2` 结果为 codelotte 18/18、
-mini-swe-agent 18/18、裸 API 0/18；成功率打平，codelotte 成本高 15.4%、耗时低 33.5%，
-是 token 成本换墙钟时间的取舍。票据 20 完成 E1/E2：短任务 72 + 长任务 36 条压缩矩阵
-（三节模板短任务 k=5 成本 −22.8%；长任务保留 93.3% vs 87.8% 且成本 −23.1%；
-wide 只买到短任务高 k 可达性）+ 成本曲线（缓存命中 89.0%，相对无缓存+全峰价
-总节省 80.8%）+ 复盘文（结论段双语）。票据 21 完成 E3/E5：归因 15/15（宏观 F1
-1.000，真实 codelotte 失败 0 条）+ 防御有效性（死循环剧本 5/5、注入任务 27/27、
-正常任务误报 0/31）+ `codelotte eval defense`；22 是最终材料包。当前票据规划至此收口，
-MCP 接入等后续功能留待下一版本规划。
+票据 01–22 均已完成并标记 done。其中 3 分钟录屏、连续 dogfood 记录、整场 20 分钟口述计时
+是作者待补项，已在 [面试材料](interview/README.md) 中如实标注。
 
-当前工作树的工程检查：`594 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
-Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
+### 1. 核心 agent（票据 01–13）
+
+1. Agent 循环、四个工具（`read` / `write` / `edit` / `bash`）与 TUI。
+2. append-only 会话树，支持 `--continue` / `--resume` / `--fork`。
+3. 逐次成本记账，以及自包含 HTML / Markdown 会话导出。
+4. 权限层（规则 + 审批 + trust + 无头 fail-closed）与 Docker 沙箱。
+5. 死循环三层防御、双触发上下文压缩、压缩回归 v0（12 条案例基线）。
+
+### 2. 评测与实验（票据 14–21）
+
+6. 票据 14：README、ADR 索引、演示材料与 dogfood 日志；录屏与连续 dogfood 暂时忽略。
+7. 票据 15：通用测评 `codelotte eval run`、`pass^k`、仓库快照、每任务成本/时段；B 桶 CI 冒烟已全绿。
+8. 票据 16：对照组 `codelotte eval compare`（codelotte / mini-swe-agent / 裸单轮 API）与控制 agent 自检 `eval controls`。
+9. 票据 17：LLM judge 兜底与 κ 校准；确定性检查优先，judge 仅在 `[verifier.judge]` 声明时启用，20 条 `author-draft` 样本 κ=1.000。
+10. 票据 18：失败归因分类器（五类病位 + 证据 + 置信度）与失败 → 回归任务；15/15，作者草稿待复核。
+11. 票据 19：E4，任务集扩到 9 条并新增 2 条 judge 任务；三组对照 18/18、18/18、0/18，成功率打平，成本 +15.4%、耗时 −33.5%。
+12. 票据 20：E1/E2，短任务 72 + 长任务 36 条压缩矩阵；三节模板长任务保留 93.3% vs 87.8%、成本 −23.1%；缓存命中 89.0%、总节省 80.8%。
+13. 票据 21：E3/E5，归因 15/15（宏观 F1 1.000，真实 codelotte 失败 0 条）；死循环剧本 5/5、注入 27/27、正常任务误报 0/31。
+
+### 3. 材料收口（票据 22）
+
+14. 治理文档三件套：[SECURITY.md](SECURITY.md) / [CONTRIBUTING.md](CONTRIBUTING.md) / [ROADMAP.md](ROADMAP.md)。
+15. 面试材料：[一页数据表](interview/data-sheet.md)、[20 分钟 walkthrough](interview/walkthrough.md)、[简历 bullet](interview/resume.md)、[简历项目经历 v1](interview/project-experience-v1.md)。
+16. README / PLAN / SPEC / ADR 数据刷新；明确当前只实现 `openai-completions`，`anthropic-messages` 为协议抽象预留。
+17. 当前票据规划至此收口；MCP 接入等后续功能留待下一版本。
+
+### 工程检查
+
+- `594 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）。
+- Ruff / Pyright 干净。
+- CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。

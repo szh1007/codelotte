@@ -16,8 +16,15 @@
 
 ## 实施记录（2026-10-16）
 
-- **判定语义（对 §G 两条看似冲突句式的解读，写明在此）**：三档判定**全局合并**（deny > ask > allow，SPEC 原文"冲突时 deny > ask > allow"），来源分层决定**信任门槛与审计出处**——"任一来源的 deny 不可被更低层级放行"落实为更强的一刀：deny 不被**任何**来源放行（含 CLI，宁严勿松；恶意仓库的通配 allow 压不过用户文件里的 deny，测试钉死）。无规则命中默认 **ask**（"未命中 allow 的调用一律拒绝"是 headless fail-closed 的前提）。
-- **规则语法**（[permissions.py](../../src/codelotte/permissions.py)）：`tool(pattern)` 或裸 `tool`；pattern 是 shell 风格通配（`*` 跨路径分隔符）；匹配主体 = 工具的主参数（bash→command，read/write/edit→path）。规则文件每行 `[allow|ask|deny] 规则`（缺省 allow、# 注释、坏行跳过并汇报不静默）；CLI `--allow/--ask/--deny` 可重复。
+- **判定语义**（对 §G 两条看似冲突句式的解读，写明在此）：
+  - 三档判定**全局合并**（deny > ask > allow，SPEC 原文“冲突时 deny > ask > allow”）。
+  - 来源分层决定**信任门槛与审计出处**——“任一来源的 deny 不可被更低层级放行”落实为更强的一刀：deny 不被**任何**来源放行（含 CLI，宁严勿松；恶意仓库的通配 allow 压不过用户文件里的 deny，测试钉死）。
+  - 无规则命中默认 **ask**（“未命中 allow 的调用一律拒绝”是 headless fail-closed 的前提）。
+- **规则语法**（[permissions.py](../../src/codelotte/permissions.py)）：
+  - `tool(pattern)` 或裸 `tool`；pattern 是 shell 风格通配（`*` 跨路径分隔符）。
+  - 匹配主体 = 工具的主参数（bash → command，read/write/edit → path）。
+  - 规则文件每行 `[allow|ask|deny] 规则`（缺省 allow、`#` 注释、坏行跳过并汇报，不静默）。
+  - CLI `--allow/--ask/--deny` 可重复。
 - **破坏性动词保护**：独立扫描器对**整条命令**逐模式扫描（`rm` 的 r+f 各种写法、`git push --force/-f`、`reset --hard`、`chmod -R`、`clean -fd`、`mkfs`/`dd of=/dev`、关机重启——藏在中段也抓）；通配 allow 对它一律不适用（跳过该规则 → 落到 ask），精确规则/逐次审批仍可放行（SPEC §G 的"只能精确规则或逐次审批"）。
 - **信任**：`codelotte trust` 子命令（显示规则文件内容 → y/N 确认 → 写 `~/.codelotte/trusted`）；未信任时项目规则被忽略——headless 打 stderr 提示、TUI 在对话流顶部挂提示条（复用 §G 的"提示"验收）。信任表按**目录**记录（Windows 大小写不敏感归一）。
 - **审批四档（TUI）**：`ApprovalScreen` 弹层（y/s/a/n + 按钮，Esc=拒绝）；「本会话」加**精确规则**（通配字符转义，`echo *` 不会变成通配）、「始终」同名规则**写用户级文件**（多行命令降级为本会话，避免撑破规则文件）；本次/拒绝不留规则。弹层上按 Ctrl+C = 该调用拒绝 + 回合取消（弹层稳妥关闭，测试覆盖）。审批者以回调注入 loop（`agent.approver`）——无头没有审批者，ask 一律 fail-closed。

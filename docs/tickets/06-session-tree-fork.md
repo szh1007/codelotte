@@ -23,7 +23,17 @@
 - **`--resume` 是导航，不落盘**（有意的不对称，审查后明确）：它只把后续记录的挂点切到所选分支——说了话才产生记录；没说话就退出，`--continue` 仍回到"最后有记录的地方"。fork 之所以写标记，是因为它**创建了一个新分支**（创建本身就是记录，也让"fork 完没说话就退出"不会迷路）。同一个原则，两种表现。
 - **确定性序列化**（缓存前提）：装配路径没变（`messages_from_entries` 纯函数），树只改变"喂进去的记录序列"。两个测试钉死：① 同一状态两次装配逐字节一致；② 分叉不改前缀——新分支与原分支在分岔点前逐字节相同（DeepSeek 前缀缓存命中率的直接保障）。
 - **顺带修一个真缺口**：TUI 的 `--continue` 回放原来读**整份文件**——分叉后会把其它分支的记录也画出来。改为只回放活动分支（`_run_tui` 按 `loop.leaf_id` 取 `load_branch`，回归测试 `test_build_agent_history_follows_selected_branch` 钉死）。
-- **两轴代码审查（Standards / Spec）后的修正**。Spec 轴实测抓到两个可复现的 CLI 硬伤：① **一个损坏文件打死整个 `--resume`**（连"选有效会话"都会被无关坏文件牵连）——改为逐文件/逐叶子隔离：坏的跳过、`--resume` 列表把"警告：跳过损坏的会话——…"打给用户（不静默吞）；② **`-p X --resume`（无序号）静默丢弃提示词**——改为显式用法错误。另补一处能力缺口：`--resume <序号> --fork N` 组合，让"从任意历史点分岔"覆盖任意分支。Standards 轴的修正：base-dir 默认值第三处重复抽成 `_default_base_dir()`；`load_entries+branch_entries` 的组合形态收拢为 `load_branch()`；`open_at` 不再绕过公开 API 改私有字段（`SessionStore.resume(leaf_id=…)`）；CLI 错误分类用新的 `SessionError`（不再把 json 解码之类的 ValueError 一并吞成用法错误）。回归测试 7 项（坏文件隔离 ×2、提示词丢弃、组合分岔、用法错误 ×2 等）。
+- **两轴代码审查（Standards / Spec）后的修正**。
+  - Spec 轴实测抓到两个可复现的 CLI 硬伤：
+    1. **一个损坏文件打死整个 `--resume`**：连“选有效会话”都会被无关坏文件牵连（修：逐文件/逐叶子隔离，坏的跳过；`--resume` 列表把“警告：跳过损坏的会话——…”打给用户，不静默吞）。
+    2. **`-p X --resume`（无序号）静默丢弃提示词**：改为显式用法错误。
+  - 另补一处能力缺口：`--resume <序号> --fork N` 组合，让“从任意历史点分岔”覆盖任意分支。
+  - Standards 轴的修正：
+    - base-dir 默认值第三处重复抽成 `_default_base_dir()`。
+    - `load_entries+branch_entries` 的组合形态收拢为 `load_branch()`。
+    - `open_at` 不再绕过公开 API 改私有字段（`SessionStore.resume(leaf_id=…)`）。
+    - CLI 错误分类用新的 `SessionError`（不再把 json 解码之类的 ValueError 一并吞成用法错误）。
+  - 回归测试 7 项（坏文件隔离 ×2、提示词丢弃、组合分岔、用法错误 ×2 等）。
 - 测试：新增 23 项（树/分叉/列表 12、CLI 10 含回归、e2e 扩展）。端到端 `test_fork_and_resume_keep_two_branches_independent` 用真实子进程跑通"线性 → fork → 两条分支各自 --continue/--resume → 组合再分岔"全流程并断言双方互不污染。全套 185 项全绿；ruff / pyright 干净。
 
 ## 真机验证记录

@@ -19,7 +19,13 @@
 - 真机验收：`codelotte -p "读一下 CONTEXT.md 并告诉我第一行"` → 模型自主调用 `read({"path":"CONTEXT.md","limit":1})`，答出首行 `# codelotte`，exit 0；stdout 只有答案（工具活动在 stderr）。README.md 尚未创建（票据 14），故以 CONTEXT.md 代替。
 - 真机会话第二轮 `cacheHitTokens=384`：assistant 的 `reasoning_content` 与原始参数 JSON 文本逐字节回传，前缀缓存按设计命中。
 - 测试：82 项全绿（新增装配器 11、read 工具 15、provider 7、端到端 5）；ruff / pyright 均通过。
-- 两轴代码审查（Standards / Spec）后修正：工具事件严格「先落盘再呈现」（SPEC §E）；畸形参数不再中止回合，改为 `parseError` 记入会话并作为工具结果回传（一个坏调用不拖垮并行的好调用，SPEC §D）；模型漏 id 时的合成 id 带随机后缀（避免多轮 `tool_call_id` 撞车）；read 的畸形整数参数改为报错而非静默回退；删除无调用方的 `tools=` 形参；**管道纯净**（见下）。
+- **两轴代码审查（Standards / Spec）后修正**：
+  - 工具事件严格「先落盘再呈现」（SPEC §E）。
+  - 畸形参数不再中止回合，改为 `parseError` 记入会话并作为工具结果回传（一个坏调用不拖垮并行的好调用，SPEC §D）。
+  - 模型漏 id 时的合成 id 带随机后缀（避免多轮 `tool_call_id` 撞车）。
+  - read 的畸形整数参数改为报错而非静默回退。
+  - 删除无调用方的 `tools=` 形参。
+  - **管道纯净**（见下）。
 
 ### 行为决定
 

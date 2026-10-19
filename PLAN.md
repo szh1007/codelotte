@@ -1,6 +1,22 @@
 # codelotte 开发方案（v1 · 2026-10-13）
 
-> 本文档是三轮设计访谈（grilling + domain-modeling）收敛后的完整方案。所有关键决策已记录在 [docs/adr/](docs/adr/)（0001–0005），术语定义见 [CONTEXT.md](CONTEXT.md)。事实依据：[技术栈调研](docs/research/README.md)、[pi 设计笔记](docs/research/pi-agent-design.md)、[岗位 JD 调研](docs/research/agent-job-market.md)、[生态差异化扫描](docs/research/portfolio-differentiation.md)、[DeepSeek API 笔记](docs/tech/deepseek-api.md)、[Python 栈笔记](docs/tech/python-stack.md)。技术要求与实现细节见 [SPEC.md](SPEC.md)；任务拆解见 [docs/tickets/](docs/tickets/README.md)。
+> 本文档是三轮设计访谈（grilling + domain-modeling）收敛后的完整方案。
+>
+> - **关键决策**：[docs/adr/](docs/adr/)（0001–0005）
+> - **术语表**：[CONTEXT.md](CONTEXT.md)
+> - **技术规格**：[SPEC.md](SPEC.md)
+> - **任务拆解**：[docs/tickets/](docs/tickets/README.md)
+> - **事实依据**：
+>   - [技术栈调研](docs/research/README.md)
+>   - [pi 设计笔记](docs/research/pi-agent-design.md)
+>   - [岗位 JD 调研](docs/research/agent-job-market.md)
+>   - [生态差异化扫描](docs/research/portfolio-differentiation.md)
+>   - [DeepSeek API 笔记](docs/tech/deepseek-api.md)
+>   - [Python 栈笔记](docs/tech/python-stack.md)
+>
+> **执行状态（2026-10-19）**：本文是原始方案，保留目标与取舍的历史记录；实际交付以
+> [README](README.md)、[CHANGELOG](CHANGELOG.md) 与 [面试数据表](interview/data-sheet.md) 为准。
+> 未达成的计划项（如 dogfood ≥4 周、任务集 30+）不作为已完成成果宣传。
 
 ## 0. 一页速览
 
@@ -10,7 +26,7 @@
 | 目标市场 | 国内为主（Agent 平台/应用方向，大厂 + AI 创业双投），海外加分 |
 | 成功标准 | 一句话：「**把 harness 的成本/成功率/失败率从 A 改到 B，并知道为什么**」——用实验报告证明 |
 | 深度押注 | D1 评测闭环 / D2 权限沙箱 / D4 压缩质量 / D5 轨迹归因（详见 [定位 ADR](docs/adr/0001-portfolio-positioning.md)） |
-| 技术栈 | Python 3.13 + uv 0.13 + Textual 8.2.8 + httpx2 + Docker；模型走 DeepSeek（双协议验证） |
+| 技术栈 | Python 3.13 + uv 0.13 + Textual 8.2.8 + httpx2 + Docker；模型走 DeepSeek（`openai-completions` 已实测；`anthropic-messages` 协议抽象预留，未实现） |
 | 节奏 | 约 6 周；**W4 开始投递**，边走边迭代 |
 | 形态 | CLI-first + TUI + 自包含 HTML 会话导出；public repo 第 1 天起 |
 
@@ -49,7 +65,7 @@ codelotte/
 用户 ⇄ TUI(Textual)
          │
     ┌────▼─────┐
-    │ Agent Loop │──► providers/adapter（openai-completions｜anthropic-messages → DeepSeek）
+    │ Agent Loop │──► providers/adapter（openai-completions → DeepSeek；anthropic-messages 预留）
     └─┬──┬───┬──┘        │
       │  │   │           └──► usage/cost（每调用记 token/缓存命中/时段价）
       │  │   └──► compaction（双触发；压缩落为 Session 一条 entry）
@@ -127,19 +143,19 @@ codelotte/
 **W3 安全与压缩**：权限层（语法+trust+审批+fail-closed）｜ Docker 沙箱（长驻容器）｜ 死循环三层防御 ｜ 压缩 v1（双触发+模板+约束重注入）｜ 专用测评 - 压缩回归 v0（3 条任务）
 ✅ 验收：注入用例被拦截；强制压缩 3 次的任务仍能完成
 
-**W4 MVP 里程碑 → 开始投递**：README v1（双语）+ ADR 索引 + 演示录屏 ｜ 修 dogfood 高频问题
+**W4 MVP 里程碑 → 开始投递**：README v1（中文版）+ ADR 索引 + 演示录屏 ｜ 修 dogfood 高频问题
 ✅ 验收：外部人 20 分钟内克隆跑通
 
 **W5 评测与实验**：eval runner ｜ E1-E4（E5 视余量）｜ 复盘文 1 篇（结论双语）
 ✅ 验收：实验报告落库，数据进 README
 
 **W6 打磨与材料**：security policy / roadmap / CONTRIBUTING ｜ 简历材料包 + 面试 walkthrough 脚本（20 分钟动线：数据表 → demo → 代码走读 → 失败分析）｜ 数据刷新
-✅ 验收：材料包完整，可投二面
+✅ 验收：材料包完整，可投二面（2026-10-19 已完成，见 [interview/](interview/README.md)、[SECURITY.md](SECURITY.md)、[CONTRIBUTING.md](CONTRIBUTING.md)、[ROADMAP.md](ROADMAP.md)）
 
 ## 6. 交付物清单（DoD）
 
 1. Public repo（MIT）：代码 + `uv tool install` 可装 + 20 分钟 quick start
-2. ADR 0001-0005+ ｜ CONTEXT.md ｜ README 双语（证据先行）
+2. ADR 0001-0005+ ｜ CONTEXT.md ｜ README 中文版（证据先行）
 3. 实验报告 E1-E5（≥4 份）+ 复盘文 1 篇
 4. HTML 会话样片 ≥2（含成本面板/拦截记录）
 5. dogfood 日志 ≥4 周（合并 PR 数、省时、翻车案例）
@@ -158,12 +174,16 @@ codelotte/
 | 自研 adapter | Function Calling/协议理解、多模型接入 |
 | ADR 全集 | 「为什么这么设计」的每一个追问 |
 
-## 8. 简历 bullet 草稿（[ ] 为 W5/W6 填入真实数字）
+## 8. 简历 bullet（最终版见 [interview/resume.md](interview/resume.md)）
 
-1. 独立设计开发 **codelotte**：一款 minimal-core 终端 coding agent（Python 3.13 / Textual / 自研双协议 LLM 接入层），从 0 实现 agent loop、会话树、权限沙箱与评测体系，开源 [stars]
-2. 构建 agent 质量闭环：自建 [N] 条任务评测集与 pass^k / 成本 / 压缩衰减多维指标体系 + CI 回归门禁；量化 harness 改进——成功率 [A]→[B]、单任务成本 [C]→[D]（缓存命中优化 + off-peak 调度）
-3. 设计双层执行安全（权限规则 × Docker 沙箱）与轨迹级失败归因，把 prompt 注入与死循环做成可复现用例并全部拦截（[n]/[n]）
-4. 连续 [N] 周以自研 agent 开发自身（dogfood），累计合并 [M] 个自产 PR
+1. 独立设计开发 **codelotte**：一款 minimal-core 终端 coding agent（Python 3.13 / Textual / 自研 LLM 接入层），从 0 实现 agent loop、会话树、权限沙箱与评测体系，开源 **1 star**（2026-10-19）
+2. 构建 agent 质量闭环：9 条任务 × 3 次正式评测 **27/27、pass^3 9/9**；量化 harness 改进——长任务压缩保留率 **87.8% → 93.3%**、成本 **−23.1%**；实际成本较无缓存+全峰价反事实 **−80.8%**（¥1.0717 → ¥0.2058）
+3. 设计双层执行安全（权限规则 × Docker 沙箱）与轨迹级失败归因，把 prompt 注入与死循环做成可复现用例：注入 **27/27**、死循环剧本 **5/5**、正常任务误报 **0/31**
+4. （暂不投递）连续 **0 周**以自研 agent 开发自身（dogfood），累计合并 **0 个**自产 PR；
+   dogfood 日志已有脚手架，但尚未开始记录。补齐后再按日志填写
+
+> 数字来源、分母与「不能证明什么」见 [interview/resume.md](interview/resume.md)；
+> 该文件是维护入口，PLAN 只保留摘要。
 
 ## 9. 风险与应对
 
@@ -173,7 +193,7 @@ codelotte/
 | Textual 学习曲线 | W1 只做单屏流式最简版，样式后置（砍单项） |
 | Windows + Docker 性能/兼容 | 长驻容器减少冷启动；`--no-sandbox` 兜底；Windows Terminal 为目标环境 |
 | 6 周估时偏差 | W4 是硬检查点；超期按 §4 砍单顺序收缩 |
-| 单模型对照缺位 | adapter 双协议已可在 DeepSeek 内验证；演示前可选补 ¥100 级跨模型对照 |
+| 单模型对照缺位 | adapter 协议抽象已预留；当前只实测 `openai-completions`，第二协议/第二模型为后续工作（见 [ROADMAP.md](ROADMAP.md)） |
 
 ## 10. 待办（非阻塞）
 

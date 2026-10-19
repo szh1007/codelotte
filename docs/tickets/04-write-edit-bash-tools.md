@@ -20,12 +20,27 @@
 - 超时杀整个进程组：POSIX 用 `start_new_session=True` + `killpg`；Windows 用 `taskkill /F /T`。测试用"孙进程到点写标记文件"的方式证明整棵树被杀（不是只杀 shell）；超时判定用 `asyncio.wait` 竞速而非 `wait_for`——后者取消读取任务会丢掉已缓冲的输出。
 - 输出截断（SPEC §D，票据 03 记的延后项）：超 30k 字符保留头 20k + 尾 8k，中间注明省略量与全文去向；全文写入系统临时目录（`codelotte-tool-output/`），路径写进结果文本供模型 `read`。
 - `env` 字段（SPEC §E，票据 03 记的延后项）：`tool_call`/`tool_result` 落 `env`（本票恒为 `local`；票据 10 起按实际执行环境）。
-- edit 与换行（三工具统一约定：**模型的世界里只有 `\n`**）：`read` 呈现 LF 视图、`write` 原样写 LF、edit 比对时把文件的 `\r\n` 看成 `\n`（旧文按行拆开、行间写成 `\r?\n` 的 pattern）——只看不改；命中后只替换那一段，前后字节原样保留；新内容的换行跟文件走（文件里有 `\r\n` 就用 `\r\n`）。演进过程值得记：v1"找不到才试 CRLF 变体"有静默错改（LF pattern 以 `\n` 开头会沿 `\r\n` 边界错位命中、留下孤 `\r`），v2"优先变体"修了 bug 但更绕（`old_string` 自带 `\r\n` 时生成 `\r\r\n` 错候选），v3"整文件拍平 + 多数派还原"会重写没被要求的行，v4"按命中段定新内容风格"仍要三个概念；v5 定稿为**比对一条规则、落笔一条规则**。`new_string` 空串=删除；old==new / old 为空直接报错；错误文案都带"怎么修"（扩展上下文 / 改用 write）。
+- **edit 与换行**（三工具统一约定：**模型的世界里只有 `\n`**）：
+  - `read` 呈现 LF 视图；`write` 原样写 LF；edit 比对时把文件的 `\r\n` 看成 `\n`（旧文按行拆开、行间写成 `\r?\n` 的 pattern）——只看不改。
+  - 命中后只替换那一段，前后字节原样保留；新内容的换行跟文件走（文件里有 `\r\n` 就用 `\r\n`）。
+  - 演进过程：
+    - v1“找不到才试 CRLF 变体”有静默错改（LF pattern 以 `\n` 开头会沿 `\r\n` 边界错位命中、留下孤 `\r`）。
+    - v2“优先变体”修了 bug 但更绕（`old_string` 自带 `\r\n` 时生成 `\r\r\n` 错候选）。
+    - v3“整文件拍平 + 多数派还原”会重写没被要求的行。
+    - v4“按命中段定新内容风格”仍要三个概念。
+    - v5 定稿为**比对一条规则、落笔一条规则**。
+  - `new_string` 空串 = 删除；old == new / old 为空直接报错；错误文案都带“怎么修”（扩展上下文 / 改用 write）。
 - 真机验收（临时目录 + 真实 DeepSeek）：`创建 greet.py（打印 你好），运行验证，改成 世界 再运行验证` → 模型自主完成 write → bash → edit → bash → read；期间真实踩到两次命令失败（`python3` 不存在、Windows cmd 不认 `;` 分隔符），错误文本回传后模型自纠成功，exit 0；末次 `cache_hit=8960 / in=11029`（前缀缓存命中率高）。
 - 顺带修掉的真实缺陷：Windows 中文环境下 cmd 的原生报错按 ANSI 代码页（cp936）输出，而 `PYTHONUTF8=1` 时 `getpreferredencoding()` 返回 utf-8 导致回退失效——改用不受 UTF-8 模式影响的 `locale.getencoding()`。
 - 真机使用中发现并修复的路径缺陷（2026-10-15）：模型从 Git Bash 的 `pwd`/`ls` 学到的 `/d/...` 写法，在 Windows 的 `Path("/d/foo")` 语义下是"当前盘符根下的 `d\foo`"——write 把文件写进 `D:\d\__WorkSpace__\...`（bash 侧永远看不到），模型陷入长串探测才靠相对路径脱困。修复：`resolve_path`（三个文件工具共用）在入口把 `/d/foo`、`\d\foo` 形状翻成 `D:/foo`，与 Git Bash 一致（同一路径写法，两个世界必须指向同一处）；翻译是纯函数 `_windows_drive_form`，单独测试 + Windows 集成用例（write 写入后 read 按同一写法读回）。
 - Windows 的 shell 选择修正（2026-10-15 真机）：工具名叫 bash、模型按 bash 语法写命令，而原实现固定走 cmd.exe——`;` 被当普通字符原样打出、`cd /d/...` 里的 `/d` 被 cmd 当成自己的开关（报"命令语法不正确"），模型每次靠试错自纠。改为：Windows 优先找 Git Bash 跑 `bash -c`（`System32\bash.exe` 是 WSL 启动器，识别时排除），找不到才退回 cmd.exe /c；POSIX 不变（/bin/sh -c）。`pwd`/`ls` 呈现的 `/d/...` 世界与命令语法从此统一在同一个 shell 里。超时杀树、取消收回在 bash 下同样成立（执行器测试覆盖）；e2e 里按"执行器实际选用的 shell"挑验证命令（bash 用 cat，退回 cmd 才用 type）。
-- 两轴代码审查（Standards / Spec）后修正：路径解析三处复制 → 抽 `tools/base.py::resolve_path`（仓库 DRY≥3 规则）；read 也接上字符级截断（行数上限挡不住超长行，实测 2 行文件可吐 6M 字符）；取消路径（回合中断）用 try/finally 收回整个进程树（否则 Ctrl+C 后命令作为孤儿继续跑）；删掉没人读的 `ExecResult.env`（执行环境是执行器的属性）；`tool_result` 补 `name` 字段（导出/归因按行读会话时自我描述）；`_decode` 测试改为经 `run()` 断言可观察行为。
+- **两轴代码审查（Standards / Spec）后修正**：
+  - 路径解析三处复制 → 抽 `tools/base.py::resolve_path`（仓库 DRY≥3 规则）。
+  - read 也接上字符级截断（行数上限挡不住超长行，实测 2 行文件可吐 6M 字符）。
+  - 取消路径（回合中断）用 try/finally 收回整个进程树（否则 Ctrl+C 后命令作为孤儿继续跑）。
+  - 删掉没人读的 `ExecResult.env`（执行环境是执行器的属性）。
+  - `tool_result` 补 `name` 字段（导出/归因按行读会话时自我描述）。
+  - `_decode` 测试改为经 `run()` 断言可观察行为。
 - 测试：全套 136 项全绿（执行器 9、write 8、edit 19、bash 9、注册表 7、端到端 12）；ruff / pyright 干净。
 
 ### 已知边界（票据 09/10 的范围，非本票缺陷）

@@ -1,6 +1,13 @@
 # 01: 项目骨架 + 可安装 CLI + 测试与 CI 底座
 
-**What to build:** 建立整个项目的工程底座，让后续每一张票据都能"装得上、跑得起、测得了"：用 uv 管理项目与依赖，代码采用 src 布局并产出 `codelotte` 命令行入口（本票只需支持 `--version`）；pytest 测试骨架就位并跑绿；GitHub Actions 在每次推送时自动运行测试；`pyproject.toml` 声明 `[project.scripts]` 入口与 `uv_build` 后端，保证未来 `uv tool install` 可分发的形态不变；`.gitattributes` 统一行尾为 LF；`.env.example` 提供 API Key 占位符模板。
+**What to build:** 建立整个项目的工程底座，让后续每一张票据都能“装得上、跑得起、测得了”。
+
+- 用 uv 管理项目与依赖，代码采用 src 布局并产出 `codelotte` 命令行入口（本票只需支持 `--version`）。
+- pytest 测试骨架就位并跑绿。
+- GitHub Actions 在每次推送时自动运行测试。
+- `pyproject.toml` 声明 `[project.scripts]` 入口与 `uv_build` 后端，保证未来 `uv tool install` 可分发的形态不变。
+- `.gitattributes` 统一行尾为 LF。
+- `.env.example` 提供 API Key 占位符模板。
 
 🗣 大白话：这是给房子装地基和电闸——项目能安装、能跑起来、还有"自动质检员"（CI）守着。之后每加一块功能，都踩在这块地基上。
 

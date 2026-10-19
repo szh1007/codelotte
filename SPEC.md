@@ -62,7 +62,7 @@
 你 ⇄ TUI（终端界面）
       │
   Agent Loop（循环 + 死循环三层防御）
-      ├──► Provider Adapter（对接模型 API；双协议；SSE 流式）
+      ├──► Provider Adapter（对接模型 API；wire protocol 抽象；SSE 流式）
       ├──► Tools（read / write / edit / bash 四个工具）
       │         └─ 经过 ► Permission（规则+审批）─► Sandbox（Docker 容器）
       ├──► Compaction（双触发压缩；压缩落为会话条目）
@@ -204,8 +204,8 @@
 **决策**（依据 [ADR-0004](docs/adr/0004-self-built-llm-adapter.md)）：
 
 - **自研薄 adapter**：HTTP 客户端用 `httpx2`（httpx 的 stable 分支已停更 22 个月，OpenAI/Anthropic 官方 SDK 均已迁移至 pydantic 维护的 httpx2）；SSE 解码器**内联自写**（约 100 行，参考 OpenAI SDK 的做法），不引入 httpx-sse（它硬依赖旧 httpx）。
-- **协议抽象**：内部统一为"标准流事件"（文本增量 / 工具调用增量 / 用量 / 结束原因）。v1 实现两条 wire protocol：`openai-completions` 与 `anthropic-messages`。**两条都用 DeepSeek 自家端点做端到端验证**（DeepSeek 同时提供 OpenAI 兼容与 `/anthropic` 兼容端点），因此不需要第二家 API Key 就能证明多协议能力。
-- **模型目录数据化**：每个模型的元数据（上下文窗口、输入/输出/缓存单价、峰谷时段规则、能力标记如是否支持视觉）存为配置文件，代码不硬编码。默认只配 DeepSeek 两个模型（`deepseek-flash`、`deepseek-v4-pro`）；Anthropic / OpenAI 目录条目留槽（结构就绪，密钥到位即可用）。
+- **协议抽象**：内部统一为"标准流事件"（文本增量 / 工具调用增量 / 用量 / 结束原因）。v1 计划实现两条 wire protocol：`openai-completions` 与 `anthropic-messages`，两条都用 DeepSeek 自家端点做端到端验证（DeepSeek 同时提供 OpenAI 兼容与 `/anthropic` 兼容端点）。**实现状态（2026-10-19）**：只有 `openai-completions` 已落地并实测；`anthropic-messages` 是协议抽象预留，未实现、未验证。面试材料与简历不得声称双协议已实现；后续工作见 [ROADMAP.md](ROADMAP.md)。
+- **模型目录数据化**：每个模型的元数据（上下文窗口、输入/输出/缓存单价、峰谷时段规则、能力标记如是否支持视觉）存为配置文件，代码不硬编码。默认只配 DeepSeek 两个模型（`deepseek-flash`、`deepseek-v4-pro`）；Anthropic / OpenAI 的目录条目位置已留，但对应的 wire protocol 适配器尚未实现——密钥到位也不可直接使用（见上一条实现状态）。
 - **已知雷区写入适配层与单元测试**（来自 [docs/tech/deepseek-api.md](docs/tech/deepseek-api.md)）：
   1. 带工具调用的请求必须把历史中所有 assistant 的 `reasoning_content` 原样回传，否则 API 直接 400——这是 agent 循环最容易踩的坑；
   2. 思考模式下 `tool_choice=required`（强制调工具）不被支持（与 Anthropic 5.5 的约束同构），循环设计不能依赖"强制调工具"；
@@ -258,9 +258,19 @@
 - **结构化摘要模板**（固定七项）：任务目标 / 已完成事项 / 关键决策及其理由 / 活跃约束（不得违反的规则）/ 涉及文件清单 / 当前未解决问题 / 下一步。摘要由同一模型生成（self-summarize），作为 `compaction` entry 写入。
 - **硬约束重注入**：摘要之外，把"活跃约束"额外以系统级消息重新插入压缩后的上下文——防止摘要器把约束"润色"掉（调研数据：压缩导致策略违规率 38% 的实验证据）。
 - **原件永远可寻址**：压缩只影响后续请求的上下文装配，原始 entry 仍在会话文件里，随时可查——这是"可恢复压缩"。
-- **专用测评 - 压缩回归 v0**（实验资产，不是普通单测）：固定任务集下强制压缩 k=1/3/5 次，报告：① pass 率衰减曲线；② **关键状态保留率**——压缩后注入一串 checkpoint 问题（"你的任务目标是什么？已完成哪些步骤？有哪些约束？"），用确定性比对 + 人工标注评分；③ 触发策略 × 摘要模板的 A/B 对照。目标是产出一张"压缩次数 → 质量"的曲线，这在公开资料里几乎不存在。v0（票据 13）已落地为 `codelotte eval compaction`：3 条任务 × k=0/1/3/5（0 为不压缩对照），`CompactionPolicy` 注入强制压缩、每次压缩后带外探针、报表四件套；口径与基线见 [evals/compaction.md](evals/compaction.md)。
+- **专用测评 - 压缩回归 v0**（实验资产，不是普通单测）：
+  - 固定任务集下强制压缩 k=1/3/5 次。
+  - 报告三项：① pass 率衰减曲线；② **关键状态保留率**——压缩后注入 checkpoint 问题（“任务目标 / 已完成 / 约束”），用确定性比对 + 人工标注评分；③ 触发策略 × 摘要模板的 A/B 对照。
+  - 目标：产出一张“压缩次数 → 质量”的曲线。
+  - v0（票据 13）已落地为 `codelotte eval compaction`：3 条任务 × k=0/1/3/5（0 为不压缩对照）；`CompactionPolicy` 注入强制压缩、每次压缩后带外探针、报表四件套。
+  - 口径与基线见 [evals/compaction.md](evals/compaction.md)。
 - 用户在 TUI 中可见压缩发生（事件标记），导出 HTML 中高亮压缩点——透明性是产品立场。
-- **v1 实现（票据 12）**：触发分子 = 上一次请求的实际 usage（恢复时取最后 usage，其后有 compaction 则取其估算值），分母 = 用户级生效窗口；软/硬阈值来自 settings.json 的 `compactionSoftThreshold` / `compactionHardThreshold`（比例，**0.2 ≤ soft < hard ≤ 0.9 且 hard - soft ≥ 0.2**；默认 0.60 / 0.85）。软触发取上次压缩之后的最新任务边界（用户消息 ∪ 成功 `git commit` 所属 assistant 位置），硬触发压到最小保留集（最近一个 turn）。摘要调用同模型、无工具、照常计 usage 但不落 assistant 消息；compaction entry 存 `summary` / `firstKeptEntryId` / `constraints` / `mode` / `window` / `beforeTokens` / `estimatedAfterTokens` / `warning`（百分比不落盘，展示时由 `beforeTokens/window` 现算）。压缩后上下文 = system（摘要 + 独立硬约束）+ 保留段；最小集仍超目标时写 warning，不无限压。
+- **v1 实现（票据 12）**：
+  - **触发**：分子 = 上一次请求的实际 usage（恢复时取最后 usage；其后有 compaction 则取估算值）；分母 = 用户级生效窗口。
+  - **阈值**：`compactionSoftThreshold` / `compactionHardThreshold`（比例，**0.2 ≤ soft < hard ≤ 0.9 且 hard - soft ≥ 0.2**；默认 0.60 / 0.85）。
+  - **切点**：软触发取上次压缩后最新的任务边界（用户消息 ∪ 成功 `git commit` 的 assistant 位置）；硬触发压到最小保留集（最近一个 turn）。
+  - **摘要**：同模型、`tools=None`、照常计 usage，但不落 assistant 消息；compaction entry 存 `summary` / `firstKeptEntryId` / `constraints` / `mode` / `window` / `beforeTokens` / `estimatedAfterTokens` / `warning`（百分比不落盘，展示时由 `beforeTokens/window` 现算）。
+  - **装配**：压缩后上下文 = system（摘要 + 独立硬约束）+ 保留段；最小集仍超目标时写 warning，不无限压。
 
 ### G. 权限层
 
@@ -333,10 +343,26 @@
 
 - **任务定义**：TOML 文件，字段：`id`、`bucket`（A 真实自用 / B 对抗构造 / C 公开子集）、`repo`（git ref + 初始化脚本，保证每次从同一状态出发）、`instruction`（任务指令）、`verifier`（验收器）、`budget`（超时/token 上限）。
 - **验收器阶梯**（确定性优先）：① 命令式验收（跑测试/检查文件内容/比对输出——首选）；② 显式规则检查（如"指定函数不存在了"）；③ LLM judge（仅当无法确定性验收时使用，且必须报告与人工标注的一致性 κ 值）。被否备选：默认 LLM judge（评分者偏差不可控，腾讯 107 天复盘教训：κ=0.10–0.21 的裁判没有意义）。
-  - 票据 17 实现：只有任务显式声明 `[verifier.judge]` 才启用；确定性检查先跑，失败不调用 judge；judge 返回每个维度的 0–1 分 + 理由，平均分过 `pass_threshold` 才算通过。κ 由独立命令 `codelotte eval judge` 用 ≥20 条人工标注样本预计算并写成校准文件；运行时只读 κ，低 κ/样本不足/校准缺失在报表标 ⚠。judge 成本计入总成本，judge 任务单独放在 `evals/judge-tasks/`，避免控制组自检依赖模型。
-- **失败归因（票据 18/21）**：失败案例自动归入五类病位之一——`model`（模型误判，兜底）/ `tool_schema` / `context_loss` / `loop` / `environment`；规则确定性、带证据与置信度，优先级为环境 > 循环 > 工具 schema > 上下文丢失 > 模型。归因只读 codelotte 会话轨迹与案例级错误，不调用模型；失败分布进 `report.md`。规则与优先级见 `evals/attribution.md`；准确率用 `codelotte eval attribute` 对标注语料算逐类指标/混淆矩阵，`--run` 汇总真实失败分布（首版 15 条为作者草稿；E3 报告见 `docs/experiments/e3-attribution-accuracy.md`）。失败案例可用 `codelotte eval regression` 转成可跑的回归任务（保留原 setup/verifier，只换 id）。
-- **压缩与成本实验（票据 20）**：`eval compaction` 支持摘要模板（`seven`/`compact`）与切点策略（`minimal`/`wide`）的矩阵，报表按组合 × k 分组；`eval cost` 从会话 usage 反事实重算实际 / 无缓存 / 全峰价成本，不重新调用模型。E1/E2 的结论与原始跑数见 `docs/experiments/`。
-- **防御有效性（票据 21）**：`eval defense` 用真实 `AgentLoop` + 脚本化 Provider 跑死循环三层剧本，读真实跑数汇总真实模型死循环压力、注入任务拦截与 A 桶正常任务误报；不调用模型。注入任务 010–012 在 `evals/defense-tasks/`，死循环压力 013 在 `evals/loop-tasks/`，都与主任务集分开。E5 报告见 `docs/experiments/e5-defense-effectiveness.md`。
+  - 票据 17 实现：
+    - 只有任务显式声明 `[verifier.judge]` 才启用。
+    - 确定性检查先跑，失败不调用 judge。
+    - judge 返回每维 0–1 分 + 理由，平均分过 `pass_threshold` 才算通过。
+    - κ 由 `codelotte eval judge` 用 ≥20 条人工标注样本预计算并写成校准文件；运行时只读 κ，低 κ/样本不足/校准缺失在报表标 ⚠。
+    - judge 成本计入总成本；judge 任务单独放在 `evals/judge-tasks/`，避免控制组自检依赖模型。
+- **失败归因（票据 18/21）**：
+  - 五类病位：`model`（模型误判，兜底）/ `tool_schema` / `context_loss` / `loop` / `environment`。
+  - 规则确定性、带证据与置信度；优先级：环境 > 循环 > 工具 schema > 上下文丢失 > 模型。
+  - 只读 codelotte 会话轨迹与案例级错误，不调用模型；失败分布进 `report.md`。
+  - `codelotte eval attribute` 对标注语料算逐类指标/混淆矩阵；`--run` 汇总真实失败分布（首版 15 条为作者草稿；E3 报告见 `docs/experiments/e3-attribution-accuracy.md`）。
+  - `codelotte eval regression` 把失败案例转成可跑的回归任务（保留原 setup/verifier，只换 id）。
+- **压缩与成本实验（票据 20）**：
+  - `eval compaction` 支持摘要模板（`seven`/`compact`）与切点策略（`minimal`/`wide`）的矩阵，报表按组合 × k 分组。
+  - `eval cost` 从会话 usage 反事实重算实际 / 无缓存 / 全峰价成本，不重新调用模型。
+  - E1/E2 的结论与原始跑数见 `docs/experiments/`。
+- **防御有效性（票据 21）**：
+  - `eval defense` 用真实 `AgentLoop` + 脚本化 Provider 跑死循环三层剧本，读真实跑数汇总真实模型死循环压力、注入任务拦截与 A 桶正常任务误报；不调用模型。
+  - 注入任务 010–012 在 `evals/defense-tasks/`；死循环压力 013 在 `evals/loop-tasks/`；都与主任务集分开。
+  - E5 报告见 `docs/experiments/e5-defense-effectiveness.md`。
 - **执行器**：每任务在独立临时目录 + 会话隔离环境中跑 k=3 次；记录随机种子、开始/结束时的模型价目档（峰谷）、完整会话轨迹。跑数落盘为"运行记录"（锁依赖版本 + 锁任务 git ref + 原始轨迹）——任何数字可复现。
 - **对照**：同任务集跑 ① mini-swe-agent（Python 现成、经 litellm 接同一 DeepSeek 模型）；② 裸单轮 API（无工具循环的直答）。用来分别度量"工具循环的价值"与"我们 harness 相对参照物 harness 的增量"（scaffolding tax 意识：成绩有多少是模型的、多少是 harness 的）。
 - **控制 agent 自检评测管线**：用三个假 agent 验证评测系统本身——oracle（总能做对：应 100% 通过）、no-op（什么都不做：应全失败）、cheating（尝试作弊：应被检测/记 0）。评测系统上线前先通过这三关。
@@ -344,11 +370,35 @@
 
 ### M. 配置系统
 
-- 配置取值链：**命令行参数（如 `--allow`）> 用户级 `~/.codelotte/settings.json`（选 provider/模型/超时）→ 用户级 `~/.codelotte/models.json`（端点/密钥/模型条目）> 随包默认值（窗口/输出上限/展示名/思考强度）> 必填报错指路**。**没有替你猜的默认，也没有任何环境变量来源**（`.env`、`env` 包层、`CODELOTTE_*` 变量均已移除）；用户级目录固定为系统家目录；不存在任何项目级配置文件。缺哪个就报错并指出去哪补。思考开关与强度统一在模型条目的 `reasoning_effort`（直接进请求体；`none` 关闭思考，其余档位开启并控制强度，照官方 thinking_mode 的档位表）：**展示总是跟随开关**——开启时思考内容既落盘又展示，没有单独的展示配置。
-- 三份配置分家（2026-10-17 v3）：随包 `src/codelotte/providers/models.json` 只用于**计费、展示与上限参考**（纯函数逻辑：价目/峰谷/节假日/官方端点提示/展示名/窗口与输出默认值）；用户级 `~/.codelotte/models.json` 是**运行参数的唯一来源**（provider 级 baseUrl/apiKey + models 清单）。随包文件不参与请求，密钥只进用户级文件。
-- 用户配置的模型 `id` 必须命中随包目录里**已适配**的模型（没适配的不给用）；`contextWindow`/`maxTokens` 可省（随包默认）、写了不能超过随包值；`name` 用户优先；`reasoning_effort` 可省（默认随包的 `high`），写在模型条目里直接进请求体；多写的字段（含计费字段）一律忽略——钱的事以随包文件为准。
-- `settings.json` 的文件键与 `Settings` 字段一一对应：`lastChangelogVersion`（更新提示水位，启动比对 `CHANGELOG.md` 并写回）、`defaultProvider`、`defaultModel`、`commandTimeoutSeconds`、死循环防御的四个阈值 `guardrailRepeatLimit` / `guardrailStagnationLimit` / `guardrailFailureLimit` / `guardrailPlanningLimit`（票据 11）、压缩双阈值 `compactionSoftThreshold` / `compactionHardThreshold`（比例 0.2–0.9，hard - soft ≥ 0.2；票据 12）。会话目录固定为 `~/.codelotte/sessions`。
-- 权限规则走 `permissions.json` + 项目级信任门槛（票据 09）；**配置一律只从用户级目录读取**（固定的系统家目录下的 `~/.codelotte/`）：settings/models 能决定请求去向与所用密钥，放进项目目录等于让陌生仓库遥控你的请求；且没有任何开关能把这个目录重定位。
+- **配置取值链**（后者被前者覆盖）：
+  1. 命令行参数（如 `--allow`）
+  2. 用户级 `~/.codelotte/settings.json`（选 provider / 模型 / 超时）
+  3. 用户级 `~/.codelotte/models.json`（端点 / 密钥 / 模型条目）
+  4. 随包默认值（窗口 / 输出上限 / 展示名 / 思考强度）
+  5. 必填报错指路
+- **没有替你猜的默认，也没有任何环境变量来源**：`.env`、`env` 包层、`CODELOTTE_*` 变量均已移除；用户级目录固定为系统家目录；不存在项目级配置文件。缺哪个就报错并指出去哪补。
+- **思考控制**：开关与强度统一在模型条目的 `reasoning_effort`（直接进请求体；`none` 关闭思考，其余档位开启并控制强度，照官方 thinking_mode 的档位表）。**展示总是跟随开关**——开启时思考内容既落盘又展示，没有单独的展示配置。
+- **三份配置分家（2026-10-17 v3）**：
+  - 随包 `src/codelotte/providers/models.json` 只用于**计费、展示与上限参考**（价目 / 峰谷 / 节假日 / 官方端点提示 / 展示名 / 窗口与输出默认值）。
+  - 用户级 `~/.codelotte/models.json` 是**运行参数的唯一来源**（provider 级 baseUrl / apiKey + models 清单）。
+  - 随包文件不参与请求；密钥只进用户级文件。
+- **模型条目校验**：
+  - 用户配置的模型 `id` 必须命中随包目录里**已适配**的模型（没适配的不给用）。
+  - `contextWindow` / `maxTokens` 可省（随包默认），写了不能超过随包值。
+  - `name` 用户优先。
+  - `reasoning_effort` 可省（默认随包的 `high`），写在模型条目里直接进请求体。
+  - 多写的字段（含计费字段）一律忽略——钱的事以随包文件为准。
+- **`settings.json` 键**（与 `Settings` 字段一一对应）：
+  - `lastChangelogVersion`：更新提示水位，启动比对 `CHANGELOG.md` 并写回。
+  - `defaultProvider` / `defaultModel`。
+  - `commandTimeoutSeconds`。
+  - 死循环防御四阈值：`guardrailRepeatLimit` / `guardrailStagnationLimit` / `guardrailFailureLimit` / `guardrailPlanningLimit`（票据 11）。
+  - 压缩双阈值：`compactionSoftThreshold` / `compactionHardThreshold`（比例 0.2–0.9，hard - soft ≥ 0.2；票据 12）。
+  - 会话目录固定为 `~/.codelotte/sessions`。
+- **配置来源纪律**：
+  - 权限规则走 `permissions.json` + 项目级信任门槛（票据 09）。
+  - **配置一律只从用户级目录读取**（固定的系统家目录下的 `~/.codelotte/`）：settings/models 能决定请求去向与所用密钥，放进项目目录等于让陌生仓库遥控你的请求。
+  - 没有任何开关能把这个目录重定位。
 - 完整键表与示例见 [docs/tech/configuration.md](docs/tech/configuration.md)。
 
 ### N. 可靠性与错误处理
