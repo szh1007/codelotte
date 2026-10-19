@@ -338,7 +338,7 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [SECURITY.md](SECURITY.md) | 安全模型、威胁边界、漏洞报告途径与已知限制 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试/评测约定、代码风格与 PR 流程 |
 | [ROADMAP.md](ROADMAP.md) | 未来方向、明确不做的事与优先级规则 |
-| [interview/](interview/README.md) | 面试材料包：一页数据表、20 分钟 walkthrough、简历 bullet、简历项目经历 v1 |
+| [interview/](interview/README.md) | 面试材料包：一页数据表、20 分钟 walkthrough、简历 bullet、简历项目经历 v1、Pi/Claude Code 对比 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 22 张曳光弹票据与状态 |
 | [evals/README.md](evals/README.md) | 评估体系总览：目录地图、九个命令、跑数产物、基线快照 |
@@ -385,13 +385,13 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 ### 3. 材料收口（票据 22）
 
 14. 治理文档三件套：[SECURITY.md](SECURITY.md) / [CONTRIBUTING.md](CONTRIBUTING.md) / [ROADMAP.md](ROADMAP.md)。
-15. 面试材料：[一页数据表](interview/data-sheet.md)、[20 分钟 walkthrough](interview/walkthrough.md)、[简历 bullet](interview/resume.md)、[简历项目经历 v1](interview/project-experience-v1.md)。
+15. 面试材料：[一页数据表](interview/data-sheet.md)、[20 分钟 walkthrough](interview/walkthrough.md)、[简历 bullet](interview/resume.md)、[简历项目经历 v1](interview/project-experience-v1.md)、[Pi/Claude Code 对比](interview/pi-agent-and-claude-code.md)。
 16. README / PLAN / SPEC / ADR 数据刷新；明确当前只实现 `openai-completions`，`anthropic-messages` 为协议抽象预留。
 17. 当前票据规划至此收口；MCP 接入等后续功能留待下一版本。
 
 ### 工程检查
 
-- `594 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）。
+- `596 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）。
 - Ruff / Pyright 干净。
 - CI 在 Ubuntu 与 Windows 两个平台运行。
 

@@ -118,7 +118,7 @@
 | 执行隔离 | Docker 长驻容器（`docker exec` 复用）、本地执行器逃生门 |
 | 会话与导出 | append-only JSONL 树、自包含 HTML / Markdown 导出 |
 | 评测与统计 | TOML 任务、pass^k、Cohen's κ、精确率/召回率/F1、反事实成本 |
-| CI | GitHub Actions（Ubuntu + Windows）、Ruff、Pyright、pytest（594 passed / 8 deselected） |
+| CI | GitHub Actions（Ubuntu + Windows）、Ruff、Pyright、pytest（596 passed / 8 deselected） |
 | 文档 | Markdown、Mermaid、ADR 0001–0005 |
 
 ## 4. 文档与代码索引（按关键词跳转）
@@ -126,6 +126,7 @@
 | 关键词 | 跳转 | 说明 |
 |---|---|---|
 | 项目定位 / 差异化 | [README.md](../README.md) | 一句话定位、30 秒演示、证据段 |
+| 设计来源 / Pi 对比 | [pi-agent-and-claude-code.md](pi-agent-and-claude-code.md) | Pi agent 极简主义、codelotte 参考点、Claude Code 对比 |
 | 技术规格 | [SPEC.md](../SPEC.md) | 完整技术规格与实现决策 |
 | 架构决策 | [docs/adr/](../docs/adr/README.md) | ADR 0001–0005 |
 | 票据与状态 | [docs/tickets/](../docs/tickets/README.md) | 22 张票据与验收项 |

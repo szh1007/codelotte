@@ -22,7 +22,7 @@
 
 ```json
 {
-  "lastChangelogVersion": "0.1.0",
+  "lastChangelogVersion": "0.1.1",
   "defaultProvider": "deepseek",
   "defaultModel": "deepseek-flash",
   "commandTimeoutSeconds": 120,

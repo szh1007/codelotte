@@ -882,6 +882,9 @@ def _run_tui(
             TuiApp(
                 agent=loop,
                 model=spec.name,  # 展示名（随包目录给的名字，用户级可覆盖）
+                reasoning_effort=spec.reasoning_effort,  # 启动横幅：思考档位
+                cwd=str(Path.cwd()),  # 启动横幅：当前工作目录
+                sandbox=executor.env,  # 启动横幅：docker / local
                 context_window=spec.context_window,  # 状态栏上下文占用百分比的分母
                 startup_notices=notices,  # 启动提示（如更新内容）
                 history=history,

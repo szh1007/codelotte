@@ -4,7 +4,7 @@
 > 仓库治理文档在根目录：[SECURITY.md](../SECURITY.md) · [CONTRIBUTING.md](../CONTRIBUTING.md) ·
 > [ROADMAP.md](../ROADMAP.md)。
 >
-> 数据快照：**2026-10-19**（版本 `0.1.0`；票据 01–22 均标记 done，
+> 数据快照：**2026-10-19**（版本 `0.1.1`；票据 01–22 均标记 done，
 > 其中录屏、dogfood 连续记录、整场口述计时为作者待补项）。
 
 ## 文件
@@ -15,12 +15,15 @@
 | [walkthrough.md](walkthrough.md) | 20 分钟动线：数据表 → 现场演示 → 代码走读 → 失败分析；含追问答案与兜底 | 面试前演练；面试中按时间轴讲 |
 | [resume.md](resume.md) | 四条简历 bullet + 每个数字的来源与边界 | 投递前更新；面试前对照 |
 | [project-experience-v1.md](project-experience-v1.md) | 简历版项目经历 v1：概述+指标、5 条技术介绍、技术栈、关键词索引 | 写简历项目经历；面试前按索引预习 |
+| [pi-agent-and-claude-code.md](pi-agent-and-claude-code.md) | Pi agent 极简主义介绍、codelotte 的参考点、与 Claude Code 的横向对比 | 准备「为什么用 Pi 的理念」「和 Claude Code 比怎么样」 |
 | [rehearsal-session-20261019.md](rehearsal-session-20261019.md) | 2026-10-19 现场演示段的真实会话导出（12.3s、7 次调用、¥0.009622、缓存 87%） | 核对演示数字；现场失败时的回放证据 |
 
 ## 先读哪一份
 
 - **投简历**：先看 [project-experience-v1.md](project-experience-v1.md) 的概述与指标，
   再从 [resume.md](resume.md) 摘 bullet。第 4 条（dogfood）当前是 0 天 / 0 PR，暂不投递。
+- **理解设计来源**：读 [pi-agent-and-claude-code.md](pi-agent-and-claude-code.md)，
+  准备「为什么用 Pi 的极简理念」「和 Claude Code 比怎么样」两类问题。
 - **面试前 1 天**：读一遍 [project-experience-v1.md](project-experience-v1.md) 的关键词索引，
   按 [walkthrough.md](walkthrough.md) §0 的检查清单准备，至少把现场演示跑一遍。
 - **面试中**：共享 [data-sheet.md](data-sheet.md)，按 walkthrough 的时间轴讲。

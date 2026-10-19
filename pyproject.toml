@@ -1,6 +1,6 @@
 [project]
 name = "codelotte"
-version = "0.1.0"
+version = "0.1.1"
 description = "A minimal-core, extensible terminal coding agent (portfolio project)"
 requires-python = ">=3.13"
 license = "MIT"

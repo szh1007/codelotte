@@ -68,8 +68,9 @@ def test_should_record_only_for_first_run_or_older_watermark() -> None:
 
 
 def test_project_changelog_parses() -> None:
-    """真实 CHANGELOG.md 能被解析出 0.1.0 条目（版本号写错格式这里就会红）。"""
+    """真实 CHANGELOG.md 能被解析出当前版本条目（版本号写错格式这里就会红）。"""
+    from codelotte import __version__
     from tests.support import PROJECT_ROOT
 
-    notice = changelog_notice("0.0.1", "0.1.0", path=PROJECT_ROOT / "CHANGELOG.md")
-    assert notice is not None and "【0.1.0】" in notice
+    notice = changelog_notice("0.0.1", __version__, path=PROJECT_ROOT / "CHANGELOG.md")
+    assert notice is not None and f"【{__version__}】" in notice

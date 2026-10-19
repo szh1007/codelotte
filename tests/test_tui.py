@@ -2,7 +2,7 @@
 
 组件测试走 Textual 的 pilot（无头驱动）；模型走 Provider 缝的脚本化假客户端，
 工具是真实实现——覆盖"事件流 → 界面"与"中断恢复"两条验收。
-渲染快照（snap_compare）见文件末尾四例：空会话 / 流式文本 / 工具块 / 中断态。
+渲染快照（snap_compare）见文件末尾：空会话 / 流式文本 / 工具块 / 中断态 / 审批弹层 / 思考折叠。
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.console import Console
 from textual.pilot import Pilot
 from textual.widgets import Input, Markdown, Static
 
@@ -34,7 +35,7 @@ from codelotte.session.context import messages_from_entries
 from codelotte.session.store import SessionStore, load_branch, load_entries
 from codelotte.tools import default_tools
 from codelotte.tui import TuiApp
-from codelotte.tui.app import ApprovalScreen, CompactionBlock, ToolCallBlock
+from codelotte.tui.app import ApprovalScreen, CompactionBlock, ReasoningBlock, ToolCallBlock
 from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn, tool_turn
 
 SESSION_NAME = "20260101T000000Z_testtest.jsonl"
@@ -83,6 +84,9 @@ def _make(
         TuiApp(
             agent=loop,
             model=model,
+            reasoning_effort="high",
+            cwd="/test/codelotte",
+            sandbox="local",
             context_window=context_window,
             startup_notices=startup_notices,
             history=history or [],
@@ -389,6 +393,19 @@ def test_snapshot_interrupted_run(snap_compare: Any, tmp_path: Path) -> None:
     assert snap_compare(app, terminal_size=(92, 24), run_before=before)
 
 
+def test_snapshot_reasoning_collapsed(snap_compare: Any, tmp_path: Path) -> None:
+    """思考内容默认收起：快照锁住标题与折叠态（点击展开由组件测试覆盖）。"""
+    app, _client, _store = _make(
+        tmp_path, [[ReasoningDelta("先想一步，再检查文件。"), *text_turn("答案")]]
+    )
+
+    async def before(pilot: Pilot) -> None:
+        await _submit(pilot, "想一下")
+        await _wait_idle(pilot)
+
+    assert snap_compare(app, terminal_size=(92, 24), run_before=before)
+
+
 def test_snapshot_approval_modal(snap_compare: Any, tmp_path: Path) -> None:
     """审批弹层（票据 09）：四个单行色块按钮的行状观感锁在这里。
 
@@ -595,8 +612,8 @@ def test_permission_notices_are_shown_in_transcript(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_status_bar_shows_name_and_context_percentage(tmp_path: Path) -> None:
-    """状态栏：展示名 + 上下文占用（最近一次请求的输入 token / 窗口）。"""
+def test_status_bar_keeps_only_runtime_state(tmp_path: Path) -> None:
+    """状态栏只留就绪/运行状态与动态用量；模型名与会话文件名移到启动横幅。"""
 
     async def scenario() -> None:
         app, _client, _store = _make(
@@ -605,7 +622,9 @@ def test_status_bar_shows_name_and_context_percentage(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(0.05)
             before = str(app.query_one("#status", Static).content)
-            assert "DeepSeek Flash" in before  # 展示名（不是裸 id）
+            assert "● 就绪" in before
+            assert "DeepSeek Flash" not in before  # 展示名在启动横幅
+            assert SESSION_NAME not in before  # 会话文件名在启动横幅
             assert "上下文" not in before  # 还没有调用：没有占用可言
 
             await _submit(pilot, "问")
@@ -613,6 +632,8 @@ def test_status_bar_shows_name_and_context_percentage(tmp_path: Path) -> None:
             status = str(app.query_one("#status", Static).content)
             # text_turn 用量 (10, 5, 0, 0)：最近一次请求输入 10 tokens / 窗口 100
             assert "上下文 10.0%" in status
+            assert "DeepSeek Flash" not in status
+            assert SESSION_NAME not in status
 
     asyncio.run(scenario())
 
@@ -633,9 +654,8 @@ def test_status_bar_labels_over_budget(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_reasoning_deltas_are_rendered_when_they_arrive(tmp_path: Path) -> None:
-    """思考事件来了就展示（暗色块进对话流）：展示跟随开关，没有单独的展示配置——
-    reasoning_effort 为 none 时接口根本不产生思考事件，TUI 也就没有可显示的内容。"""
+def test_reasoning_is_collapsed_by_default_and_expands_on_click(tmp_path: Path) -> None:
+    """思考内容默认折叠；点击标题展开后才显示正文。"""
     turn = [ReasoningDelta("先想一步"), *text_turn("答案")]
 
     async def scenario() -> None:
@@ -643,8 +663,14 @@ def test_reasoning_deltas_are_rendered_when_they_arrive(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 30)) as pilot:
             await _submit(pilot, "问")
             await _wait_idle(pilot)
-            assert any("先想一步" in t for t in _texts(app))
+            block = app.query_one(ReasoningBlock)
+            assert block.collapsed is True
+            assert block.text == "先想一步"
+            assert "💭 思考过程" in str(block.title)
             assert any("答案" in md.source for md in app.query(Markdown))
+            await pilot.click(block.query_one("CollapsibleTitle"))  # 点击收起标题：展开
+            await pilot.pause()
+            assert block.collapsed is False
 
     asyncio.run(scenario())
 
@@ -661,12 +687,41 @@ def test_reasoning_blocks_do_not_merge_across_failed_runs(tmp_path: Path) -> Non
         async with app.run_test(size=(120, 30)) as pilot:
             await _submit(pilot, "第一问")
             await _wait_idle(pilot)
-            assert any("第一回合想一点" in t for t in _texts(app))
             await _submit(pilot, "第二问")
             await _wait_idle(pilot)
+            blocks = list(app.query(ReasoningBlock))
+            assert len(blocks) == 2
+            assert all(block.collapsed for block in blocks)
+            assert blocks[0].text == "第一回合想一点"
+            assert blocks[1].text == "第二回合才想的"
             joined = "".join(_texts(app))
             assert "第二回合才想的" in joined
             assert "第一回合想一点第二回合才想的" not in joined  # 两块分开，不合并
+
+    asyncio.run(scenario())
+
+
+def test_startup_banner_shows_runtime_facts(tmp_path: Path) -> None:
+    """启动横幅：名称/版本/模型/effort/cwd/会话状态。"""
+
+    async def scenario() -> None:
+        app, _client, _store = _make(
+            tmp_path,
+            [text_turn("x")],
+            model="DeepSeek Flash",
+            context_window=1_000_000,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.05)
+            panel = app.query_one("#banner", Static).content
+            console = Console(record=True, width=120, color_system=None)
+            console.print(panel)
+            text = console.export_text()
+            assert "codelotte v" in text
+            assert "DeepSeek Flash" in text
+            assert "high" in text
+            assert "/test/codelotte" in text
+            assert "新会话" in text
 
     asyncio.run(scenario())
 

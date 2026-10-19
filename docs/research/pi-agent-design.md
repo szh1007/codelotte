@@ -1,6 +1,9 @@
 # PI agent（pi）设计笔记
 
 > 2026-10-13 调研 ｜ 用途：codelotte 求职作品的模仿对象参考 ｜ 事实来源以一手为主（pi.dev、GitHub、npm registry、作者博客、本机安装包内文档与源码）
+>
+> 面向面试的对比文档：[interview/pi-agent-and-claude-code.md](../../interview/pi-agent-and-claude-code.md)
+>（Pi 设计 → codelotte 参考点 → Claude Code 横向对比）。
 
 ## pi 是什么
 

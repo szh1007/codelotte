@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from rich import box
+from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -21,6 +25,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Collapsible, Input, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
+from codelotte import __version__
 from codelotte.cost import Ledger, call_record_from_entry, format_money
 from codelotte.display import (
     args_preview,
@@ -55,8 +60,9 @@ from codelotte.session.context import INTERRUPTED_TOOL_NOTE
 
 _CSS = """
 #transcript { height: 1fr; padding: 0 1; }
+#banner { width: 1fr; margin: 0 0 1 0; }
 #status { height: 1; padding: 0 1; background: $panel; color: $text-muted; }
-#prompt { border: none; }
+#prompt { border: round cyan; }
 ToolCallBlock { margin: 0 0 1 0; }
 ToolCallBlock > .tool-args { color: $text-muted; }
 ToolCallBlock > .tool-result { padding: 0 0 1 0; }
@@ -64,6 +70,9 @@ ToolCallBlock.tool-failed CollapsibleTitle { color: $error; }
 ToolCallBlock.tool-interrupted CollapsibleTitle { color: $warning; }
 CompactionBlock { margin: 0 0 1 0; }
 CompactionBlock CollapsibleTitle { color: $warning; }
+ReasoningBlock { margin: 0 0 1 0; }
+ReasoningBlock CollapsibleTitle { color: $text-muted; }
+ReasoningBlock > .reasoning-body { padding: 0 0 1 0; }
 #approval-box { width: 90%; max-width: 100; background: $surface; border: round $warning; padding: 1 2; }
 #approval-box .approval-line { margin: 0 0 1 0; }
 #approval-buttons { height: auto; }
@@ -94,6 +103,16 @@ def _args_body(arguments: str, parse_error: str | None) -> Text:
 
 def _short_multiline(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + f"\n…（共 {len(text)} 字符）"
+
+
+def _display_path(path: str) -> str:
+    """工作目录展示：家目录下缩成 ~，其余原样。"""
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep) or path.startswith(home + "/"):
+        return "~" + path[len(home):]
+    return path
 
 
 class ToolCallBlock(Collapsible):
@@ -161,6 +180,26 @@ class CompactionBlock(Collapsible):
             title=f"⚠ {title}" if warning else title,
             collapsed=True,
         )
+
+
+class ReasoningBlock(Collapsible):
+    """思考过程：默认折叠，点击标题展开；内容随增量更新。"""
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+        self._body = Static(Text("", style="dim"), classes="reasoning-body")
+        super().__init__(self._body, title="💭 思考过程", collapsed=True)
+
+    def append(self, text: str) -> None:
+        """追加一段思考增量；标题带字数，正文保持折叠。"""
+        self._parts.append(text)
+        content = "".join(self._parts)
+        self._body.update(Text(content, style="dim"))
+        self.title = f"💭 思考过程（{len(content)} 字）"
+
+    @property
+    def text(self) -> str:
+        return "".join(self._parts)
 
 
 class ApprovalScreen(ModalScreen[str | None]):
@@ -237,6 +276,9 @@ class TuiApp(App[None]):
         *,
         agent: AgentLoop,
         model: str,
+        reasoning_effort: str = "high",
+        cwd: str | None = None,
+        sandbox: str = "local",
         context_window: int | None = None,
         startup_notices: Sequence[str] = (),
         history: list[dict[str, Any]] | None = None,
@@ -244,7 +286,10 @@ class TuiApp(App[None]):
         super().__init__()
         self._agent = agent
         self._model = model  # 展示名（随包目录的名字，用户级 models.json 可覆盖）
-        self._context_window = context_window  # 上下文占用百分比的分母（state 栏）
+        self._reasoning_effort = reasoning_effort  # 启动横幅：none 表示思考关闭
+        self._cwd = cwd or str(Path.cwd())  # 启动横幅：当前工作目录
+        self._sandbox = sandbox  # 启动横幅：docker / local（--no-sandbox）
+        self._context_window = context_window  # 上下文占用百分比的分母（状态栏）
         self._startup_notices = list(startup_notices)
         self._history = history or []
         self._run_task: asyncio.Task[None] | None = None
@@ -252,8 +297,7 @@ class TuiApp(App[None]):
         self._interrupt_requested = False
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
-        self._reasoning: Static | None = None  # 当前思考块（文本一出现就收尾，下次思考新开一块）
-        self._reasoning_parts: list[str] = []
+        self._reasoning: ReasoningBlock | None = None  # 当前思考块（默认折叠；文本出现就收尾）
         self._tool_blocks: dict[str, ToolCallBlock] = {}
         self._ledger = Ledger()  # 账单累计（历史回放 + 实时事件同一本账，票据 07）
         # 压缩后的上下文占用估算（票据 12）：摘要调用的 usage 是"压缩前"的大小，
@@ -263,8 +307,44 @@ class TuiApp(App[None]):
 
     # ---- 组装与启动 ----
 
+    def _banner(self) -> Panel:
+        """启动横幅：版本 / 模型 / effort / 沙箱 / 上下文窗口 / cwd / 会话。"""
+        effort = (
+            "none（思考关闭）"
+            if self._reasoning_effort == "none"
+            else self._reasoning_effort
+        )
+        sandbox = (
+            "local（--no-sandbox）"
+            if self._sandbox == "local"
+            else "docker（每会话长驻容器）"
+        )
+        model = self._model
+        if self._agent.model and self._agent.model != model:
+            model = f"{model}  ({self._agent.model})"
+        mode = f"恢复 · {len(self._history)} 条记录" if self._history else "新会话"
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="dim", no_wrap=True)
+        table.add_column()
+        table.add_row("模型", model)
+        table.add_row("思考", effort)
+        table.add_row("沙箱", sandbox)
+        if self._context_window:
+            table.add_row("上下文", f"{self._context_window:,} tokens")
+        table.add_row("工作目录", _display_path(self._cwd))
+        table.add_row("会话", f"{self._agent.session_path.name} · {mode}")
+        return Panel(
+            table,
+            title=f"codelotte v{__version__}",
+            subtitle="minimal-core 终端 coding agent",
+            border_style="cyan",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(id="transcript")
+        with VerticalScroll(id="transcript"):
+            yield Static(self._banner(), id="banner")
         yield Static(self._status_text(), id="status")
         yield Input(
             placeholder="输入任务，Enter 发送 · Ctrl+C 中断当前回合（空闲时再按一次退出）",
@@ -453,19 +533,15 @@ class TuiApp(App[None]):
         await self._mount(Static(Text(guardrail_notice(layer, message), style="bold yellow")))
 
     async def _write_reasoning(self, text: str) -> None:
-        """思考增量：懒建一块暗色 Static，随到随刷（正文/工具出现时收尾，见 _close_reasoning）。"""
+        """思考增量：懒建折叠块，随到随刷；默认收起，点击标题展开。"""
         if self._reasoning is None:
-            self._reasoning = Static(Text("", style="dim"))
-            self._reasoning_parts = []
+            self._reasoning = ReasoningBlock()
             await self._mount(self._reasoning)
-        self._reasoning_parts.append(text)
-        self._reasoning.update(Text("".join(self._reasoning_parts), style="dim"))
+        self._reasoning.append(text)
         self._scroll_end()
 
     def _close_reasoning(self) -> None:
-        if self._reasoning is not None:
-            self._reasoning = None
-            self._reasoning_parts = []
+        self._reasoning = None
 
     async def _write_markdown(self, text: str) -> None:
         stream = self._stream
@@ -555,7 +631,6 @@ class TuiApp(App[None]):
             text.append("▶ 运行中", style="bold green")
         else:
             text.append("● 就绪", style="dim")
-        text.append(f"  │  {self._model}")
         if (self._ledger.calls or self._context_override is not None) and self._context_window:
             # 上下文占用：最近一次请求的输入 tokens / 用户级生效窗口（与压缩阈值同源）。
             # 压缩后到下一次真实请求前，用压缩后的估算值（摘要调用的 usage 是压缩前的大小）。
@@ -577,7 +652,6 @@ class TuiApp(App[None]):
                 text.append(
                     f"  │  ≈{format_money(self._ledger.cost, self._agent.catalog.currency)}"
                 )
-        text.append(f"  │  {Path(self._agent.session_path).name}")
         return text
 
     def _mark_unfinished_tools(self) -> None:
