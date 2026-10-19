@@ -180,7 +180,7 @@ Claude Code 是 Anthropic 的官方终端 coding agent，闭源、产品化、�
 | 模型 | 多协议 / 多模型 | 自研 adapter；当前 DeepSeek | Anthropic 模型为主，云平台集成 |
 | 观测 | 成本/usage + HTML | 会话 JSONL 单一数据源 + 成本面板 + 导出 | usage/cost、transcript、hooks |
 | 评测 | 公开材料更强调 harness 本身 | E1–E5 + 控制 agent + 归因/防御 | 内部评测不公开；公开 benchmark 数据有限 |
-| 成熟度 | 1.x，社区活跃 | 0.1.1，596 测试 | 生产级，跨平台/IDE/企业部署 |
+| 成熟度 | 1.x，社区活跃 | 0.1.1，599 测试 | 生产级，跨平台/IDE/企业部署 |
 
 ### 3.3 HarnessTax 的数字与读法
 

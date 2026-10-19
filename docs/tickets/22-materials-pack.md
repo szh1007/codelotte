@@ -21,7 +21,7 @@
       **0 天 / 0 个自产 PR**，已标注「暂不投递」
 - [x] README 数据表更新为最终版，并同步 PLAN / ADR-0004 / SPEC 的实现状态：
       当前只实现 `openai-completions`，`anthropic-messages` 是协议抽象预留（不写「双协议已实现」）；
-      测试数 596 passed / 8 deselected
+      测试数 599 passed / 8 deselected
 
 ## 交付物
 

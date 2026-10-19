@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.cells import cell_len
 from rich.console import Console
+from textual.color import Color
 from textual.pilot import Pilot
 from textual.widgets import Input, Markdown, Static
 
@@ -35,7 +37,12 @@ from codelotte.session.context import messages_from_entries
 from codelotte.session.store import SessionStore, load_branch, load_entries
 from codelotte.tools import default_tools
 from codelotte.tui import TuiApp
-from codelotte.tui.app import ApprovalScreen, CompactionBlock, ReasoningBlock, ToolCallBlock
+from codelotte.tui.app import (
+    ApprovalScreen,
+    CompactionBlock,
+    ReasoningBlock,
+    ToolCallBlock,
+)
 from tests.fake_client import PAUSE, ScriptedClient, fake_catalog, text_turn, tool_turn
 
 SESSION_NAME = "20260101T000000Z_testtest.jsonl"
@@ -50,6 +57,8 @@ def _make(
     model: str = "fake-model",
     catalog: Catalog | None = None,
     permissions: PermissionLayer | None = None,
+    reasoning_clock: Callable[[], float] | None = None,
+    sandbox: str = "local",
     context_window: int | None = None,
     startup_notices: Sequence[str] = (),
     guardrail_limits: GuardrailLimits | None = None,
@@ -85,8 +94,9 @@ def _make(
             agent=loop,
             model=model,
             reasoning_effort="high",
+            reasoning_clock=reasoning_clock,
             cwd="/test/codelotte",
-            sandbox="local",
+            sandbox=sandbox,
             context_window=context_window,
             startup_notices=startup_notices,
             history=history or [],
@@ -118,6 +128,13 @@ async def _wait_idle(pilot: Pilot) -> None:
 
 def _texts(app: TuiApp) -> list[str]:
     return [str(widget.content) for widget in app.query(Static)]
+
+
+def _banner_text(app: TuiApp) -> str:
+    panel = app.query_one("#banner", Static).content
+    console = Console(record=True, width=120, color_system=None)
+    console.print(panel)
+    return console.export_text()
 
 
 def test_run_renders_user_tool_block_and_answer(tmp_path: Path) -> None:
@@ -243,7 +260,7 @@ def test_resume_replays_usage_into_status_bar(tmp_path: Path) -> None:
             await pilot.pause(0.05)
             status = str(app.query_one("#status", Static).content)
             assert "tokens in=12 out=7" in status
-            assert "缓存命中 67%" in status  # 8/(8+4)
+            assert "cache hit 67%" in status  # 8/(8+4)
             assert "≈" not in status  # 票据 05 时代的老记录没有估价：不显示金额、不回算
 
     asyncio.run(scenario())
@@ -263,7 +280,7 @@ def test_status_bar_shows_cost_after_run(tmp_path: Path) -> None:
             await _wait_idle(pilot)
             status = str(app.query_one("#status", Static).content)
             assert "tokens in=100000 out=500" in status
-            assert "缓存命中 80%" in status  # 80000/(80000+20000)
+            assert "cache hit 80%" in status  # 80000/(80000+20000)
             # (80000×0.04 + 20000×2.0 + 500×8.0)/1M ≈ 0.00708，谷时五折
             assert "¥0.047200" in status or "¥0.023600" in status
 
@@ -304,7 +321,9 @@ def test_continue_renders_history_and_appends(tmp_path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
         store = SessionStore.resume(path)
-        client1 = ScriptedClient([[TextDelta("上回说到一半"), PAUSE]])
+        client1 = ScriptedClient(
+            [[ReasoningDelta("上回先想了点"), TextDelta("上回说到一半"), PAUSE]]
+        )
         loop1 = AgentLoop(
             client=client1,
             tools=default_tools(LocalExecutor()),
@@ -330,6 +349,10 @@ def test_continue_renders_history_and_appends(tmp_path: Path) -> None:
         app, client2, _ = _make(tmp_path, [text_turn("这回接上了")], history=history, messages=messages)
         async with app.run_test(size=(100, 30)) as pilot:
             assert any("上回的问题" in t for t in _texts(app))  # 历史被回放
+            reasoning = app.query_one(ReasoningBlock)
+            assert reasoning.collapsed is True
+            assert reasoning.text == "上回先想了点"
+            assert "Thought" in str(reasoning.title)
             assert any("上回说到一半" in md.source for md in app.query(Markdown))
             assert any("中断" in t for t in _texts(app))
             await _submit(pilot, "新问题")
@@ -396,7 +419,9 @@ def test_snapshot_interrupted_run(snap_compare: Any, tmp_path: Path) -> None:
 def test_snapshot_reasoning_collapsed(snap_compare: Any, tmp_path: Path) -> None:
     """思考内容默认收起：快照锁住标题与折叠态（点击展开由组件测试覆盖）。"""
     app, _client, _store = _make(
-        tmp_path, [[ReasoningDelta("先想一步，再检查文件。"), *text_turn("答案")]]
+        tmp_path,
+        [[ReasoningDelta("先想一步，再检查文件。"), *text_turn("答案")]],
+        reasoning_clock=lambda: 0.0,
     )
 
     async def before(pilot: Pilot) -> None:
@@ -613,7 +638,7 @@ def test_permission_notices_are_shown_in_transcript(tmp_path: Path) -> None:
 
 
 def test_status_bar_keeps_only_runtime_state(tmp_path: Path) -> None:
-    """状态栏只留就绪/运行状态与动态用量；模型名与会话文件名移到启动横幅。"""
+    """状态栏只留 Ready/Running 与动态用量；模型名与会话文件名移到启动横幅。"""
 
     async def scenario() -> None:
         app, _client, _store = _make(
@@ -622,16 +647,16 @@ def test_status_bar_keeps_only_runtime_state(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(0.05)
             before = str(app.query_one("#status", Static).content)
-            assert "● 就绪" in before
+            assert "● Ready" in before
             assert "DeepSeek Flash" not in before  # 展示名在启动横幅
             assert SESSION_NAME not in before  # 会话文件名在启动横幅
-            assert "上下文" not in before  # 还没有调用：没有占用可言
+            assert "context" not in before  # 还没有调用：没有占用可言
 
             await _submit(pilot, "问")
             await _wait_idle(pilot)
             status = str(app.query_one("#status", Static).content)
             # text_turn 用量 (10, 5, 0, 0)：最近一次请求输入 10 tokens / 窗口 100
-            assert "上下文 10.0%" in status
+            assert "context 10.0%" in status
             assert "DeepSeek Flash" not in status
             assert SESSION_NAME not in status
 
@@ -639,7 +664,7 @@ def test_status_bar_keeps_only_runtime_state(tmp_path: Path) -> None:
 
 
 def test_status_bar_labels_over_budget(tmp_path: Path) -> None:
-    """超预算语义（票据 12）：500/100 显示「超预算 500%」，不再渲染 >100% 的怪数字。"""
+    """超预算语义（票据 12）：500/100 显示 `over budget 500%`，不再渲染 >100% 的怪数字。"""
 
     async def scenario() -> None:
         app, _client, _store = _make(
@@ -649,7 +674,7 @@ def test_status_bar_labels_over_budget(tmp_path: Path) -> None:
             await _submit(pilot, "问")
             await _wait_idle(pilot)
             status = str(app.query_one("#status", Static).content)
-            assert "上下文 超预算 500%" in status
+            assert "context over budget 500%" in status
 
     asyncio.run(scenario())
 
@@ -666,7 +691,9 @@ def test_reasoning_is_collapsed_by_default_and_expands_on_click(tmp_path: Path) 
             block = app.query_one(ReasoningBlock)
             assert block.collapsed is True
             assert block.text == "先想一步"
-            assert "💭 思考过程" in str(block.title)
+            assert "Thought for" in str(block.title)
+            assert "tok" in str(block.title)
+            assert "字" not in str(block.title)
             assert any("答案" in md.source for md in app.query(Markdown))
             await pilot.click(block.query_one("CollapsibleTitle"))  # 点击收起标题：展开
             await pilot.pause()
@@ -701,6 +728,55 @@ def test_reasoning_blocks_do_not_merge_across_failed_runs(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
+def test_reasoning_title_uses_timer_and_token_estimate(tmp_path: Path) -> None:
+    """思考标题：生成中 Thinking + 计时 + 估算 token；结束后 Thought for。"""
+
+    async def scenario() -> None:
+        app, client, _store = _make(
+            tmp_path,
+            [[ReasoningDelta("先想一步"), PAUSE]],
+            reasoning_clock=lambda: 0.0,
+        )
+        async with app.run_test(size=(120, 30)) as pilot:
+            await _submit(pilot, "问")
+            await asyncio.wait_for(client.paused.wait(), 5)
+            await pilot.pause(0.1)
+            block = app.query_one(ReasoningBlock)
+            assert "Thinking" in str(block.title)
+            assert "≈4 tok" in str(block.title)
+            assert "字" not in str(block.title)
+            await pilot.press("ctrl+c")
+            for _ in range(200):
+                if not _as_tui(pilot).run_running:
+                    break
+                await pilot.pause(0.02)
+            assert "Thought for 0s" in str(block.title)
+
+    asyncio.run(scenario())
+
+
+def test_transcript_scrollbar_is_on_the_right(tmp_path: Path) -> None:
+    """纵向滚动条保持 Textual 默认的右侧。"""
+    long_text = "\n\n".join(f"第 {i} 行" for i in range(100))
+
+    async def scenario() -> None:
+        app, _client, _store = _make(tmp_path, [text_turn(long_text)])
+        async with app.run_test(size=(100, 20)) as pilot:
+            await _submit(pilot, "写很多行")
+            await _wait_idle(pilot)
+            await pilot.pause(0.1)
+            scroll = app.query_one("#transcript")
+            assert scroll.virtual_size.height > scroll.container_size.height
+            assert scroll.show_vertical_scrollbar
+            bar = scroll.vertical_scrollbar
+            assert bar.region.width == 1  # 与 Pi agent 一致的窄滚动条
+            assert bar.region.x > scroll.size.width // 2  # 在右半侧
+            assert bar.region.x >= scroll.size.width - bar.region.width
+            assert scroll.styles.scrollbar_color == Color.parse("#ffffff")
+
+    asyncio.run(scenario())
+
+
 def test_startup_banner_shows_runtime_facts(tmp_path: Path) -> None:
     """启动横幅：名称/版本/模型/effort/cwd/会话状态。"""
 
@@ -709,19 +785,53 @@ def test_startup_banner_shows_runtime_facts(tmp_path: Path) -> None:
             tmp_path,
             [text_turn("x")],
             model="DeepSeek Flash",
+            sandbox="docker",
             context_window=1_000_000,
         )
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause(0.05)
-            panel = app.query_one("#banner", Static).content
-            console = Console(record=True, width=120, color_system=None)
-            console.print(panel)
-            text = console.export_text()
+            text = _banner_text(app)
             assert "codelotte v" in text
             assert "DeepSeek Flash" in text
             assert "high" in text
+            assert "docker (container)" in text
             assert "/test/codelotte" in text
-            assert "新会话" in text
+            assert "new" in text
+            assert "session" in text
+            # 所有行等宽：沙箱行不能比别的行多出一格，否则右边框错位
+            widths = {cell_len(line) for line in text.splitlines() if line.strip()}
+            assert len(widths) == 1
+
+    asyncio.run(scenario())
+
+
+def test_banner_session_mode_uses_history_length(tmp_path: Path) -> None:
+    """新会话固定有一条 session 头：只有它时显示新会话，>1 条才显示恢复。"""
+
+    async def scenario() -> None:
+        app, _client, _store = _make(
+            tmp_path / "new",
+            [text_turn("x")],
+            history=[{"type": "session", "schema": "session/v1"}],
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.05)
+            text = _banner_text(app)
+            assert "new" in text
+            assert "resume" not in text
+
+        resumed, _client2, _store2 = _make(
+            tmp_path / "resumed",
+            [text_turn("x")],
+            history=[
+                {"type": "session", "schema": "session/v1"},
+                {"type": "message", "role": "user", "content": "上回的问题"},
+            ],
+        )
+        async with resumed.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.05)
+            text = _banner_text(resumed)
+            assert "resume · 1 record" in text
 
     asyncio.run(scenario())
 
@@ -759,7 +869,7 @@ def test_guardrail_notice_is_rendered_when_the_circuit_breaks(tmp_path: Path) ->
             await _submit(pilot, "读文件")
             await _wait_idle(pilot)
             joined = "".join(_texts(app))
-            assert "🛡 守护拦截（推理层）" in joined
+            assert "guard: 守护拦截（推理层）" in joined
             assert "熔断" in joined
             assert "已被死循环防御终止" in joined
             assert "circuitBreaker" not in joined  # 不给用户看内部 token
@@ -786,7 +896,7 @@ def test_history_replays_guardrail_markers(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(0.05)
             joined = "".join(_texts(app))
-            assert "🛡 守护拦截（工具层）" in joined
+            assert "guard: 守护拦截（工具层）" in joined
             assert "连续 3 次调用 bash" in joined
 
     asyncio.run(scenario())
@@ -830,11 +940,11 @@ def test_compaction_block_is_rendered_live(tmp_path: Path) -> None:
             await _submit(pilot, "新任务")
             await _wait_idle(pilot)
             joined = "".join(_texts(app))
-            assert "🗜 上下文压缩（硬触发" in joined
+            assert "compact: 上下文压缩（硬触发" in joined
             assert "1. 任务目标" in joined
             assert "继续完成" in "".join(md.source for md in app.query(Markdown))
             status = str(app.query_one("#status", Static).content)
-            assert "上下文" in status and "超预算" not in status
+            assert "context" in status and "over budget" not in status
 
     asyncio.run(scenario())
 
@@ -862,7 +972,7 @@ def test_history_replays_compaction_summary(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause(0.05)
             joined = "".join(_texts(app))
-            assert "🗜 上下文压缩（软触发" in joined
+            assert "compact: 上下文压缩（软触发" in joined
             assert "1. 任务目标：旧目标" in joined
             assert "旧回答" in joined  # 原始记录仍可回看
             # 最小集警告默认可见（块外提示 + 标题 ⚠），不只藏在折叠体里

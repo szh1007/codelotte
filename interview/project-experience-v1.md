@@ -118,7 +118,7 @@
 | 执行隔离 | Docker 长驻容器（`docker exec` 复用）、本地执行器逃生门 |
 | 会话与导出 | append-only JSONL 树、自包含 HTML / Markdown 导出 |
 | 评测与统计 | TOML 任务、pass^k、Cohen's κ、精确率/召回率/F1、反事实成本 |
-| CI | GitHub Actions（Ubuntu + Windows）、Ruff、Pyright、pytest（596 passed / 8 deselected） |
+| CI | GitHub Actions（Ubuntu + Windows）、Ruff、Pyright、pytest（599 passed / 8 deselected） |
 | 文档 | Markdown、Mermaid、ADR 0001–0005 |
 
 ## 4. 文档与代码索引（按关键词跳转）

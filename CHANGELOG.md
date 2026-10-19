@@ -9,13 +9,15 @@
 
 - TUI 启动横幅：显示名称/版本、当前模型、思考档位、沙箱、上下文窗口、工作目录与会话状态（新建/恢复）。
 - TUI 状态栏移除重复的模型名/会话文件名（保留实时用量与成本）；输入框改为与启动横幅一致的圆角青色边框。
-- 思考内容默认折叠为「💭 思考过程（N 字）」，点击标题展开。
+- 思考内容默认折叠；标题按 Claude Code 风格显示 `Thinking… Ns · ≈N tok`（生成中实时计时/估算 token），结束后显示 `Thought for Ns · ≈N tok`；点击标题展开。
+- transcript 纵向滚动条恢复右侧、收窄为 1 格并改为白色（对齐 Pi agent）；宽 emoji 标记（🛡/🗜/💭/🔒/⏸）替换为宽度稳定的 ASCII 前缀（`guard:` / `compact:` / `Thinking…` / `permission:` / `paused:`），避免终端裁掉右半边。
+- 修复：`--continue` / `--resume` 回放时渲染历史 `reasoningContent`（折叠的 `Thought · ≈N tok` 块），不再丢失思考内容。
 - 材料包收口（票据 22）：
   - 新增 `SECURITY.md`：威胁模型、权限 × 沙箱两层边界、已知限制与漏洞报告途径。
   - 新增 `ROADMAP.md`：下一步主题、明确不做的事与优先级规则。
   - 新增 `CONTRIBUTING.md`：环境、测试/评测约定、代码风格、commit/PR 流程。
   - 新增 `interview/`：一页数据表、20 分钟 walkthrough + 追问答案 + 兜底、简历 bullet 真实数字版、简历项目经历 v1、Pi agent / Claude Code 横向对比。
-  - README/PLAN/ADR/SPEC 数据刷新：当前只实现 `openai-completions`（`anthropic-messages` 为协议抽象预留）；dogfood 仍为 0 天/0 PR；stars=1（2026-10-19）；测试 596 passed/8 deselected。
+  - README/PLAN/ADR/SPEC 数据刷新：当前只实现 `openai-completions`（`anthropic-messages` 为协议抽象预留）；dogfood 仍为 0 天/0 PR；stars=1（2026-10-19）；测试 599 passed/8 deselected。
   - 现场演示段实测 12.3s、7 次调用、¥0.009622（峰值时段），轨迹入库 `interview/rehearsal-session-20261019.md`。
 - E3 归因准确率与失败分布（票据 21）：
   - `eval attribute` 增加逐类精确率/召回率/F1、宏观 F1 与 `--run` 真实失败分布。

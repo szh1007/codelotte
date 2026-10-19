@@ -391,7 +391,7 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 
 ### 工程检查
 
-- `596 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）。
+- `599 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）。
 - Ruff / Pyright 干净。
 - CI 在 Ubuntu 与 Windows 两个平台运行。
 

@@ -174,14 +174,14 @@ def test_compaction_marker_summary_and_warning_are_visible() -> None:
     ]
     html = _render(entries)
     assert 'details class="compaction"' in html
-    assert "🗜 上下文压缩（硬触发 · 120% → 预计 250%）" in html
+    assert "compact: 上下文压缩（硬触发 · 120% → 预计 250%）" in html
     assert "1. 任务目标：修好测试" in html
     assert "窗口配置小于最小保留集" in html
     assert html.index("窗口配置小于最小保留集") < html.index('details class="compaction"')
     assert "旧任务" in html and "旧回答" in html  # 原始记录仍可查
 
     markdown = render_session_markdown(entries, load_catalog(), session_name="s.jsonl")
-    assert "### 🗜 上下文压缩（硬触发 · 120% → 预计 250%）" in markdown
+    assert "### compact: 上下文压缩（硬触发 · 120% → 预计 250%）" in markdown
     assert "1. 任务目标：修好测试" in markdown
     assert "> ⚠ 窗口配置小于最小保留集" in markdown
 
@@ -450,13 +450,13 @@ def test_guardrail_markers_are_highlighted_in_html_and_markdown() -> None:
     entries = _guardrail_entries()
     html = render_session_html(entries, load_catalog(), session_name="s.jsonl")
     assert 'class="marker warn"' in html
-    assert "🛡 守护拦截（工具层）" in html
+    assert "guard: 守护拦截（工具层）" in html
     assert "连续 3 次调用 bash 且参数相同" in html
-    assert "🛡 守护拦截（推理层）" in html and "熔断" in html
+    assert "guard: 守护拦截（推理层）" in html and "熔断" in html
 
     markdown = render_session_markdown(entries, load_catalog(), session_name="s.jsonl")
-    assert "> 🛡 守护拦截（工具层）：连续 3 次调用 bash 且参数相同" in markdown
-    assert "> 🛡 守护拦截（推理层）" in markdown
+    assert "> guard: 守护拦截（工具层）：连续 3 次调用 bash 且参数相同" in markdown
+    assert "> guard: 守护拦截（推理层）" in markdown
 
 
 def test_guardrail_marker_escapes_model_text() -> None:

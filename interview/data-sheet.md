@@ -13,7 +13,7 @@
 | 提交 | 39 个（数据快照，材料提交前；`main`，无 merge commit） | `git log --oneline`，2026-10-13 起 |
 | 公开 PR | 0（个人开发，直接提交） | 同上 |
 | GitHub stars / forks | 1 / 0 | `gh api repos/szh1007/codelotte`，2026-10-19 |
-| 测试 | **596 passed, 8 deselected** | `uv run pytest -q`；Docker 组用 `pytest -m docker` |
+| 测试 | **599 passed, 8 deselected** | `uv run pytest -q`；Docker 组用 `pytest -m docker` |
 | CI | Ubuntu + Windows；ruff / pyright / pytest | [.github/workflows/ci.yml](../.github/workflows/ci.yml) |
 | 任务文件 | 9 通用（含压缩回归 001–003、注入 004/005）+ 3 judge + 3 独立注入 + 1 死循环压力 + 1 回归 | `evals/tasks/`、`evals/judge-tasks/`、`evals/defense-tasks/`、`evals/loop-tasks/`、`evals/regressions/` |
 | 评测命令 | 9 个（run / compaction / compare / controls / judge / attribute / regression / cost / defense） | `uv run codelotte eval --help` |

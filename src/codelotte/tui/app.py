@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import Button, Collapsible, Input, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
@@ -59,7 +61,14 @@ from codelotte.providers.base import ProviderError, ReasoningDelta, TextDelta
 from codelotte.session.context import INTERRUPTED_TOOL_NOTE
 
 _CSS = """
-#transcript { height: 1fr; padding: 0 1; }
+#transcript {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+    scrollbar-color: #ffffff;
+    scrollbar-color-hover: #ffffff;
+    scrollbar-color-active: #ffffff;
+}
 #banner { width: 1fr; margin: 0 0 1 0; }
 #status { height: 1; padding: 0 1; background: $panel; color: $text-muted; }
 #prompt { border: round cyan; }
@@ -111,8 +120,15 @@ def _display_path(path: str) -> str:
     if path == home:
         return "~"
     if path.startswith(home + os.sep) or path.startswith(home + "/"):
-        return "~" + path[len(home):]
+        return "~" + path[len(home) :]
     return path
+
+
+def _estimate_tokens(text: str) -> int:
+    """粗略 token 估算：CJK 字符按 1 token，其他字符按 4 字符/token（界面上带 ≈）。"""
+    cjk = sum(1 for char in text if "一" <= char <= "鿿")
+    other = len(text) - cjk
+    return cjk + (other + 3) // 4
 
 
 class ToolCallBlock(Collapsible):
@@ -151,7 +167,7 @@ class ToolCallBlock(Collapsible):
         if self.finished:
             return
         self.finished = True
-        self.title = self._title_text("⏸ 已中断")
+        self.title = self._title_text("paused: 已中断")
         self.add_class("tool-interrupted")
         self.query_one(".tool-result", Static).update(
             Text(INTERRUPTED_TOOL_NOTE, style="yellow")
@@ -183,19 +199,49 @@ class CompactionBlock(Collapsible):
 
 
 class ReasoningBlock(Collapsible):
-    """思考过程：默认折叠，点击标题展开；内容随增量更新。"""
+    """思考过程：默认折叠；标题按 Claude Code 风格显示计时与估算 token（点击展开）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._started = clock()
+        self._finished = False
+        self._timer: Timer | None = None
         self._parts: list[str] = []
         self._body = Static(Text("", style="dim"), classes="reasoning-body")
-        super().__init__(self._body, title="💭 思考过程", collapsed=True)
+        super().__init__(self._body, title="Thinking… 0s · ≈0 tok", collapsed=True)
+
+    @classmethod
+    def history(cls, text: str) -> "ReasoningBlock":
+        """从会话记录回放：没有实时计时，标题只显示 Thought 与估算 token。"""
+        block = cls()
+        block._parts = [text]
+        block._body.update(Text(text, style="dim"))
+        block._finished = True
+        block.title = f"Thought · ≈{_estimate_tokens(text)} tok"
+        return block
+
+    def on_mount(self) -> None:
+        if not self._finished:  # 历史回放没有实时计时
+            self._timer = self.set_interval(0.25, self._refresh_title)
 
     def append(self, text: str) -> None:
-        """追加一段思考增量；标题带字数，正文保持折叠。"""
+        """追加一段思考增量：正文保持折叠，标题实时刷新计时与估算 token。"""
         self._parts.append(text)
-        content = "".join(self._parts)
-        self._body.update(Text(content, style="dim"))
-        self.title = f"💭 思考过程（{len(content)} 字）"
+        self._body.update(Text("".join(self._parts), style="dim"))
+        self._refresh_title()
+
+    def finish(self) -> None:
+        self._finished = True
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        self._refresh_title()
+
+    def _refresh_title(self) -> None:
+        elapsed = max(0, int(self._clock() - self._started))
+        tokens = _estimate_tokens("".join(self._parts))
+        state = "Thought for" if self._finished else "Thinking…"
+        self.title = f"{state} {elapsed}s · ≈{tokens} tok"
 
     @property
     def text(self) -> str:
@@ -224,8 +270,10 @@ class ApprovalScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         request = self._request
-        what = request.subject if request.subject is not None else json.dumps(
-            request.arguments, ensure_ascii=False
+        what = (
+            request.subject
+            if request.subject is not None
+            else json.dumps(request.arguments, ensure_ascii=False)
         )
         matched = (
             f"匹配规则：{request.rule.text}（{request.rule.source}，ask）"
@@ -233,10 +281,11 @@ class ApprovalScreen(ModalScreen[str | None]):
             else "匹配规则：无（默认询问）"
         )
         with Vertical(id="approval-box"):
-            yield Static(Text("🔒 权限请求：模型想执行一个操作", style="bold"))
+            yield Static(Text("permission: 权限请求：模型想执行一个操作", style="bold"))
             yield Static(
                 Text.assemble(
-                    ("工具  ", "dim"), (request.tool, "bold"),
+                    ("工具  ", "dim"),
+                    (request.tool, "bold"),
                 ),
                 classes="approval-line",
             )
@@ -248,11 +297,25 @@ class ApprovalScreen(ModalScreen[str | None]):
             with Horizontal(id="approval-buttons"):
                 # compact：无边框单行色块（不用 ▔/▁ 边条——部分终端字体下会错位，见 CSS 注释）；
                 # approval-strong：本次允许 = 最常用的默认档，白底黑字最显眼
-                yield Button("本次允许 (y)", id=DECISION_ONCE, compact=True, classes="approval-strong")
+                yield Button(
+                    "本次允许 (y)",
+                    id=DECISION_ONCE,
+                    compact=True,
+                    classes="approval-strong",
+                )
                 # approval-plain：default 档没有自己的底色，给个可见的（见 CSS）
-                yield Button("本会话允许 (s)", id=DECISION_SESSION, compact=True, classes="approval-plain")
-                yield Button("始终允许 (a)", id=DECISION_ALWAYS, variant="warning", compact=True)
-                yield Button("拒绝 (n)", id=DECISION_DENY, variant="error", compact=True)
+                yield Button(
+                    "本会话允许 (s)",
+                    id=DECISION_SESSION,
+                    compact=True,
+                    classes="approval-plain",
+                )
+                yield Button(
+                    "始终允许 (a)", id=DECISION_ALWAYS, variant="warning", compact=True
+                )
+                yield Button(
+                    "拒绝 (n)", id=DECISION_DENY, variant="error", compact=True
+                )
 
     @on(Button.Pressed)
     def _pressed(self, event: Button.Pressed) -> None:
@@ -277,6 +340,7 @@ class TuiApp(App[None]):
         agent: AgentLoop,
         model: str,
         reasoning_effort: str = "high",
+        reasoning_clock: Callable[[], float] | None = None,
         cwd: str | None = None,
         sandbox: str = "local",
         context_window: int | None = None,
@@ -287,6 +351,9 @@ class TuiApp(App[None]):
         self._agent = agent
         self._model = model  # 展示名（随包目录的名字，用户级 models.json 可覆盖）
         self._reasoning_effort = reasoning_effort  # 启动横幅：none 表示思考关闭
+        self._reasoning_clock = (
+            reasoning_clock or time.monotonic
+        )  # 思考计时（测试可注入假时钟）
         self._cwd = cwd or str(Path.cwd())  # 启动横幅：当前工作目录
         self._sandbox = sandbox  # 启动横幅：docker / local（--no-sandbox）
         self._context_window = context_window  # 上下文占用百分比的分母（状态栏）
@@ -297,46 +364,53 @@ class TuiApp(App[None]):
         self._interrupt_requested = False
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
-        self._reasoning: ReasoningBlock | None = None  # 当前思考块（默认折叠；文本出现就收尾）
+        self._reasoning: ReasoningBlock | None = (
+            None  # 当前思考块（默认折叠；文本出现就收尾）
+        )
         self._tool_blocks: dict[str, ToolCallBlock] = {}
         self._ledger = Ledger()  # 账单累计（历史回放 + 实时事件同一本账，票据 07）
         # 压缩后的上下文占用估算（票据 12）：摘要调用的 usage 是"压缩前"的大小，
         # 下一次正常调用的 CostRecorded 到来前，状态栏先用压缩后的估算值。
         self._context_override: int | None = None
-        agent.approver = self._approve  # 权限审批走弹层（票据 09）；-p 模式没有此处、fail-closed
+        agent.approver = (
+            self._approve
+        )  # 权限审批走弹层（票据 09）；-p 模式没有此处、fail-closed
 
     # ---- 组装与启动 ----
 
     def _banner(self) -> Panel:
         """启动横幅：版本 / 模型 / effort / 沙箱 / 上下文窗口 / cwd / 会话。"""
         effort = (
-            "none（思考关闭）"
+            "none (thinking off)"
             if self._reasoning_effort == "none"
             else self._reasoning_effort
         )
         sandbox = (
-            "local（--no-sandbox）"
-            if self._sandbox == "local"
-            else "docker（每会话长驻容器）"
+            "local (--no-sandbox)" if self._sandbox == "local" else "docker (container)"
         )
         model = self._model
         if self._agent.model and self._agent.model != model:
             model = f"{model}  ({self._agent.model})"
-        mode = f"恢复 · {len(self._history)} 条记录" if self._history else "新会话"
+        # 新会话启动时固定有一条 session 头；历史 >1 条才算恢复。
+        if len(self._history) > 1:
+            records = len(self._history) - 1
+            mode = f"resume · {records} record{'s' if records != 1 else ''}"
+        else:
+            mode = "new"
         table = Table.grid(padding=(0, 2))
         table.add_column(style="dim", no_wrap=True)
         table.add_column()
-        table.add_row("模型", model)
-        table.add_row("思考", effort)
-        table.add_row("沙箱", sandbox)
+        table.add_row("model", model)
+        table.add_row("effort", effort)
+        table.add_row("sandbox", sandbox)
         if self._context_window:
-            table.add_row("上下文", f"{self._context_window:,} tokens")
-        table.add_row("工作目录", _display_path(self._cwd))
-        table.add_row("会话", f"{self._agent.session_path.name} · {mode}")
+            table.add_row("context", f"{self._context_window:,} tokens")
+        table.add_row("cwd", _display_path(self._cwd))
+        table.add_row("session", f"{self._agent.session_path.name} · {mode}")
         return Panel(
             table,
             title=f"codelotte v{__version__}",
-            subtitle="minimal-core 终端 coding agent",
+            subtitle="minimal-core terminal coding agent",
             border_style="cyan",
             box=box.ROUNDED,
             padding=(0, 1),
@@ -347,14 +421,18 @@ class TuiApp(App[None]):
             yield Static(self._banner(), id="banner")
         yield Static(self._status_text(), id="status")
         yield Input(
-            placeholder="输入任务，Enter 发送 · Ctrl+C 中断当前回合（空闲时再按一次退出）",
+            placeholder="Type a task, Enter to send · Ctrl+C interrupts; press again when idle to exit",
             id="prompt",
         )
 
     async def on_mount(self) -> None:
         for note in self._startup_notices:  # 启动提示（如更新内容）：完整文本挂进对话流
             await self._mount_notice(note)
-        for note in self._agent.permissions.notices:  # 权限层加载提示（如未信任的项目规则被忽略）
+        for (
+            note
+        ) in (
+            self._agent.permissions.notices
+        ):  # 权限层加载提示（如未信任的项目规则被忽略）
             await self._mount_notice(f"⚠ {note}")
         self.query_one(Input).focus()
         if self._history:
@@ -427,7 +505,7 @@ class TuiApp(App[None]):
             self._mark_unfinished_tools()  # 停在"运行中…"的块要给明确收尾，别骗人
             if self._interrupt_requested:
                 await self._mount_notice(
-                    "⏸ 已中断（Ctrl+C）——会话已保存，可继续输入或稍后 --continue"
+                    "paused: 已中断（Ctrl+C）——会话已保存，可继续输入或稍后 --continue"
                 )
             return
         except ProviderError as exc:
@@ -530,18 +608,22 @@ class TuiApp(App[None]):
     async def _mount_guardrail(self, layer: str, message: str) -> None:
         """死循环防御事件（票据 11）：比普通提示更醒目（加粗黄）；TUI 与导出口径一致。"""
         await self._end_markdown()
-        await self._mount(Static(Text(guardrail_notice(layer, message), style="bold yellow")))
+        await self._mount(
+            Static(Text(guardrail_notice(layer, message), style="bold yellow"))
+        )
 
     async def _write_reasoning(self, text: str) -> None:
         """思考增量：懒建折叠块，随到随刷；默认收起，点击标题展开。"""
         if self._reasoning is None:
-            self._reasoning = ReasoningBlock()
+            self._reasoning = ReasoningBlock(clock=self._reasoning_clock)
             await self._mount(self._reasoning)
         self._reasoning.append(text)
         self._scroll_end()
 
     def _close_reasoning(self) -> None:
-        self._reasoning = None
+        if self._reasoning is not None:
+            self._reasoning.finish()
+            self._reasoning = None
 
     async def _write_markdown(self, text: str) -> None:
         stream = self._stream
@@ -566,10 +648,14 @@ class TuiApp(App[None]):
             if kind == "message" and entry.get("role") == "user":
                 await self._mount(self._user_widget(entry.get("content", "")))
             elif kind == "message" and entry.get("role") == "assistant":
+                if entry.get("reasoningContent"):
+                    await self._mount(
+                        ReasoningBlock.history(str(entry["reasoningContent"]))
+                    )
                 if entry.get("content"):
                     await self._mount(Markdown(entry["content"]))
                 if entry.get("stopReason") == "interrupted":
-                    await self._mount_notice("⏸ 上一次运行在此中断")
+                    await self._mount_notice("paused: 上一次运行在此中断")
             elif kind == "tool_call":
                 arguments = entry.get("arguments", "")
                 if not isinstance(arguments, str):
@@ -628,10 +714,12 @@ class TuiApp(App[None]):
     def _status_text(self) -> Text:
         text = Text()
         if self.run_running:
-            text.append("▶ 运行中", style="bold green")
+            text.append("▶ Running", style="bold green")
         else:
-            text.append("● 就绪", style="dim")
-        if (self._ledger.calls or self._context_override is not None) and self._context_window:
+            text.append("● Ready", style="dim")
+        if (
+            self._ledger.calls or self._context_override is not None
+        ) and self._context_window:
             # 上下文占用：最近一次请求的输入 tokens / 用户级生效窗口（与压缩阈值同源）。
             # 压缩后到下一次真实请求前，用压缩后的估算值（摘要调用的 usage 是压缩前的大小）。
             # >100% 是超**用户预算**（请求本身不会失败——真实上限是官方值），标"超预算"。
@@ -641,12 +729,12 @@ class TuiApp(App[None]):
                 else self._ledger.calls[-1].input_tokens
             )
             share = used / self._context_window
-            label = f"超预算 {share:.0%}" if share > 1 else f"{share:.1%}"
-            text.append(f"  │  上下文 {label}")
+            label = f"over budget {share:.0%}" if share > 1 else f"{share:.1%}"
+            text.append(f"  │  context {label}")
         if self._ledger.calls:
             text.append(
                 f"  │  tokens in={self._ledger.input_tokens} out={self._ledger.output_tokens}"
-                f" 缓存命中 {self._ledger.hit_rate_text}"
+                f" cache hit {self._ledger.hit_rate_text}"
             )
             if self._ledger.priced:  # 累计花费（票据 07 验收：token/花费/命中率并列）
                 text.append(

@@ -11,7 +11,7 @@
 
 **T-1 天**
 
-- [ ] `uv sync --locked`，`uv run pytest -q` 全绿（当前 **596 passed, 8 deselected**）。
+- [ ] `uv sync --locked`，`uv run pytest -q` 全绿（当前 **599 passed, 8 deselected**）。
 - [ ] `uv run codelotte eval run --dry-run`、`eval compaction --dry-run`、
       `eval controls --dry-run`、`eval defense --dry-run` 都能跑通（零成本）。
 - [ ] 确认 Docker Desktop 已启动（`bash` 默认进沙箱）。

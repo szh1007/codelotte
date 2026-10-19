@@ -76,7 +76,7 @@
 | E5 注入 | 27/27 | `docs/experiments/e5-defense-effectiveness.md` | 重跑注入任务 |
 | E5 死循环 | 5/5 剧本、3/3 真实压力 | 同上 | `codelotte eval defense` |
 | E5 误报 | 0/31 | 同上 | 同上 |
-| 测试 | 596 passed, 8 deselected | `uv run pytest -q` | 重跑 |
+| 测试 | 599 passed, 8 deselected | `uv run pytest -q` | 重跑 |
 | dogfood | 0 天 / 0 PR | `docs/dogfood/log.md`、`git log --merges` | 读日志，不估算 |
 
 ## 投递前的更新规则

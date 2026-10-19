@@ -53,7 +53,7 @@ _GUARDRAIL_LAYER_LABELS = {"tool": "工具层", "reasoning": "推理层", "plann
 def guardrail_notice(layer: str, message: str) -> str:
     """死循环防御事件的一句话（TUI 对话流与 HTML/Markdown 导出共用，票据 11）。"""
     label = _GUARDRAIL_LAYER_LABELS.get(layer, layer or "未知层")
-    return f"🛡 守护拦截（{label}）：{message}"
+    return f"guard: 守护拦截（{label}）：{message}"
 
 
 _GUARDRAIL_STOP_LABELS = {STOP_CIRCUIT: "连续失败熔断", STOP_PLANNING: "规划层温和终止"}
@@ -81,4 +81,4 @@ def compaction_utilization(
 def compaction_title(mode: str, utilization: float, after_share: float) -> str:
     """压缩点标题（TUI 折叠块与导出的同一句话，票据 12）。"""
     label = "硬触发" if mode == "hard" else "软触发"
-    return f"🗜 上下文压缩（{label} · {utilization:.0%} → 预计 {after_share:.0%}）"
+    return f"compact: 上下文压缩（{label} · {utilization:.0%} → 预计 {after_share:.0%}）"
