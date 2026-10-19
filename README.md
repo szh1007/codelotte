@@ -335,7 +335,7 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [SPEC.md](SPEC.md) | 完整技术规格与实现决策 |
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
-| [docs/tickets/](docs/tickets/README.md) | 23 张曳光弹票据与状态 |
+| [docs/tickets/](docs/tickets/README.md) | 22 张曳光弹票据与状态 |
 | [evals/README.md](evals/README.md) | 评估体系总览：目录地图、九个命令、跑数产物、基线快照 |
 | [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、失败归因、任务格式、pass^k、CI 冒烟 |
 | [evals/attribution.md](evals/attribution.md) | 失败归因规则、标注语料与准确率、失败 → 回归任务 |
@@ -374,8 +374,8 @@ mini-swe-agent 18/18、裸 API 0/18；成功率打平，codelotte 成本高 15.4
 wide 只买到短任务高 k 可达性）+ 成本曲线（缓存命中 89.0%，相对无缓存+全峰价
 总节省 80.8%）+ 复盘文（结论段双语）。票据 21 完成 E3/E5：归因 15/15（宏观 F1
 1.000，真实 codelotte 失败 0 条）+ 防御有效性（死循环剧本 5/5、注入任务 27/27、
-正常任务误报 0/31）+ `codelotte eval defense`；22 是最终材料包；23 是 stretch 的
-MCP stdio 客户端。
+正常任务误报 0/31）+ `codelotte eval defense`；22 是最终材料包。当前票据规划至此收口，
+MCP 接入等后续功能留待下一版本规划。
 
 当前工作树的工程检查：`593 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。

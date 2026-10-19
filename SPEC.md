@@ -389,7 +389,7 @@
 ## Out of Scope（v1 不做）
 
 - **多 agent 编排**（subagent / agent teams / 并行编排）——招聘方公开不建议把它当首个作品；接口预留，不做实现。
-- **MCP 接入**——v1.0 不做（面试考点用"理解 + 设计文档"覆盖）；若 W3–W4 有余量，可做 stretch：最小 stdio 客户端（列工具、调工具，约 200 行）。砍单时第一个砍。
+- **MCP 接入**——v1.0 不做（面试考点用"理解 + 设计文档"覆盖）；后续版本再规划。
 - **RAG / 向量检索 / 代码库索引**——检索走 agentic grep（bash）；索引技术列入未来方向。
 - **真实接入 Anthropic / OpenAI API**——协议抽象与目录留槽，实测只跑 DeepSeek（无第二把 Key）。
 - **Web UI / IDE 插件 / 桌面端**——CLI + TUI + HTML 导出即全部交互面。
@@ -403,4 +403,4 @@
 - **术语与文档**：本文档用词以 [CONTEXT.md](CONTEXT.md) 为准（codelotte / Harness / Minimal Core / Session 有严格定义）；根决策的完整论证见 [docs/adr/0001–0005](docs/adr/)；事实依据（pi 设计、岗位需求、生态、DeepSeek API、Python 栈）见 [docs/research/](docs/research/README.md) 与 [docs/tech/](docs/tech/)。
 - **文档维护规则**：实现中若推翻本文档任一决策，先补/改 ADR 再改代码；本文档本身不记录代码细节（文件布局以仓库现状为准），避免过期。
 - **与 PLAN.md 的关系**：PLAN.md 管"什么时候做什么"（里程碑、实验排期、砍单顺序、简历与面试材料）；本规格管"技术上做成什么样"。两者冲突时以本规格 + ADR 为准，并同步修订 PLAN。
-- **发布状态**：本规格的目标读者是"实现者"（人或有能力的 agent）。待 issue tracker 配置后，本规格应发布为 issue 并加 `ready-for-agent` 标签（当前已拆分为 23 张票据发布在 [docs/tickets/](docs/tickets/README.md)，随仓库提交；日后配置 issue tracker 可同步为 issue）。
+- **发布状态**：本规格的目标读者是"实现者"（人或有能力的 agent）。待 issue tracker 配置后，本规格应发布为 issue 并加 `ready-for-agent` 标签（当前已拆分为 22 张票据发布在 [docs/tickets/](docs/tickets/README.md)，随仓库提交；日后配置 issue tracker 可同步为 issue）。
