@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import sys
 from collections.abc import Callable, Sequence
@@ -132,7 +133,9 @@ def _texts(app: TuiApp) -> list[str]:
 
 def _banner_text(app: TuiApp) -> str:
     panel = app.query_one("#banner", Static).content
-    console = Console(record=True, width=120, color_system=None)
+    # 必须显式给 file：run_test 期间 stdout 被 Textual 接管，CI 的 Windows 控制台是
+    # cp1252，Rich 的边框字符会在写真实 stdout 时抛 UnicodeEncodeError。
+    console = Console(record=True, width=120, color_system=None, file=io.StringIO())
     console.print(panel)
     return console.export_text()
 
