@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 
+- E1 压缩回归矩阵：摘要模板 `seven`/`compact` 与切点策略 `minimal`/`wide` 的 A/B；`eval compaction --strategy/--template/--combo` 跑 6 任务 × 4 k × 3 组合，报表按组合分组；结果：短任务完成率/保留率 100%（天花板），长任务保留率 83–97%；三节模板短任务 k=5 成本 −22.8%，长任务保留 93.3% vs 87.8% 且成本 −23.1%；wide 只买到短任务高 k 可达性（票据 20）
+- E2 成本曲线：`eval cost` 从会话 usage 重算实际 / 无缓存 / 全峰价 / 两者叠加；两轮真实跑数缓存命中率 89.0% / 89.4%，相对无缓存+全峰价总节省 80.8% / 81.4%（票据 20）
+- 复盘文 `docs/experiments/retrospective.md`（结论段中英双语）与复现脚本 `scripts/reproduce-e1-e2.sh`
 - E4 scaffolding tax 实验：任务集从 5 条扩到 9 条（多文件调试、规格重构、长规则结算、边界条件），新增 2 条主观 judge 任务（并发 review / API 设计取舍，各 20 条 `author-draft` 样本 κ=1.000）；三组 repeat 2 对照：codelotte 18/18、mini-swe-agent 18/18、裸 API 0/18；成功率打平，codelotte 成本 +15.4%、调用 +26.3%、耗时 −33.5%；实验报告 `docs/experiments/e4-scaffolding-tax.md`（票据 19）
 - 修复：mini-swe-agent 适配器的 `--mini-python` 相对路径在子进程工作区下找不到，启动前统一转绝对路径；独立 venv 需补装 litellm 启动期依赖 `mcp`，否则 mini 以 `calls=0` 启动失败
 - 修复：Windows 上 mini-swe-agent 的 `LocalEnvironment` 落到 `cmd.exe`（与它假设的 bash 不符），适配器在 Windows 上改用 Git Bash 执行命令，避免命令语义失真导致的假失败

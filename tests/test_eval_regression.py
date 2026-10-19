@@ -12,7 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from codelotte.evals.regression import CaseResult, checkpoint_prompt, run_case
+from codelotte.compaction import CompactionLimits
+from codelotte.evals.regression import (
+    CaseResult,
+    checkpoint_prompt,
+    forced_policy,
+    run_case,
+)
 from codelotte.evals.tasks import Checkpoint, FileExpectation, Task, Verifier
 from codelotte.sandbox import LocalExecutor
 from codelotte.session.store import load_entries
@@ -268,3 +274,82 @@ def test_stops_at_the_model_call_budget(tmp_path: Path) -> None:
     assert result.model_calls == 2
     assert result.error is not None and "max_model_calls" in result.error
     assert result.completed is False
+
+
+def _policy_entries() -> list[dict[str, object]]:
+    return [
+        {"type": "session", "id": "s"},
+        {"type": "message", "id": "u1", "role": "user", "content": "go"},
+        {"type": "message", "id": "a1", "role": "assistant", "content": "one"},
+        {"type": "tool_call", "id": "tc1", "toolCallId": "c1", "name": "read", "arguments": {}},
+        {"type": "tool_result", "id": "tr1", "toolCallId": "c1", "name": "read", "ok": True},
+        {"type": "message", "id": "a2", "role": "assistant", "content": "two"},
+        {"type": "tool_call", "id": "tc2", "toolCallId": "c2", "name": "read", "arguments": {}},
+        {"type": "tool_result", "id": "tr2", "toolCallId": "c2", "name": "read", "ok": True},
+        {"type": "message", "id": "a3", "role": "assistant", "content": "three"},
+    ]
+
+
+def test_wide_strategy_keeps_two_turns_at_the_cut() -> None:
+    policy = forced_policy(1, strategy="wide")
+
+    decision = policy(
+        _policy_entries(),
+        input_tokens=1,
+        context_window=1000,
+        limits=CompactionLimits(),
+    )
+
+    assert decision is not None
+    assert decision.first_kept_entry_id == "a2"
+    assert decision.mode == "hard"
+
+
+def test_wide_strategy_falls_back_when_there_is_only_one_turn() -> None:
+    entries = _policy_entries()[:3]
+    policy = forced_policy(1, strategy="wide")
+
+    decision = policy(
+        entries,
+        input_tokens=1,
+        context_window=1000,
+        limits=CompactionLimits(),
+    )
+
+    assert decision is not None
+    assert decision.first_kept_entry_id == "a1"
+
+
+def test_run_case_records_the_compact_template(tmp_path: Path) -> None:
+    agent = ScriptedClient(
+        [
+            tool_turn("read", {"path": "in.txt"}),
+            text_turn(SUMMARY),
+            tool_turn("write", {"path": "out.txt", "content": "hello"}),
+            text_turn("完成"),
+        ]
+    )
+    probe = ScriptedClient([text_turn(CHECKPOINT_ANSWER)])
+
+    result = asyncio.run(
+        run_case(
+            _task(),
+            k=1,
+            repetition=1,
+            workspace=tmp_path / "workspace",
+            session_root=tmp_path / "sessions",
+            model="fake-model",
+            catalog=fake_catalog(),
+            client=agent,
+            probe_client=probe,
+            executor_factory=LocalExecutor,
+            context_window=1000,
+            template="compact",
+        )
+    )
+
+    assert result.template == "compact"
+    summary_request = agent.requests[1][-1]["content"]
+    assert "1. 任务目标" in summary_request
+    assert "3. 活跃约束" in summary_request
+    assert "关键决策及其理由" not in summary_request

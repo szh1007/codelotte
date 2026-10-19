@@ -1,7 +1,7 @@
 # 通用测评：操作手册
 
 > 给未来的我和接手的人。想加题、重跑、看报表、交接，从这里开始。
-> 评估体系总览（目录、七个命令、跑数产物）见 [README.md](README.md)。
+> 评估体系总览（目录、八个命令、跑数产物）见 [README.md](README.md)。
 >
 > - 专用测评 - 压缩回归 v0（强制压缩 k 次、checkpoint 保留率、v0 基线）：
 >   [compaction.md](compaction.md)
@@ -45,13 +45,16 @@ uv run codelotte eval attribute
 # 10. 把一条失败案例转成回归任务（默认写到 evals/regressions/）
 uv run codelotte eval regression --run evals/runs/<run-id> --task 002-fix-off-by-one
 
-# 11. 打开最新 run 的报表
+# 11. 成本曲线（缓存/off-peak 反事实；离线）
+uv run codelotte eval cost --run evals/runs/<run-id> --out evals/cost
+
+# 12. 打开最新 run 的报表
 #    evals/runs/<新目录>/report.md
 ```
 
 已经装有 `codelotte` 命令时，把 `uv run codelotte` 换成 `codelotte` 即可。
 
-## 1. 七个命令在干什么
+## 1. 八个命令在干什么
 
 - `eval run`（票据 15）：**通用测评**。任务按生产默认策略跑 N 次，回答“当前 harness
   能不能过、每条任务花多少钱/多久、pass^N 是多少”。
@@ -67,10 +70,12 @@ uv run codelotte eval regression --run evals/runs/<run-id> --task 002-fix-off-by
   写混淆矩阵；评测报表自动带“失败归因”段。
 - `eval regression`（票据 18）：**失败 → 回归任务**。保留原任务的 setup/verifier，
   只换 id，生成可直接 `eval run` 的 TOML。
+- `eval cost`（票据 20）：**成本曲线**。从会话 usage 重算缓存命中与 off-peak 的实际
+  成本，以及“无缓存 / 全峰价”的反事实；不调用模型。
 
-七者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
+八者共用任务格式、工作区与验收代码，但报表口径不同。日常回归用 `eval run`；
 压缩专项用 `eval compaction`（细节见 [compaction.md](compaction.md)）；对照与自检
-见 §4.5 / §4.6；judge 见 §4.7；归因与回归见 §4.8。
+见 §4.5 / §4.6；judge 见 §4.7；归因与回归见 §4.8；成本曲线见 §4.9。
 
 ## 2. 目录地图
 
@@ -586,7 +591,27 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
   绝不覆盖已有文件，写盘后再用 `load_task` 校验。
 - `evals/regressions/` 不参与默认任务集，避免改变历史 pass^k 口径。
 
-### 4.9 已知局限
+### 4.9 成本曲线（`eval cost`）
+
+```bash
+uv run codelotte eval cost \
+  --run evals/runs/20261018T154112Z-fa9db83 \
+  --run evals/runs/20261018T155840Z-fa9db83-compare/harnesses/codelotte \
+  --out evals/cost
+```
+
+- 读 run 的 `report.json` 与每条案例的 session `usage`，重算：
+  实际成本 / 无缓存反事实（命中按未命中价）/ 全峰价反事实 / 两者叠加。
+- 输出命中率、逐调用序号的命中率曲线、off-peak 调用占比与节省金额；
+  `cost-report.md/json`，不调用模型、不写 run 目录。
+- 实测（2026-10-18/19 两个 run）：命中率 **89.0% / 89.4%**，实际 ¥0.205832 / ¥0.128218；
+  无缓存会抬到 ¥0.535853 / ¥0.344091；全峰价 ¥0.411664 / ¥0.256435；
+  总反事实 ¥1.071706 / ¥0.688182（总节省 **80.8% / 81.4%**）。
+- 口径：反事实是重算不是重跑；只覆盖会话 usage（压缩探针不写回会话）；
+  价目来自随包 `providers/models.json`。解读见
+  [docs/experiments/e2-cost-curve.md](../docs/experiments/e2-cost-curve.md)。
+
+### 4.10 已知局限
 
 - judge 校准样本目前是作者草拟（`author-draft`），不是作者已复核的人工标签；
   κ=1.0 是清晰样本上的天花板，不代表 judge 在模糊样本上也可靠。
@@ -594,7 +619,8 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
 - pass^k 是严格口径；不提供 pass@k（至少一次通过）的并列指标。
 - 任务集 9 条（A 5 / B 4），其中 4 条是票据 19 新增的多步任务；E4 对照结论见
   [docs/experiments/e4-scaffolding-tax.md](../docs/experiments/e4-scaffolding-tax.md)，
-  E1/E2 正式实验在票据 20。
+  E1/E2 见 [e1-compaction-curve.md](../docs/experiments/e1-compaction-curve.md) /
+  [e2-cost-curve.md](../docs/experiments/e2-cost-curve.md)。
 - 任务的初始化脚本按平台 shell 语义执行；跨平台任务应优先用 Python 或 `python -c`。
 - `eval compare` 的三组不是同一策略：codelotte 有四个工具与压缩/防线，mini 只有 bash，
   raw 没有工具；对照回答的是“最终状态 + 成本/耗时”，不是同策略 A/B。
@@ -604,7 +630,7 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
   `context_loss` 使用“压缩后重读”作代理，可能漏判。首版语料是作者草稿，
   真实失败上的准确率尚未测量。
 
-### 4.10 代码地图
+### 4.11 代码地图
 
 | 文件 | 职责 |
 |---|---|
@@ -621,13 +647,15 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
 | `src/codelotte/evals/compare.py` | 多组对照、控制 agent 自检、并列报表 |
 | `src/codelotte/evals/eval_report.py` | 单组报表（Markdown/JSON，含失败归因段） |
 | `src/codelotte/evals/regression.py` | 压缩回归（强制压缩 + checkpoint 探针） |
-| `src/codelotte/evals/attribution.py` | 五类失败归因、样本科普与混淆矩阵 |
+| `src/codelotte/evals/attribution.py` | 五类失败归因、语料评测与混淆矩阵 |
+| `src/codelotte/evals/cost_report.py` | E2 成本曲线：缓存/off-peak 实际与反事实 |
 | `src/codelotte/evals/promote.py` | 失败案例 → 回归任务 TOML |
 | `evals/tasks/*.toml` | 确定性任务定义 |
 | `evals/judge-tasks/*.toml` | judge 任务定义（控制组不加载） |
 | `evals/judges/<task>/` | 人工标注样本与校准结果 |
 | `evals/attribution/` | 归因语料与准确率报告 |
 | `evals/regressions/` | 由失败生成的回归任务 |
+| `evals/cost/` | E2 成本曲线报告 |
 | `evals/runs/<run-id>/` | 跑数证据 |
 
 ## 5. 专用测评 - 压缩回归 v0（`eval compaction`）
@@ -641,13 +669,19 @@ uv run codelotte eval run --tasks evals/regressions --dry-run
 ```bash
 uv run codelotte eval compaction --dry-run
 uv run codelotte eval compaction --k 0,1,3,5 --out evals/runs
+
+# E1 矩阵：策略 × 模板
+uv run codelotte eval compaction --k 0,1,3,5 --repeat 1 \
+  --combo minimal:seven --combo minimal:compact --combo wide:seven
 ```
+
+结果与解读：[E1 报告](../docs/experiments/e1-compaction-curve.md)。
 
 ## 6. 交接清单
 
 接手的人按这个顺序看：
 
-1. 本文件（通用测评、对照、自检、judge、归因：操作、任务格式、CI）；
+1. 本文件（通用测评、对照、自检、judge、归因、成本曲线：操作、任务格式、CI）；
 2. [compaction.md](compaction.md)（专用测评 - 压缩回归 v0：机制、评分、基线、局限）；
 3. [attribution.md](attribution.md)（失败归因规则、语料、回归任务）；
 4. 最近一次跑数的 `report.md`；

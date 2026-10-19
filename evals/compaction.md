@@ -20,7 +20,12 @@ uv run codelotte eval compaction --k 5 --task 004-your-task --out evals/runs
 # 4. 全量：当前 9 条任务 × k=0/1/3/5 × 1 次 = 36 条案例
 uv run codelotte eval compaction --k 0,1,3,5 --out evals/runs
 
-# 5. 打开报表
+# 5. E1 矩阵：策略 × 模板（每个组合各一条曲线）
+uv run codelotte eval compaction --k 0,1,3,5 --repeat 1 \
+  --combo minimal:seven --combo minimal:compact --combo wide:seven \
+  --out evals/runs
+
+# 6. 打开报表
 #    evals/runs/<新目录>/report.md
 ```
 
@@ -46,6 +51,9 @@ uv run codelotte eval compaction --k 0,1,3,5 --out evals/runs
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--k` | `0,1,3,5` | 强制压缩次数；逗号分隔，不能重复；`0` 是不压缩对照 |
+| `--strategy` | `minimal` | 切点策略，可重复：`minimal`=最近一个 turn，`wide`=最近两个 turn |
+| `--template` | `seven` | 摘要模板，可重复：`seven`=七项，`compact`=目标/已完成/约束三节 |
+| `--combo` | 无 | 精确指定 `策略:模板`，可重复；与 `--strategy/--template` 互斥 |
 | `--task ID` | 全部 | 只跑指定任务，可重复 |
 | `--tasks 目录` | `<repo>/evals/tasks` | 任务目录 |
 | `--out 目录` | `<repo>/evals/runs` | 跑数根目录；每次新建 `<UTC时间>-<git短哈希>` |
@@ -65,6 +73,17 @@ v0 基线当时跑 `3 条任务 × k=0/1/3/5 × 1 次重复 = 12 条案例`。�
 uv run codelotte eval compaction --k 0,1,3,5 \
   --task 001-audit-report --task 002-fix-off-by-one --task 003-constrained-append
 ```
+
+### 2.1 E1 的两个实验变量
+
+- **策略（切点）**：`minimal` 只保留最近一个 turn（v0 行为，压得最狠）；
+  `wide` 保留最近两个 turn，牺牲压缩率换更多上下文。
+- **模板（摘要结构）**：`seven` 是七项摘要（任务/已完成/决策/约束/文件/未解决/下一步）；
+  `compact` 只保留目标/已完成/约束三节，summary token 更少。
+- 用 `--combo` 精确跑组合（如 `minimal:seven`、`wide:compact`），或用
+  `--strategy`/`--template` 做笛卡尔积。报表按 `策略 / 模板 × k` 分组，
+  每组的完成率/保留率/成本可直接对照。
+- 正式结果与曲线：[docs/experiments/e1-compaction-curve.md](../docs/experiments/e1-compaction-curve.md)。
 
 | 指标 | 定义 |
 |---|---|
@@ -169,7 +188,7 @@ uv run codelotte eval compaction --k 0,1,3,5 \
 每次跑数生成 `annotations.csv`，列：
 
 ```text
-run_id, task_id, bucket, k, repetition, compaction, question,
+run_id, task_id, bucket, strategy, template, k, repetition, compaction, question,
 auto_pass, structured, misplaced, human_pass, error, answer
 ```
 
@@ -230,8 +249,8 @@ run：`evals/runs/20261017T173510Z-037104e/`（DeepSeek `deepseek-flash`，reaso
   是分 k 行）。其中 4 条是**跨段命中**（模型把“不要/序号”写到了另一题的答案里），
   `misplaced` 已标出，保留率仍算记得。
 - **结论**：v0 证明的是管线能跑、数据能复现、指标能区分“忘了”与“答错位置”，
-  不是压缩有效性的结论。E1（票据 20）需要更长/更难的任务、repeat ≥ 3、k 扩到 10 左右，
-  并做触发策略 × 摘要模板的 A/B。
+  不是压缩有效性的结论。E1（票据 20）已补短任务 6 条 + 长任务 3 条、3 个策略/模板组合；
+  但仍是 `repeat=1`、k 最大 5，下一轮应 `repeat >= 3`、k 扩到 10 左右。
 
 校准阶段曾观察到 002 在 k=5 漏写 `notes.txt`。定位后不是压缩丢失，而是 Docker 的
 `/workspace` 容器路径被模型交给了宿主机文件工具，产物写到了工作区外；现在

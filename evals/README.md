@@ -47,6 +47,7 @@ judge 是主观题阅卷校准，attribute 是病历，regression 是把病例�
 | [`judges/<task>/`](judges/) | judge 校准资产：`samples.jsonl`（人工标注样本）、`calibration.json`（κ/阈值/绑定指纹）、`calibration.md`（人读表） | `eval judge` 生成 | — |
 | [`attribution/`](attribution/) | 失败归因语料：`labels.jsonl`、`sessions/*.jsonl`、`attribution-report.md/.json` | 作者手写 + `eval attribute` 生成 | — |
 | [`regressions/`](regressions/) | 由失败案例生成的回归任务 TOML；单独目录，避免改变历史任务集口径 | `eval regression` 生成 | ❌（需 `--tasks evals/regressions`） |
+| [`cost/`](cost/) | E2 成本曲线：`cost-report.md` / `.json`（实际 vs 无缓存/全峰价反事实） | `eval cost` 生成 | — |
 | [`runs/`](runs/) | **跑数证据**：每次评测一个目录，含报表、会话轨迹、最终工作区 | 各评测命令生成 | — |
 | [`run.md`](run.md) | 通用测评、对照、自检、judge、归因的操作手册 | 文档 | — |
 | [`compaction.md`](compaction.md) | 强制压缩专项的操作手册、评分与 v0 基线 | 文档 | — |
@@ -94,7 +95,7 @@ checkpoint，压缩回归才能用。格式细节见 [run.md](run.md) §3。
 每条案例的**最终产物**。它可能被 agent 故意写坏（比如 cheating 控制组），
 所以不要拿它当源码读；它是证据，不是仓库内容。
 
-## 2. 七个命令分别是什么意思
+## 2. 八个命令分别是什么意思
 
 | 命令 | 回答的问题 | 调模型？ | 主要产出 |
 |---|---|---|---|
@@ -105,6 +106,7 @@ checkpoint，压缩回归才能用。格式细节见 [run.md](run.md) §3。
 | `eval judge` | LLM 阅卷人和人工标注一致吗？κ 是多少？ | ✅（阅卷模型） | `evals/judges/<task>/calibration.*` |
 | `eval attribute` | 失败归因规则和人工标注一致吗？五类分得清吗？ | ❌（规则） | `evals/attribution/attribution-report.*` |
 | `eval regression` | 这条失败能不能变成以后每轮都跑的复诊题？ | ❌ | `evals/regressions/<new-id>.toml` |
+| `eval cost` | 缓存和 off-peak 实际省了多少？无缓存/全峰价的反事实是多少？ | ❌（读会话） | `evals/cost/cost-report.md/json` |
 
 ### 2.1 `eval run`：通用测评（主线）
 
@@ -123,11 +125,17 @@ uv run codelotte eval run --bucket B --repeat 1
 
 ```bash
 uv run codelotte eval compaction --k 0,1,3,5 --repeat 1
+
+# E1 矩阵：摘要模板 seven/compact × 切点策略 minimal/wide
+uv run codelotte eval compaction --k 0,1,3,5 --repeat 1 \
+  --combo minimal:seven --combo minimal:compact --combo wide:seven
 ```
 
 - 同一道题，中途强制压缩 0/1/3/5 次；每次压缩后用 checkpoint 问题做带外探针，
   问“任务目标 / 已完成步骤 / 关键约束”，按事实组确定性评分。
 - 回答的是“压缩后还记得吗”，不是“整体能不能过”；整体能力看 `eval run`。
+- E1 的两个变量：模板 `seven`/`compact`，切点 `minimal`（最近 1 turn）/`wide`（最近 2 turn）；
+  报表按 `策略 / 模板 × k` 分组。结果见 [E1 报告](../docs/experiments/e1-compaction-curve.md)。
 - 任务必须有 ≥3 个 checkpoint；细节与 v0 基线：[compaction.md](compaction.md)。
 
 ### 2.3 `eval compare`：scaffolding tax 对照
@@ -207,6 +215,22 @@ uv run codelotte eval regression \
 - 它不参与默认 `eval run`；要跑回归集：
   `uv run codelotte eval run --tasks evals/regressions`。
 
+### 2.8 `eval cost`：缓存与 off-peak 成本曲线
+
+```bash
+uv run codelotte eval cost \
+  --run evals/runs/<run-id> \
+  --run evals/runs/<another-run> \
+  --out evals/cost
+```
+
+- 从 run 的会话 usage 记录重算：实际成本、**无缓存**反事实（命中 token 按未命中价）、
+  **全峰价**反事实（同一份 usage × 峰价）、两者叠加的总反事实。
+- 输出缓存命中率、逐调用序号的命中率曲线、off-peak 调用占比与节省金额。
+- 不调用模型、不写 run 目录；可用于任意带 codelotte 会话的 run。
+- 口径：反事实不是重新跑模型；压缩回归的 checkpoint 探针不写回会话，不在本报表里。
+  最新结果与解读：[docs/experiments/e2-cost-curve.md](../docs/experiments/e2-cost-curve.md)。
+
 ## 3. 它们怎么串起来
 
 ### 3.1 一条失败的完整链路
@@ -251,6 +275,9 @@ uv run codelotte eval attribute
 
 # 5) 把一条失败转成回归任务
 uv run codelotte eval regression --run evals/runs/<run-id> --task <id>
+
+# 6) 成本曲线（缓存 / off-peak 反事实；离线）
+uv run codelotte eval cost --run evals/runs/<run-id> --out evals/cost
 ```
 
 ### 3.3 一次跑数里有什么
@@ -298,6 +325,8 @@ evals/runs/<run-id>/
 | 控制组自检（9 任务） | oracle 9/9、no-op 0/9、cheating 0/9 且 9/9 标记 | [`runs/20261018T154851Z-fa9db83-controls`](runs/20261018T154851Z-fa9db83-controls/report.md) |
 | judge 任务（3 条） | 3/3 通过，overall 均 1.00，κ=1.00（各 20 样本，⚠ 草稿） | [`runs/20261018T154901Z-fa9db83`](runs/20261018T154901Z-fa9db83/report.md) |
 | 归因准确率（15 条语料） | 15/15（100%），⚠ `author-draft` 待复核 | [attribution-report.md](attribution/attribution-report.md) |
+| E1 压缩矩阵（短任务 6 + 长任务 3） | 短任务完成率/保留率 100%（天花板）；长任务保留率 83–97%，compact **93.3% vs 87.8%** 且成本 −23.1%；wide 短任务 +15.8% 但 6/6 有效 | [`短任务`](runs/20261018T165516Z-8a01d9f/report.md) · [`长任务`](runs/20261019T013233Z-8a01d9f/report.md) |
+| E2 成本曲线（2 个 run） | 缓存命中率 89.0% / 89.4%；相对无缓存+全峰价总节省 80.8% / 81.4% | [cost-report.md](cost/cost-report.md) |
 | 压缩回归 v0（旧 3 任务） | 完成率/保留率 100%，天花板效应 | [`runs/20261017T173510Z-037104e`](runs/20261017T173510Z-037104e/report.md) |
 
 数字口径、完整记录与复现命令：[record.md](record.md)。实验解读：
@@ -319,7 +348,7 @@ evals/runs/<run-id>/
 - 成功率的样本量小（每任务 2–3 次），没有置信区间；看趋势而不是单点。
 - mini-swe-agent 是外部依赖，不在项目 lockfile 里；安装方式与 Windows shell 修正见
   [run.md](run.md) §4.5。
-- 压缩基线是旧 3 任务、天花板效应；E1/E2 的正式实验在票据 20。
+- 压缩基线是旧 3 任务、天花板效应；E1/E2 已在票据 20 完成（见上方基线表）。
 
 ## 8. 代码地图
 
@@ -344,5 +373,6 @@ evals/runs/<run-id>/
 - 压缩专项：[compaction.md](compaction.md)
 - 归因与回归任务：[attribution.md](attribution.md)
 - 全部跑数索引：[record.md](record.md)
-- E4 实验报告：[../docs/experiments/e4-scaffolding-tax.md](../docs/experiments/e4-scaffolding-tax.md)
+- E1/E2/E4 实验报告：[../docs/experiments/](../docs/experiments/README.md)
+- 复盘文：[../docs/experiments/retrospective.md](../docs/experiments/retrospective.md)
 - 项目总览：[../README.md](../README.md)

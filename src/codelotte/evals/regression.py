@@ -15,12 +15,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from codelotte.compaction import (
     CompactionDecision,
     CompactionLimits,
     CompactionPolicy,
+    SummaryTemplate,
     default_compaction_policy,
 )
 from codelotte.cost import Catalog, price_call
@@ -41,12 +42,43 @@ _CHECKPOINT_FOOTER = "请用 1. / 2. / 3. 这样的编号逐条回答，每条�
 logger = logging.getLogger(__name__)
 
 
-def forced_policy(times: int) -> CompactionPolicy:
-    """强制压缩策略：只要已落盘的 compaction 少于 times，就按硬触发压一次。
+CompactionStrategy = Literal["minimal", "wide"]
 
-    利用率钉在 100% 只是为了复用 `plan_compaction` 的边界选择（最小保留集）；
+
+def _wide_cut_index(
+    entries: list[dict[str, Any]], *, keep_turns: int = 2
+) -> int | None:
+    """保留最近 keep_turns 个 turn 的切点（从第 keep_turns 个最后一个 assistant 开始）。
+
+    只考虑上一次压缩之后的 turn；没有足够 turn 时返回 None，由调用方回退最小保留集。
+    """
+    last_compaction = -1
+    for index, entry in enumerate(entries):
+        if entry.get("type") == "compaction":
+            last_compaction = index
+    assistants = [
+        index
+        for index, entry in enumerate(entries)
+        if index > last_compaction
+        and entry.get("type") == "message"
+        and entry.get("role") == "assistant"
+    ]
+    if len(assistants) < keep_turns:
+        return None
+    return assistants[-keep_turns]
+
+
+def forced_policy(
+    times: int, *, strategy: CompactionStrategy = "minimal"
+) -> CompactionPolicy:
+    """强制压缩策略：只要已落盘的 compaction 少于 times，就压一次。
+
+    - `minimal`（默认）：压到最小保留集（最近一个 turn），对应 v0 基线；
+    - `wide`：保留最近两个 turn，牺牲压缩率换更多上下文（E1 的切点策略 A/B）。
+
+    利用率钉在 100% 只是为了复用 `plan_compaction` 的边界选择；
     报告里 mode=hard 是事实，不代表真实上下文真的到了硬阈值。
-    没有新的 turn 可压时 `plan_compaction` 返回 None——所以 k 次压缩需要至少 k 个 turn。
+    没有新的 turn 可压时返回 None——所以 k 次压缩需要至少 k 个 turn。
     """
 
     def policy(
@@ -59,6 +91,17 @@ def forced_policy(times: int) -> CompactionPolicy:
         done = sum(1 for entry in entries if entry.get("type") == "compaction")
         if done >= times:
             return None
+        if strategy == "wide":
+            cut_index = _wide_cut_index(entries)
+            if cut_index is not None:
+                entry_id = entries[cut_index].get("id")
+                if isinstance(entry_id, str) and entry_id:
+                    return CompactionDecision(
+                        mode="hard",
+                        cut_index=cut_index,
+                        first_kept_entry_id=entry_id,
+                        utilization=1.0,
+                    )
         return default_compaction_policy(
             entries,
             input_tokens=context_window,
@@ -140,6 +183,8 @@ class CaseResult:
     workspace: str
     error: str | None = None
     periods: tuple[tuple[str, int], ...] = ()
+    strategy: str = "minimal"
+    template: str = "seven"
 
     @property
     def valid(self) -> bool:
@@ -185,6 +230,8 @@ async def run_case(
     guardrail_limits: GuardrailLimits | None = None,
     repo_root: Path | None = None,
     snapshot_ref: str | None = None,
+    strategy: CompactionStrategy = "minimal",
+    template: SummaryTemplate = "seven",
 ) -> CaseResult:
     """跑一条任务的一次案例：真实 loop + 强制压缩 + 压缩后 checkpoint + 确定性验收。"""
     observations: list[CheckpointObservation] = []
@@ -216,10 +263,11 @@ async def run_case(
         client=client,
         executor_factory=executor_factory,
         context_window=context_window,
-        compaction_policy=forced_policy(k),
+        compaction_policy=forced_policy(k, strategy=strategy),
         compaction_limits=compaction_limits,
         guardrail_limits=guardrail_limits,
         on_compaction=observe,
+        summary_template=template,
     )
     return CaseResult(
         task_id=task.id,
@@ -242,6 +290,8 @@ async def run_case(
         workspace=execution.workspace,
         error=execution.error,
         periods=execution.periods,
+        strategy=strategy,
+        template=template,
     )
 
 

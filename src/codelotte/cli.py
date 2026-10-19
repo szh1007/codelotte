@@ -26,7 +26,7 @@ from codelotte.config import (
     load_settings,
     record_changelog_version,
 )
-from codelotte.cost import Catalog, load_catalog
+from codelotte.cost import Catalog, format_money, load_catalog
 from codelotte.evals.attribution import (
     DEFAULT_MIN_ACCURACY,
     FAILURE_CLASSES,
@@ -40,6 +40,7 @@ from codelotte.evals.attribution import (
     load_attribution_samples,
 )
 from codelotte.evals.compare import run_comparison
+from codelotte.evals.cost_report import analyze_run, write_cost_report
 from codelotte.evals.execution import CodelotteHarness
 from codelotte.evals.judge import (
     MIN_CALIBRATION_SAMPLES,
@@ -252,6 +253,26 @@ def build_parser() -> argparse.ArgumentParser:
         default="0,1,3,5",
         metavar="列表",
         help="强制压缩次数（逗号分隔；0 是不压缩的对照组，默认 0,1,3,5）",
+    )
+    compaction_parser.add_argument(
+        "--strategy",
+        action="append",
+        choices=("minimal", "wide"),
+        metavar="策略",
+        help="切点策略（可重复）：minimal=最近一个 turn，wide=最近两个 turn；默认 minimal",
+    )
+    compaction_parser.add_argument(
+        "--template",
+        action="append",
+        choices=("seven", "compact"),
+        metavar="模板",
+        help="摘要模板（可重复）：seven=七项，compact=目标/已完成/约束三节；默认 seven",
+    )
+    compaction_parser.add_argument(
+        "--combo",
+        action="append",
+        metavar="策略:模板",
+        help="精确指定组合（可重复，如 minimal:compact）；与 --strategy/--template 互斥",
     )
     compaction_parser.add_argument(
         "--tasks", metavar="目录", help="任务目录（默认仓库根下的 evals/tasks）"
@@ -509,6 +530,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="只打印将生成的任务摘要，不写文件",
+    )
+
+    cost_parser = eval_sub.add_parser(
+        "cost",
+        help="成本曲线（E2）：从会话 usage 重算缓存与 off-peak 的实际/反事实成本",
+    )
+    cost_parser.add_argument(
+        "--run",
+        action="append",
+        required=True,
+        metavar="目录",
+        help="跑数目录（可重复；目录里要有 report.json）",
+    )
+    cost_parser.add_argument(
+        "--out",
+        metavar="目录",
+        help="报告输出目录（默认仓库根下的 evals/cost）",
+    )
+    cost_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只校验 run/report.json 并打印调用数，不写报告",
     )
     return parser
 
@@ -887,6 +930,43 @@ def _parse_k_values(text: str) -> tuple[int, ...]:
     if len(set(values)) != len(values):
         raise ConfigError(f"--k 不能有重复值（给了 {text!r}）")
     return tuple(sorted(values))
+
+
+_COMPACTION_STRATEGIES = ("minimal", "wide")
+_COMPACTION_TEMPLATES = ("seven", "compact")
+
+
+def _compaction_combos(args: argparse.Namespace) -> tuple[tuple[str, str], ...]:
+    """解析压缩回归的策略/模板组合（--combo 精确指定，或两个列表的笛卡尔积）。"""
+    if args.combo:
+        if args.strategy or args.template:
+            raise ConfigError("--combo 不能和 --strategy/--template 同时使用")
+        combos: list[tuple[str, str]] = []
+        for raw in args.combo:
+            strategy, separator, template = raw.partition(":")
+            if not separator:
+                raise ConfigError(f"--combo 要写成 策略:模板（给了 {raw!r}）")
+            strategy = strategy.strip()
+            template = template.strip()
+            if strategy not in _COMPACTION_STRATEGIES:
+                raise ConfigError(
+                    f"--combo 的策略只能是 {_COMPACTION_STRATEGIES}（给了 {strategy!r}）"
+                )
+            if template not in _COMPACTION_TEMPLATES:
+                raise ConfigError(
+                    f"--combo 的模板只能是 {_COMPACTION_TEMPLATES}（给了 {template!r}）"
+                )
+            pair = (strategy, template)
+            if pair not in combos:
+                combos.append(pair)
+        return tuple(combos)
+    strategies = args.strategy or ["minimal"]
+    templates = args.template or ["seven"]
+    return tuple(dict.fromkeys(
+        (strategy, template)
+        for strategy in strategies
+        for template in templates
+    ))
 
 
 def _ensure_docker_available() -> None:
@@ -1315,12 +1395,54 @@ def _run_eval_regression(args: argparse.Namespace) -> int:
         return _fail(exc)
 
 
+def _run_eval_cost(args: argparse.Namespace, *, argv: Sequence[str]) -> int:
+    """E2 成本曲线：读 run 的会话 usage，重算缓存/off-peak 的实际与反事实成本。"""
+    try:
+        repo_root = find_repo_root(Path.cwd())
+        run_dirs = [Path(raw) for raw in args.run]
+        seen: set[Path] = set()
+        for run_dir in run_dirs:
+            if not (run_dir / "report.json").is_file():
+                raise ConfigError(f"跑数目录里没有 report.json：{run_dir}")
+            resolved = run_dir.resolve()
+            if resolved in seen:
+                raise ConfigError(f"重复的 run 目录：{run_dir}")
+            seen.add(resolved)
+        catalog = load_catalog()
+        runs = [analyze_run(catalog, run_dir) for run_dir in run_dirs]
+        if args.dry_run:
+            for run in runs:
+                print(
+                    f"- {run.run_id}：{run.cases} 案例 / {run.calls} 调用，"
+                    f"缺 usage 会话 {run.missing_cases} 条"
+                )
+            print("dry-run：run 校验通过，未写成本报告。")
+            return 0
+        out_dir = Path(args.out) if args.out else repo_root / "evals" / "cost"
+        command = "codelotte " + shlex.join(list(argv))
+        path = write_cost_report(out_dir, runs, catalog=catalog, command=command)
+        for run in runs:
+            rate = "—" if run.cache_hit_rate is None else f"{run.cache_hit_rate:.1%}"
+            print(
+                f"[cost] {run.run_id}：{run.calls} 调用，命中率 {rate}，"
+                f"实际 {format_money(run.actual_cost, catalog.currency)}，"
+                f"无缓存 {format_money(run.no_cache_cost, catalog.currency)}，"
+                f"全峰价 {format_money(run.peak_cost, catalog.currency)}",
+                file=sys.stderr,
+            )
+        print(path)
+        return 0
+    except (ConfigError, ValueError, OSError) as exc:
+        return _fail(exc)
+
+
 def _run_eval_compaction(
     args: argparse.Namespace, *, settings: Settings, argv: Sequence[str]
 ) -> int:
     """一条命令跑完整轮压缩回归并落报表；返回报表路径（stdout）与进度（stderr）。"""
     try:
         k_values = _parse_k_values(args.k)
+        combos = _compaction_combos(args)
         if args.repeat < 1:
             raise ConfigError(f"--repeat 要 ≥1（给了 {args.repeat}）")
         repo_root, tasks_dir, out_dir = _eval_paths(args)
@@ -1340,10 +1462,12 @@ def _run_eval_compaction(
                     f"- {task.id}（{task.bucket} 桶，{len(task.checkpoints)} 个 checkpoint，"
                     f"超时 {task.timeout_seconds:g}s，最多 {task.max_model_calls} 次模型调用）"
                 )
-            cases = len(tasks) * len(k_values) * args.repeat
+            cases = len(tasks) * len(k_values) * len(combos) * args.repeat
+            combo_text = ", ".join(f"{s}/{t}" for s, t in combos)
             print(
-                f"计划：{len(tasks)} 任务 × {len(k_values)} 个 k × {args.repeat} 次重复"
-                f" = {cases} 条案例；k={','.join(str(k) for k in k_values)}"
+                f"计划：{len(tasks)} 任务 × {len(k_values)} 个 k × "
+                f"{len(combos)} 个组合 × {args.repeat} 次重复 = {cases} 条案例；"
+                f"k={','.join(str(k) for k in k_values)}；组合：{combo_text}"
             )
             print("dry-run：任务文件校验通过，未调用模型、未创建 run 目录。")
             return 0
@@ -1353,6 +1477,7 @@ def _run_eval_compaction(
                 tasks,
                 k_values=k_values,
                 repetitions=args.repeat,
+                combos=combos,
                 run_id=runtime.run_id,
                 runs_root=out_dir,
                 repo_root=repo_root,
@@ -1646,11 +1771,17 @@ def main(argv: list[str] | None = None) -> int:
             return _run_eval_attribute(args)
         if eval_command == "regression":
             return _run_eval_regression(args)
+        if eval_command == "cost":
+            return _run_eval_cost(
+                args,
+                argv=list(argv) if argv is not None else sys.argv[1:],
+            )
         parser.error(
-            "用法：codelotte eval {compaction,run,compare,controls,judge,attribute,regression} …；"
+            "用法：codelotte eval {compaction,run,compare,controls,judge,attribute,regression,cost} …；"
             "compaction 跑压缩回归，run 跑通用测评，compare 跑对照组，"
             "controls 跑控制 agent 自检，judge 校准 LLM judge，"
-            "attribute 量归因准确率，regression 把失败转成回归任务"
+            "attribute 量归因准确率，regression 把失败转成回归任务，"
+            "cost 重算缓存/off-peak 成本曲线"
         )
     if args.command == "export":
         return _run_export(args)

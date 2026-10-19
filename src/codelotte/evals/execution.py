@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from codelotte import __version__
-from codelotte.compaction import CompactionLimits, CompactionPolicy
+from codelotte.compaction import CompactionLimits, CompactionPolicy, SummaryTemplate
 from codelotte.cost import Catalog
 from codelotte.evals.harness_types import Harness, HarnessExecution
 from codelotte.evals.judge import (
@@ -118,6 +118,7 @@ class CodelotteHarness:
     isolation: str = "unknown"
     name: str = "codelotte"
     kind: str = "agent"
+    summary_template: SummaryTemplate = "seven"
 
     async def run(
         self,
@@ -159,6 +160,7 @@ class CodelotteHarness:
                 compaction_limits=self.compaction_limits,
                 guardrail_limits=self.guardrail_limits,
                 compaction_policy=self.compaction_policy,
+                summary_template=self.summary_template,
             )
             async for event in loop.run(task.instruction):
                 if isinstance(event, CostRecorded):
@@ -434,6 +436,7 @@ async def execute_task(
     guardrail_limits: GuardrailLimits | None = None,
     on_compaction: CompactionObserver | None = None,
     judge_context: JudgeContext | None = None,
+    summary_template: SummaryTemplate = "seven",
 ) -> TaskExecution:
     """跑一条 codelotte 任务的一次案例（压缩回归与通用测评的兼容入口）。
 
@@ -451,6 +454,7 @@ async def execute_task(
         compaction_limits=compaction_limits,
         guardrail_limits=guardrail_limits,
         on_compaction=on_compaction,
+        summary_template=summary_template,
     )
     return await execute_harness(
         task,

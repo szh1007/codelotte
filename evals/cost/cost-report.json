@@ -1,0 +1,264 @@
+{
+  "generated_at": "2026-10-19T01:52:59.202085+00:00",
+  "currency": "CNY",
+  "runs": [
+    {
+      "run_id": "20261018T154112Z-fa9db83",
+      "path": "evals\\runs\\20261018T154112Z-fa9db83",
+      "cases": 27,
+      "calls": 188,
+      "input_tokens": 378385,
+      "output_tokens": 39367,
+      "cache_hit_tokens": 336756,
+      "cache_miss_tokens": 41629,
+      "actual_cost": 0.2058321200000001,
+      "no_cache_cost": 0.535853,
+      "peak_cost": 0.4116642400000002,
+      "no_cache_peak_cost": 1.071706,
+      "missing_cases": 0,
+      "unknown_cost_calls": 0,
+      "periods": [
+        [
+          "offpeak",
+          188
+        ]
+      ],
+      "by_index": [
+        {
+          "index": 1,
+          "calls": 27,
+          "hit_tokens": 20596,
+          "miss_tokens": 4643,
+          "actual_cost": 0.01229892
+        },
+        {
+          "index": 2,
+          "calls": 27,
+          "hit_tokens": 26368,
+          "miss_tokens": 6918,
+          "actual_cost": 0.025429359999999998
+        },
+        {
+          "index": 3,
+          "calls": 27,
+          "hit_tokens": 34304,
+          "miss_tokens": 6711,
+          "actual_cost": 0.04048508
+        },
+        {
+          "index": 4,
+          "calls": 27,
+          "hit_tokens": 45312,
+          "miss_tokens": 5606,
+          "actual_cost": 0.02571624
+        },
+        {
+          "index": 5,
+          "calls": 27,
+          "hit_tokens": 51712,
+          "miss_tokens": 5877,
+          "actual_cost": 0.02835524
+        },
+        {
+          "index": 6,
+          "calls": 24,
+          "hit_tokens": 48384,
+          "miss_tokens": 5224,
+          "actual_cost": 0.026979679999999995
+        },
+        {
+          "index": 7,
+          "calls": 11,
+          "hit_tokens": 29312,
+          "miss_tokens": 2552,
+          "actual_cost": 0.012442239999999999
+        },
+        {
+          "index": 8,
+          "calls": 8,
+          "hit_tokens": 24064,
+          "miss_tokens": 1483,
+          "actual_cost": 0.01238828
+        },
+        {
+          "index": 9,
+          "calls": 3,
+          "hit_tokens": 14080,
+          "miss_tokens": 527,
+          "actual_cost": 0.0029365999999999997
+        },
+        {
+          "index": 10,
+          "calls": 2,
+          "hit_tokens": 10496,
+          "miss_tokens": 758,
+          "actual_cost": 0.00506792
+        },
+        {
+          "index": 11,
+          "calls": 1,
+          "hit_tokens": 4864,
+          "miss_tokens": 211,
+          "actual_cost": 0.0024242799999999996
+        },
+        {
+          "index": 12,
+          "calls": 1,
+          "hit_tokens": 5504,
+          "miss_tokens": 217,
+          "actual_cost": 0.0033870799999999998
+        },
+        {
+          "index": 13,
+          "calls": 1,
+          "hit_tokens": 6400,
+          "miss_tokens": 408,
+          "actual_cost": 0.00382
+        },
+        {
+          "index": 14,
+          "calls": 1,
+          "hit_tokens": 7552,
+          "miss_tokens": 206,
+          "actual_cost": 0.00104504
+        },
+        {
+          "index": 15,
+          "calls": 1,
+          "hit_tokens": 7808,
+          "miss_tokens": 288,
+          "actual_cost": 0.00305616
+        }
+      ]
+    },
+    {
+      "run_id": "codelotte",
+      "path": "evals\\runs\\20261018T155840Z-fa9db83-compare\\harnesses\\codelotte",
+      "cases": 18,
+      "calls": 125,
+      "input_tokens": 246443,
+      "output_tokens": 24412,
+      "cache_hit_tokens": 220279,
+      "cache_miss_tokens": 26164,
+      "actual_cost": 0.12821757999999997,
+      "no_cache_cost": 0.3440910000000001,
+      "peak_cost": 0.25643515999999994,
+      "no_cache_peak_cost": 0.6881820000000002,
+      "missing_cases": 0,
+      "unknown_cost_calls": 0,
+      "periods": [
+        [
+          "offpeak",
+          125
+        ]
+      ],
+      "by_index": [
+        {
+          "index": 1,
+          "calls": 18,
+          "hit_tokens": 13816,
+          "miss_tokens": 3010,
+          "actual_cost": 0.008870320000000001
+        },
+        {
+          "index": 2,
+          "calls": 18,
+          "hit_tokens": 18560,
+          "miss_tokens": 4003,
+          "actual_cost": 0.023510200000000002
+        },
+        {
+          "index": 3,
+          "calls": 18,
+          "hit_tokens": 25471,
+          "miss_tokens": 3739,
+          "actual_cost": 0.020884419999999997
+        },
+        {
+          "index": 4,
+          "calls": 18,
+          "hit_tokens": 30336,
+          "miss_tokens": 3853,
+          "actual_cost": 0.01608772
+        },
+        {
+          "index": 5,
+          "calls": 16,
+          "hit_tokens": 30208,
+          "miss_tokens": 3324,
+          "actual_cost": 0.01569216
+        },
+        {
+          "index": 6,
+          "calls": 15,
+          "hit_tokens": 30976,
+          "miss_tokens": 3678,
+          "actual_cost": 0.01529352
+        },
+        {
+          "index": 7,
+          "calls": 8,
+          "hit_tokens": 21248,
+          "miss_tokens": 1795,
+          "actual_cost": 0.00886796
+        },
+        {
+          "index": 8,
+          "calls": 7,
+          "hit_tokens": 21760,
+          "miss_tokens": 1426,
+          "actual_cost": 0.0077691999999999995
+        },
+        {
+          "index": 9,
+          "calls": 3,
+          "hit_tokens": 12288,
+          "miss_tokens": 562,
+          "actual_cost": 0.00468776
+        },
+        {
+          "index": 10,
+          "calls": 1,
+          "hit_tokens": 3072,
+          "miss_tokens": 178,
+          "actual_cost": 0.0026914400000000002
+        },
+        {
+          "index": 11,
+          "calls": 1,
+          "hit_tokens": 3840,
+          "miss_tokens": 301,
+          "actual_cost": 0.0012217999999999999
+        },
+        {
+          "index": 12,
+          "calls": 1,
+          "hit_tokens": 4224,
+          "miss_tokens": 152,
+          "actual_cost": 0.0009324800000000001
+        },
+        {
+          "index": 13,
+          "calls": 1,
+          "hit_tokens": 4480,
+          "miss_tokens": 143,
+          "actual_cost": 0.0017086
+        }
+      ]
+    }
+  ],
+  "savings": [
+    {
+      "run_id": "20261018T154112Z-fa9db83",
+      "cache_saving": 0.33002087999999996,
+      "offpeak_saving": 0.2058321200000001,
+      "total_saving": 0.86587388
+    },
+    {
+      "run_id": "codelotte",
+      "cache_saving": 0.21587342000000012,
+      "offpeak_saving": 0.12821757999999997,
+      "total_saving": 0.5599644200000002
+    }
+  ]
+}

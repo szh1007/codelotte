@@ -52,6 +52,8 @@ class RunMeta:
     tasks: tuple[TaskMeta, ...]
     command: str
     currency: str = "CNY"
+    # E1：本轮压测的策略/模板组合（老报表缺省为空，按默认 minimal/seven 理解）
+    combos: tuple[tuple[str, str], ...] = ()
 
 
 def task_fingerprint(task: Task) -> str:

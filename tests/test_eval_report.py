@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from codelotte.evals.checkpoints import CheckpointScore
@@ -154,3 +155,45 @@ def test_write_report_produces_the_four_artifacts(tmp_path: Path) -> None:
     # 会话/导出/报表统一 LF（csv 模块默认 CRLF，Windows write_text 也会转 CRLF——都显式关掉）
     for name in ("report.json", "annotations.csv", "report.md", "checkpoints.jsonl"):
         assert b"\r\n" not in (run_dir / name).read_bytes(), name
+
+
+def test_summarize_groups_strategy_and_template_combos() -> None:
+    cases = [
+        _case("a", 1, completed=True),
+        replace(
+            _case("a", 1, completed=False),
+            strategy="wide",
+            template="compact",
+        ),
+    ]
+
+    summaries = summarize(cases)
+
+    assert [(group.strategy, group.template, group.k) for group in summaries] == [
+        ("minimal", "seven", 1),
+        ("wide", "compact", 1),
+    ]
+    assert summaries[0].attempted == summaries[1].attempted == 1
+
+
+def test_report_labels_strategy_template_combinations(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    meta = replace(_meta(), combos=(("minimal", "seven"), ("wide", "compact")))
+    cases = [
+        _case("a", 1, completed=True),
+        replace(
+            _case("a", 1, completed=False),
+            strategy="wide",
+            template="compact",
+        ),
+    ]
+
+    write_report(run_dir, meta, cases)
+
+    markdown = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "minimal / seven" in markdown
+    assert "wide / compact" in markdown
+    rows = list(csv.DictReader((run_dir / "annotations.csv").open(encoding="utf-8")))
+    assert rows and rows[0]["strategy"] == "minimal"
+    assert rows[0]["template"] == "seven"

@@ -335,6 +335,7 @@
 - **验收器阶梯**（确定性优先）：① 命令式验收（跑测试/检查文件内容/比对输出——首选）；② 显式规则检查（如"指定函数不存在了"）；③ LLM judge（仅当无法确定性验收时使用，且必须报告与人工标注的一致性 κ 值）。被否备选：默认 LLM judge（评分者偏差不可控，腾讯 107 天复盘教训：κ=0.10–0.21 的裁判没有意义）。
   - 票据 17 实现：只有任务显式声明 `[verifier.judge]` 才启用；确定性检查先跑，失败不调用 judge；judge 返回每个维度的 0–1 分 + 理由，平均分过 `pass_threshold` 才算通过。κ 由独立命令 `codelotte eval judge` 用 ≥20 条人工标注样本预计算并写成校准文件；运行时只读 κ，低 κ/样本不足/校准缺失在报表标 ⚠。judge 成本计入总成本，judge 任务单独放在 `evals/judge-tasks/`，避免控制组自检依赖模型。
 - **失败归因（票据 18）**：失败案例自动归入五类病位之一——`model`（模型误判，兜底）/ `tool_schema` / `context_loss` / `loop` / `environment`；规则确定性、带证据与置信度，优先级为环境 > 循环 > 工具 schema > 上下文丢失 > 模型。归因只读 codelotte 会话轨迹与案例级错误，不调用模型；失败分布进 `report.md`。规则与优先级见 `evals/attribution.md`；准确率用 `codelotte eval attribute` 对标注语料算混淆矩阵（首版 15 条为作者草稿）。失败案例可用 `codelotte eval regression` 转成可跑的回归任务（保留原 setup/verifier，只换 id）。
+- **压缩与成本实验（票据 20）**：`eval compaction` 支持摘要模板（`seven`/`compact`）与切点策略（`minimal`/`wide`）的矩阵，报表按组合 × k 分组；`eval cost` 从会话 usage 反事实重算实际 / 无缓存 / 全峰价成本，不重新调用模型。E1/E2 的结论与原始跑数见 `docs/experiments/`。
 - **执行器**：每任务在独立临时目录 + 会话隔离环境中跑 k=3 次；记录随机种子、开始/结束时的模型价目档（峰谷）、完整会话轨迹。跑数落盘为"运行记录"（锁依赖版本 + 锁任务 git ref + 原始轨迹）——任何数字可复现。
 - **对照**：同任务集跑 ① mini-swe-agent（Python 现成、经 litellm 接同一 DeepSeek 模型）；② 裸单轮 API（无工具循环的直答）。用来分别度量"工具循环的价值"与"我们 harness 相对参照物 harness 的增量"（scaffolding tax 意识：成绩有多少是模型的、多少是 harness 的）。
 - **控制 agent 自检评测管线**：用三个假 agent 验证评测系统本身——oracle（总能做对：应 100% 通过）、no-op（什么都不做：应全失败）、cheating（尝试作弊：应被检测/记 0）。评测系统上线前先通过这三关。

@@ -10,9 +10,10 @@ import random
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 from codelotte import __version__
-from codelotte.compaction import CompactionLimits
+from codelotte.compaction import CompactionLimits, SummaryTemplate
 from codelotte.cost import Catalog
 from codelotte.evals.meta import (
     RunMeta,
@@ -23,7 +24,7 @@ from codelotte.evals.meta import (
     prepare_run,
     task_fingerprint,
 )
-from codelotte.evals.regression import CaseResult, run_case
+from codelotte.evals.regression import CaseResult, CompactionStrategy, run_case
 from codelotte.evals.report import write_report
 from codelotte.evals.tasks import Task
 from codelotte.guardrails import GuardrailLimits
@@ -48,6 +49,7 @@ async def run_suite(
     *,
     k_values: Sequence[int],
     repetitions: int,
+    combos: Sequence[tuple[str, str]] = (("minimal", "seven"),),
     run_id: str,
     runs_root: Path,
     repo_root: Path,
@@ -71,37 +73,53 @@ async def run_suite(
     """
     random.seed(seed)
     started_at = now_iso()
+    if not combos:
+        raise ValueError("压缩回归至少需要一个 strategy:template 组合")
     context = prepare_run(tasks, runs_root=runs_root, repo_root=repo_root, run_id=run_id)
     cases: list[CaseResult] = []
-    total = len(tasks) * len(k_values) * repetitions
+    total = len(combos) * len(tasks) * len(k_values) * repetitions
     done = 0
-    for task in tasks:
-        for k in sorted(k_values):
-            for repetition in range(1, repetitions + 1):
-                done += 1
-                case_name = f"{task.id}-k{k}-r{repetition}"
-                if progress is not None:
-                    progress(f"[{done}/{total}] {case_name} …")
-                result = await run_case(
-                    task,
-                    k=k,
-                    repetition=repetition,
-                    workspace=context.workspace_root / case_name,
-                    session_root=context.session_root,
-                    model=model,
-                    catalog=catalog,
-                    client=client_factory(),
-                    probe_client=probe_client_factory(),
-                    executor_factory=executor_factory,
-                    context_window=context_window,
-                    compaction_limits=compaction_limits,
-                    guardrail_limits=guardrail_limits,
-                    repo_root=context.repo_root,
-                    snapshot_ref=context.snapshot_refs.get(task.id),
-                )
-                cases.append(result)
-                if progress is not None:
-                    progress(_progress_line(result))
+    multi = len(combos) > 1
+    for strategy, template in combos:
+        if strategy not in ("minimal", "wide"):
+            raise ValueError(f"未知压缩策略：{strategy!r}")
+        if template not in ("seven", "compact"):
+            raise ValueError(f"未知摘要模板：{template!r}")
+        strategy_value = cast(CompactionStrategy, strategy)
+        template_value = cast(SummaryTemplate, template)
+        for task in tasks:
+            for k in sorted(k_values):
+                for repetition in range(1, repetitions + 1):
+                    done += 1
+                    suffix = f"-{strategy}-{template}" if multi else ""
+                    case_name = f"{task.id}-k{k}-r{repetition}{suffix}"
+                    if progress is not None:
+                        progress(
+                            f"[{done}/{total}] {task.id} k={k} "
+                            f"{strategy}/{template} r{repetition} …"
+                        )
+                    result = await run_case(
+                        task,
+                        k=k,
+                        repetition=repetition,
+                        workspace=context.workspace_root / case_name,
+                        session_root=context.session_root,
+                        model=model,
+                        catalog=catalog,
+                        client=client_factory(),
+                        probe_client=probe_client_factory(),
+                        executor_factory=executor_factory,
+                        context_window=context_window,
+                        compaction_limits=compaction_limits,
+                        guardrail_limits=guardrail_limits,
+                        repo_root=context.repo_root,
+                        snapshot_ref=context.snapshot_refs.get(task.id),
+                        strategy=strategy_value,
+                        template=template_value,
+                    )
+                    cases.append(result)
+                    if progress is not None:
+                        progress(_progress_line(result))
     meta = RunMeta(
         run_id=context.run_dir.name,
         started_at=started_at,
@@ -123,6 +141,7 @@ async def run_suite(
         tasks=context.task_metas,
         command=command,
         currency=catalog.currency,
+        combos=tuple(combos),
     )
     write_report(context.run_dir, meta, cases)
     return meta, cases

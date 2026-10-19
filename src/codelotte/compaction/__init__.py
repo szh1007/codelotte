@@ -2,10 +2,13 @@
 
 from codelotte.compaction.summarize import (
     COMPACTION_CONSTRAINTS,
+    COMPACT_SUMMARY_SECTIONS,
     SUMMARY_INSTRUCTION,
     SUMMARY_SECTIONS,
+    SummaryTemplate,
     build_compaction_messages,
     build_summary_messages,
+    summary_instruction,
 )
 from codelotte.compaction.trigger import (
     HARD_THRESHOLD,
@@ -25,10 +28,12 @@ from codelotte.compaction.trigger import (
 
 __all__ = [
     "COMPACTION_CONSTRAINTS",
+    "COMPACT_SUMMARY_SECTIONS",
     "HARD_THRESHOLD",
     "SOFT_THRESHOLD",
     "SUMMARY_INSTRUCTION",
     "SUMMARY_SECTIONS",
+    "SummaryTemplate",
     "CompactionDecision",
     "CompactionLimits",
     "CompactionMode",
@@ -41,5 +46,6 @@ __all__ = [
     "is_git_commit_command",
     "minimum_keep_index",
     "plan_compaction",
+    "summary_instruction",
     "task_boundaries",
 ]

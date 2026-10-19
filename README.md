@@ -69,11 +69,52 @@ All tasks are complete: bug fixed, check passes, notes.txt written.
 
 **这证明了什么、不证明什么。** 完成率与保留率都到了天花板：v0 任务太短、太简单。这版基线证明的是
 管线能跑、评分是确定性的、数据可复现——**不是**「压缩无损」。下一轮需要更长任务、`repeat >= 3`、
-`k` 扩到 10，并做触发策略 × 摘要模板的 A/B（票据 20）。
+`k` 扩到 10；触发策略 × 摘要模板的 A/B 已由票据 20 完成（见下方 E1）。
 
 - 报表：[evals/runs/20261017T173510Z-037104e/report.md](evals/runs/20261017T173510Z-037104e/report.md)
 - 压缩 5 次的样例轨迹：[HTML](docs/examples/session-001-audit-report-k5.html) · [Markdown](docs/examples/session-001-audit-report-k5.md)
 - 指标口径与局限：[evals/compaction.md](evals/compaction.md)
+
+### E1 压缩曲线：策略 × 模板（2026-10-19）
+
+6 条短任务 × k=0/1/3/5 × 3 个组合（72 条案例）。完成率和有效保留率都是 **100%**
+（短任务有天花板），差异在成本与“能否压满 k”：
+
+| 组合 | k=5 成本 | k=5 有效案例 | 全曲线总成本 |
+|---|---:|---:|---:|
+| minimal / seven（基线） | ¥0.259310 | 5/6 | ¥0.563483 |
+| minimal / compact（三节摘要） | **¥0.200221（−22.8%）** | 5/6 | **¥0.417744（−25.9%）** |
+| wide / seven（保留两个 turn） | ¥0.300171（+15.8%） | **6/6** | ¥0.578220（+2.6%） |
+
+- **长任务补充**（007–009，36 条案例）：完成率仍 100%，但保留率降到 **83%–97%**；
+  三节模板在长任务上 **保留率 93.3% vs 87.8%**，总成本还低 **23.1%**。wide 在长任务
+  上没有收益（86.7%，+2.2%）。
+- **结论**：三节模板在短任务上省钱、在长任务上既省钱又更稳；保留两个 turn 只买到
+  短任务高 k 的可达性，没有质量收益。
+- **噪声**：只有 1 次重复；k=0 控制组就有约 18% 的成本波动，百分比应读作方向 + 量级。
+  wide 的 +15.8% 包含“多做了压缩”，按有效案例算约便宜 3.5%。
+- 报告：[docs/experiments/e1-compaction-curve.md](docs/experiments/e1-compaction-curve.md)
+- 跑数：[短任务矩阵](evals/runs/20261018T165516Z-8a01d9f/report.md) ·
+  [长任务补充](evals/runs/20261019T013233Z-8a01d9f/report.md)
+
+### E2 成本曲线：缓存与 off-peak（2026-10-19）
+
+同一份 usage 的实测与反事实重算（不重跑模型）：
+
+| 指标 | 正式 run（27 案例） | E4 codelotte（18 案例） |
+|---|---:|---:|
+| 缓存命中率 | **89.0%** | **89.4%** |
+| 实际成本 | **¥0.205832** | **¥0.128218** |
+| 无缓存反事实 | ¥0.535853 | ¥0.344091 |
+| 全峰价反事实 | ¥0.411664 | ¥0.256435 |
+| 无缓存 + 全峰价 | ¥1.071706 | ¥0.688182 |
+| 总节省 | **80.8%** | **81.4%** |
+
+缓存命中率随调用序号从 81.6% 升到 90%+（与确定性前缀的预期一致，但不是关缓存的
+对照实验）；所有实际调用都在低谷，全峰价正好是 2 倍。反事实不是重跑，口径见报告。
+
+- 成本曲线：[evals/cost/cost-report.md](evals/cost/cost-report.md)
+- 解读：[docs/experiments/e2-cost-curve.md](docs/experiments/e2-cost-curve.md)
 
 ### E4 scaffolding tax：codelotte vs mini-swe-agent vs 裸单轮 API（2026-10-18）
 
@@ -256,12 +297,15 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [PLAN.md](PLAN.md) | 里程碑、实验计划、作品定位 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0005 与索引 |
 | [docs/tickets/](docs/tickets/README.md) | 23 张曳光弹票据与状态 |
-| [evals/README.md](evals/README.md) | 评估体系总览：目录地图、七个命令、跑数产物、基线快照 |
+| [evals/README.md](evals/README.md) | 评估体系总览：目录地图、八个命令、跑数产物、基线快照 |
 | [evals/run.md](evals/run.md) | 通用测评、对照组、控制 agent 自检、LLM judge/κ、失败归因、任务格式、pass^k、CI 冒烟 |
 | [evals/attribution.md](evals/attribution.md) | 失败归因规则、标注语料与准确率、失败 → 回归任务 |
 | [evals/compaction.md](evals/compaction.md) | 专用测评 - 压缩回归 v0：机制、评分、基线、人工标注 |
 | [evals/record.md](evals/record.md) | 评测跑数记录：索引、目录约定、已入库基线 |
+| [docs/experiments/e1-compaction-curve.md](docs/experiments/e1-compaction-curve.md) | E1 实验报告：压缩策略/模板 × k 的完成率、保留率与成本曲线 |
+| [docs/experiments/e2-cost-curve.md](docs/experiments/e2-cost-curve.md) | E2 实验报告：缓存命中与 off-peak 的实际/反事实成本 |
 | [docs/experiments/e4-scaffolding-tax.md](docs/experiments/e4-scaffolding-tax.md) | E4 实验报告：任务集、基线、指标、轨迹样本、复现命令 |
+| [docs/experiments/retrospective.md](docs/experiments/retrospective.md) | 复盘文：怎么量化压缩质量与成本（结论段双语） |
 | [docs/tech/configuration.md](docs/tech/configuration.md) | 配置取值链与每个设置项 |
 | [docs/demo/](docs/demo/README.md) | 3 分钟演示脚本与拍摄清单 |
 | [docs/dogfood/log.md](docs/dogfood/log.md) | 每日真实使用日志（暂时忽略，作者后续补充） |
@@ -284,10 +328,13 @@ oracle/no-op/cheating 均已真实跑通。票据 17 交付 LLM judge 兜底与 
 规格重构、长规则结算、边界条件 4 条），新增 2 条主观 judge 任务（并发 review / API 设计，
 各 20 条 `author-draft` 样本 κ=1.000）；三组对照 `repeat 2` 结果为 codelotte 18/18、
 mini-swe-agent 18/18、裸 API 0/18；成功率打平，codelotte 成本高 15.4%、耗时低 33.5%，
-是 token 成本换墙钟时间的取舍。票据 20–22 覆盖
-E1/E2/E3/E5 实验与最终材料包；23 是 stretch 的 MCP stdio 客户端。
+是 token 成本换墙钟时间的取舍。票据 20 完成 E1/E2：短任务 72 + 长任务 36 条压缩矩阵
+（三节模板短任务 k=5 成本 −22.8%；长任务保留 93.3% vs 87.8% 且成本 −23.1%；
+wide 只买到短任务高 k 可达性）+ 成本曲线（缓存命中 89.0%，相对无缓存+全峰价
+总节省 80.8%）+ 复盘文（结论段双语）。票据 21–22 覆盖 E3/E5 实验
+与最终材料包；23 是 stretch 的 MCP stdio 客户端。
 
-当前工作树的工程检查：`571 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
+当前工作树的工程检查：`582 passed, 8 deselected`（Docker 集成测试用 `pytest -m docker` 单独跑）、
 Ruff / Pyright 干净、CI 在 Ubuntu 与 Windows 两个平台运行。
 
 MIT 许可。作为 Agent 工程岗求职作品持续开发；欢迎提 issue 与问题。

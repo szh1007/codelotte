@@ -1,0 +1,6 @@
+region,count,total
+east,4,12.29
+north,4,18.35
+south,3,14.51
+west,3,20.99
+TOTAL,14,66.14

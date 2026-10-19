@@ -185,6 +185,18 @@ def test_context_tokens_prefers_the_last_usage_or_compaction_estimate() -> None:
     assert context_tokens_from_entries(entries[:2]) == 250_000
 
 
+def test_build_summary_messages_can_use_the_compact_template() -> None:
+    prefix = [{"role": "user", "content": "做任务"}]
+
+    request = build_summary_messages(prefix, template="compact")
+
+    instruction = request[-1]["content"]
+    assert "1. 任务目标" in instruction
+    assert "2. 已完成事项" in instruction
+    assert "3. 活跃约束" in instruction
+    assert "关键决策及其理由" not in instruction
+
+
 def test_summary_request_keeps_the_prefix_and_asks_for_seven_sections() -> None:
     prefix = [{"role": "user", "content": "旧任务"}]
     request = build_summary_messages(prefix)

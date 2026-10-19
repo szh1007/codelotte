@@ -47,9 +47,11 @@ commit 切点取"声明这次调用的 assistant"（最近的协议安全切点�
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from codelotte.guardrails import HARD_CONSTRAINTS
+
+SummaryTemplate = Literal["seven", "compact"]
 
 SUMMARY_SECTIONS = (
     "任务目标",
@@ -61,15 +63,42 @@ SUMMARY_SECTIONS = (
     "下一步",
 )
 
-SUMMARY_INSTRUCTION = (
-    "请把上面的对话压缩成一份结构化摘要，严格使用以下七个标题"
-    "（不要增删、不要改写标题）：\n"
-    + "\n".join(
-        f"{index}. {section}" for index, section in enumerate(SUMMARY_SECTIONS, 1)
-    )
-    + "\n\n要求：只输出摘要正文；不要调用工具；保留具体的文件路径、命令、错误信息与未完成事项；"
+COMPACT_SUMMARY_SECTIONS = (
+    "任务目标",
+    "已完成事项",
+    "活跃约束",
+)
+
+_SUMMARY_REQUIREMENTS = (
+    "要求：只输出摘要正文；不要调用工具；保留具体的文件路径、命令、错误信息与未完成事项；"
     "不要编造对话里没有的事实；活跃约束要逐条保留。"
 )
+
+
+def _instruction(title: str, sections: tuple[str, ...]) -> str:
+    numbered = "\n".join(
+        f"{index}. {section}" for index, section in enumerate(sections, 1)
+    )
+    count = {3: "三个", 7: "七个"}.get(len(sections), f"{len(sections)} 个")
+    return (
+        f"请把上面的对话压缩成一份{title}，"
+        f"严格使用以下{count}标题（不要增删、不要改写标题）：\n"
+        + numbered
+        + "\n\n"
+        + _SUMMARY_REQUIREMENTS
+    )
+
+
+SUMMARY_INSTRUCTION = _instruction("结构化摘要", SUMMARY_SECTIONS)
+COMPACT_SUMMARY_INSTRUCTION = _instruction("简短摘要", COMPACT_SUMMARY_SECTIONS)
+
+
+def summary_instruction(template: SummaryTemplate = "seven") -> str:
+    """摘要请求的指令文本；compact 模板只保留目标/已完成/约束三节。"""
+    if template == "compact":
+        return COMPACT_SUMMARY_INSTRUCTION
+    return SUMMARY_INSTRUCTION
+
 
 # 与摘要分开存放、分开重注入（摘要是模型生成的，这段不是）
 COMPACTION_CONSTRAINTS = (
@@ -78,15 +107,18 @@ COMPACTION_CONSTRAINTS = (
 )
 
 
-def build_summary_messages(prefix_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_summary_messages(
+    prefix_messages: list[dict[str, Any]], *, template: SummaryTemplate = "seven"
+) -> list[dict[str, Any]]:
     """摘要请求：被压缩的历史 + 最后一条摘要指令。
 
     不额外加 system 开头：历史本身可能已经以 system 摘要开头（多次压缩），
     再叠一个 system 会被部分 OpenAI 兼容后端拒绝。最后追加 user 指令最稳。
+    `template` 是 E1 的实验变量（seven / compact）。
     """
     return [
         *prefix_messages,
-        {"role": "user", "content": SUMMARY_INSTRUCTION},
+        {"role": "user", "content": summary_instruction(template)},
     ]
 
 

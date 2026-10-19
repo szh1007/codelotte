@@ -30,6 +30,7 @@ from codelotte.compaction import (
     CompactionLimits,
     CompactionMode,
     CompactionPolicy,
+    SummaryTemplate,
     build_compaction_messages,
     build_summary_messages,
     context_tokens_from_entries,
@@ -264,6 +265,7 @@ class AgentLoop:
         compaction_limits: CompactionLimits | None = None,
         context_window: int | None = None,
         compaction_policy: CompactionPolicy | None = None,
+        summary_template: SummaryTemplate = "seven",
     ) -> None:
         self._client = client
         self._tools = tools
@@ -288,6 +290,8 @@ class AgentLoop:
             if compaction_policy is not None
             else default_compaction_policy
         )
+        # 摘要模板是 E1 的实验变量；生产默认七项
+        self._summary_template: SummaryTemplate = summary_template
         # 压缩（票据 12）：分母是用户级生效窗口（与 TUI 状态栏同源，cli 传入）；
         # 分子优先用恢复会话里的最后一次 usage/压缩估算，否则从 0 开始。
         self._context_window = context_window
@@ -462,7 +466,9 @@ class AgentLoop:
         async for event in self._consume_stream(
             summary_turn,
             use_tools=False,
-            messages=build_summary_messages(prefix_messages),
+            messages=build_summary_messages(
+                prefix_messages, template=self._summary_template
+            ),
             record_message=False,
         ):
             if isinstance(event, CostRecorded):
@@ -490,6 +496,7 @@ class AgentLoop:
             beforeTokens=before_tokens,
             estimatedAfterTokens=after_tokens,
             summaryModel=self._model,
+            summaryTemplate=self._summary_template,
             warning=warning,
         )
         self.messages = messages_from_entries(

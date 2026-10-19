@@ -39,6 +39,7 @@ __all__ = [
     "format_money",
     "load_catalog",
     "price_call",
+    "price_tokens",
 ]
 
 PEAK = "peak"
@@ -139,6 +140,24 @@ def _call_cost(
         )
         / _MILLION
         * rate
+    )
+
+
+def price_tokens(
+    catalog: Catalog,
+    model: str,
+    *,
+    period: str,
+    cache_hit_tokens: int,
+    cache_miss_tokens: int,
+    output_tokens: int,
+) -> float | None:
+    """按给定的时段直接计价（成本曲线/反事实分析用；目录里没有模型返回 None）。"""
+    info = catalog.models.get(model)
+    if info is None:
+        return None
+    return _call_cost(
+        catalog, info, period, cache_hit_tokens, cache_miss_tokens, output_tokens
     )
 
 

@@ -29,8 +29,10 @@ from codelotte.evals.report_utils import (
 
 @dataclass(frozen=True)
 class GroupSummary:
-    """一个 k 的聚合行。"""
+    """一个 (strategy, template, k) 的聚合行。"""
 
+    strategy: str
+    template: str
     k: int
     attempted: int
     completed: int
@@ -50,30 +52,40 @@ class GroupSummary:
 
 
 def summarize(cases: Sequence[CaseResult]) -> list[GroupSummary]:
-    """按 k 聚合；k 升序，缺的 k 不补行（报表只呈现真实跑过的点）。"""
-    grouped: dict[int, list[CaseResult]] = defaultdict(list)
+    """按 (strategy, template, k) 聚合；combo 按首次出现、k 升序，缺的 k 不补行。"""
+    order: list[tuple[str, str]] = []
+    grouped: dict[tuple[str, str, int], list[CaseResult]] = defaultdict(list)
     for case in cases:
-        grouped[case.k].append(case)
+        combo = (case.strategy, case.template)
+        if combo not in order:
+            order.append(combo)
+        grouped[(case.strategy, case.template, case.k)].append(case)
     summaries: list[GroupSummary] = []
-    for k in sorted(grouped):
-        group = grouped[k]
-        valid = [case for case in group if case.valid]
-        summaries.append(
-            GroupSummary(
-                k=k,
-                attempted=len(group),
-                completed=sum(1 for case in group if case.completed),
-                valid=len(valid),
-                valid_completed=sum(1 for case in valid if case.completed),
-                retention_passed=sum(case.retention_passed for case in group),
-                retention_total=sum(case.retention_total for case in group),
-                valid_retention_passed=sum(case.retention_passed for case in valid),
-                valid_retention_total=sum(case.retention_total for case in valid),
-                total_compactions=sum(case.compactions for case in group),
-                model_calls=sum(case.model_calls for case in group),
-                cost=sum(case.cost + case.probe_cost for case in group),
+    for strategy, template in order:
+        ks = sorted(k for s, t, k in grouped if (s, t) == (strategy, template))
+        for k in ks:
+            group = grouped[(strategy, template, k)]
+            valid = [case for case in group if case.valid]
+            summaries.append(
+                GroupSummary(
+                    strategy=strategy,
+                    template=template,
+                    k=k,
+                    attempted=len(group),
+                    completed=sum(1 for case in group if case.completed),
+                    valid=len(valid),
+                    valid_completed=sum(1 for case in valid if case.completed),
+                    retention_passed=sum(case.retention_passed for case in group),
+                    retention_total=sum(case.retention_total for case in group),
+                    valid_retention_passed=sum(
+                        case.retention_passed for case in valid
+                    ),
+                    valid_retention_total=sum(case.retention_total for case in valid),
+                    total_compactions=sum(case.compactions for case in group),
+                    model_calls=sum(case.model_calls for case in group),
+                    cost=sum(case.cost + case.probe_cost for case in group),
+                )
             )
-        )
     return summaries
 
 
@@ -83,14 +95,15 @@ def _k_label(k: int) -> str:
 
 def _summary_table(summaries: Sequence[GroupSummary], currency: str) -> list[str]:
     lines = [
-        "| k | 尝试 | 完成率 | 有效案例 | 有效完成率 | 状态保留率（全部） | "
-        "状态保留率（有效） | 平均压缩次数 | 模型调用 | 成本 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| 策略 / 模板 | k | 尝试 | 完成率 | 有效案例 | 有效完成率 | "
+        "状态保留率（全部） | 状态保留率（有效） | 平均压缩次数 | 模型调用 | 成本 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for group in summaries:
         mean = group.total_compactions / group.attempted if group.attempted else 0.0
         lines.append(
-            f"| {_k_label(group.k)} | {group.attempted} | "
+            f"| {group.strategy} / {group.template} | {_k_label(group.k)} | "
+            f"{group.attempted} | "
             f"{_rate(group.completed, group.attempted)} | "
             f"{_rate(group.valid, group.attempted)} | "
             f"{_rate(group.valid_completed, group.valid)} | "
@@ -105,6 +118,7 @@ def _summary_table(summaries: Sequence[GroupSummary], currency: str) -> list[str
 def _meta_table(meta: RunMeta) -> list[str]:
     dirty = dirty_text(meta.git_dirty, meta.git_diff_sha)
     k_values = ", ".join(str(k) for k in meta.k_values)
+    combos = ", ".join(f"{s}/{t}" for s, t in meta.combos) or "minimal/seven（旧报表）"
     lines = [
         "| 项 | 值 |",
         "|---|---|",
@@ -115,6 +129,7 @@ def _meta_table(meta: RunMeta) -> list[str]:
         f"| 模型 / 思考档位 | `{meta.model}` / `{meta.reasoning_effort}` |",
         f"| 上下文窗口 | {meta.context_window} |",
         f"| 压缩阈值 soft / hard | {meta.soft:.2f} / {meta.hard:.2f} |",
+        f"| 策略 / 模板组合 | {combos} |",
         f"| k 集合 / 重复次数 | {k_values} / {meta.repetitions} |",
         f"| 随机种子 | {meta.seed} |",
         f"| Python / codelotte | {meta.python} / {meta.codelotte_version} |",
@@ -131,8 +146,9 @@ def _meta_table(meta: RunMeta) -> list[str]:
 
 def _case_table(cases: Sequence[CaseResult], run_dir: Path) -> list[str]:
     lines = [
-        "| 任务 | k | 有效 | 压缩次数 | 完成 | 状态保留 | 验收 / 错误 | 会话 |",
-        "|---|---|---|---|---|---|---|---|",
+        "| 任务 | 策略 / 模板 | k | 有效 | 压缩次数 | 完成 | 状态保留 | "
+        "验收 / 错误 | 会话 |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for case in cases:
         valid = "✅" if case.valid else "❌"
@@ -145,8 +161,8 @@ def _case_table(cases: Sequence[CaseResult], run_dir: Path) -> list[str]:
         detail = _short(case.verifier_detail)
         session = _relative(case.session_path, run_dir) if case.session_path else "—"
         lines.append(
-            f"| {case.task_id} | {case.k} | {valid} | "
-            f"{case.compactions}/{case.k} | {completed} | {retention} | "
+            f"| {case.task_id} | {case.strategy} / {case.template} | {case.k} | "
+            f"{valid} | {case.compactions}/{case.k} | {completed} | {retention} | "
             f"{detail} | `{session}` |"
         )
     return lines
@@ -191,11 +207,13 @@ def _checkpoint_details(cases: Sequence[CaseResult]) -> list[str]:
 
 def render_markdown(meta: RunMeta, cases: Sequence[CaseResult], run_dir: Path) -> str:
     summaries = summarize(cases)
+    combo_count = len(meta.combos) or 1
     lines = [
-        "# 压缩回归报表 v0",
+        "# 压缩回归报表",
         "",
         f"> 一轮跑数：{len(cases)} 条案例（{len(meta.tasks)} 条任务 × "
-        f"{len(meta.k_values)} 个 k × {meta.repetitions} 次重复）。"
+        f"{len(meta.k_values)} 个 k × {combo_count} 个策略/模板组合 × "
+        f"{meta.repetitions} 次重复）。"
         "数字与原始轨迹同目录，可用文末命令复现。",
         "",
         "## 结论速览",
@@ -209,6 +227,8 @@ def render_markdown(meta: RunMeta, cases: Sequence[CaseResult], run_dir: Path) -
         "k=0 是对照组（不压缩），天然有效。",
         "- **状态保留率**：压缩后 checkpoint 问题的通过率（事实在整段回答中出现即算记得；"
         "只写错编号段的跨段命中记入 `misplaced`，不扣保留率）；无效案例也计入“全部”一列。",
+        "- **策略**：`minimal` 压到最近一个 turn；`wide` 保留最近两个 turn（E1 的切点 A/B）。",
+        "- **模板**：`seven` 是七项摘要；`compact` 只保留目标/已完成/约束三节（E1 的模板 A/B）。",
         "- 成本包含被测任务与 checkpoint 探针（探针不写回会话，但确实调用模型）。",
         "",
         "## 复现锁定",
@@ -231,7 +251,8 @@ def render_markdown(meta: RunMeta, cases: Sequence[CaseResult], run_dir: Path) -
         "## 方法与口径",
         "",
         "- **强制压缩**：注入 `CompactionPolicy`，在每次请求前若已落盘的 compaction 少于 k，"
-        "就按硬触发压到最小保留集；k 次压缩需要至少 k 个 turn，达不到的案例标为无效。",
+        "就压一次；`minimal` 压到最近一个 turn，`wide` 保留最近两个 turn。"
+        "k 次压缩需要足够的 turn，达不到的案例标为无效。",
         "- **checkpoint**：每次压缩后用压缩后的上下文追加一次无工具提问，"
         "答案只用于评分，不写回会话，不污染被测轨迹。",
         "- **确定性评分**：每个问题预定义若干事实组，每组给可接受的替代表述；"
@@ -273,6 +294,8 @@ def write_report(run_dir: Path, meta: RunMeta, cases: Sequence[CaseResult]) -> P
                 "run_id",
                 "task_id",
                 "bucket",
+                "strategy",
+                "template",
                 "k",
                 "repetition",
                 "compaction",
@@ -293,6 +316,8 @@ def write_report(run_dir: Path, meta: RunMeta, cases: Sequence[CaseResult]) -> P
                             meta.run_id,
                             case.task_id,
                             case.bucket,
+                            case.strategy,
+                            case.template,
                             case.k,
                             case.repetition,
                             observation.compaction,
@@ -312,6 +337,8 @@ def write_report(run_dir: Path, meta: RunMeta, cases: Sequence[CaseResult]) -> P
                             meta.run_id,
                             case.task_id,
                             case.bucket,
+                            case.strategy,
+                            case.template,
                             case.k,
                             case.repetition,
                             observation.compaction,
@@ -334,6 +361,8 @@ def write_report(run_dir: Path, meta: RunMeta, cases: Sequence[CaseResult]) -> P
                     "run_id": meta.run_id,
                     "task_id": case.task_id,
                     "bucket": case.bucket,
+                    "strategy": case.strategy,
+                    "template": case.template,
                     "k": case.k,
                     "repetition": case.repetition,
                     **asdict(observation),

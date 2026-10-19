@@ -640,9 +640,33 @@ def test_eval_compaction_dry_run_validates_tasks_without_calling_models(
     assert result.returncode == 0, result.stderr
     task_count = len(load_tasks(PROJECT_ROOT / "evals" / "tasks"))
     assert (
-        f"计划：{task_count} 任务 × 4 个 k × 1 次重复 = {task_count * 4} 条案例"
+        f"计划：{task_count} 任务 × 4 个 k × 1 个组合 × 1 次重复 = "
+        f"{task_count * 4} 条案例"
         in result.stdout
     )
     assert "001-audit-report" in result.stdout
     assert "dry-run" in result.stdout
     assert not (tmp_path / "evals" / "runs").exists()
+
+
+def test_eval_compaction_dry_run_lists_strategy_template_matrix(
+    tmp_path: Path,
+) -> None:
+    result = run_cli(
+        "eval",
+        "compaction",
+        "--dry-run",
+        "--combo",
+        "minimal:seven",
+        "--combo",
+        "wide:compact",
+        "--tasks",
+        str(PROJECT_ROOT / "evals" / "tasks"),
+        cwd=tmp_path,
+        env=_session_env(tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "2 个组合" in result.stdout
+    assert "minimal/seven" in result.stdout
+    assert "wide/compact" in result.stdout

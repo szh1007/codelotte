@@ -1,8 +1,9 @@
 # 评测跑数记录
 
 > `evals/runs/` 下每一轮评测一个目录；本文是所有评测（通用测评 + 专用测评 +
-> 对照组 + 控制 agent 自检 + LLM judge + 失败归因）的索引与记录约定。
-> 操作手册：[run.md](run.md)（通用测评、对照组、自检、judge、归因）·
+> 对照组 + 控制 agent 自检 + LLM judge + 失败归因 + 成本曲线）的索引与记录约定。
+> 总览：[README.md](README.md)；操作手册：[run.md](run.md)（通用测评、对照、自检、
+> judge、归因、成本）·
 > [compaction.md](compaction.md)（专用测评 - 压缩回归 v0）·
 > [attribution.md](attribution.md)（归因规则与回归任务）。
 
@@ -31,7 +32,7 @@ evals/runs/
 - 归因语料在 `evals/attribution/`（可以重跑覆盖）；由失败生成的回归任务在
   `evals/regressions/`，它们是任务定义，不参与默认 `eval run`。
 
-## 2. 六类评测的产出
+## 2. 八类评测的产出
 
 | 评测 | 命令 | 产出 |
 |---|---|---|
@@ -42,6 +43,7 @@ evals/runs/
 | LLM judge 校准 | `eval judge` | `evals/judges/<task>/calibration.json` / `.md`（不是 run 目录） |
 | 失败归因准确率 | `eval attribute` | `evals/attribution/attribution-report.md` / `.json`（不是 run 目录） |
 | 失败 → 回归任务 | `eval regression` | `evals/regressions/<新 id>.toml`（不是 run 目录） |
+| 成本曲线 | `eval cost` | `evals/cost/cost-report.md` / `.json`（不是 run 目录） |
 
 - **`report.md`**：人读报表。通用测评看 pass^N、成功率、成本/耗时；压缩回归看完成率、
   有效案例、状态保留率；声明了 judge 的任务另有“LLM judge”段（分数/理由/κ/⚠）；
@@ -68,6 +70,14 @@ evals/runs/
 | `20261018T154901Z-fa9db83` | 通用测评（judge） | 3 条 judge 任务 × 1 次：3/3 通过，17 次调用（含 3 次 judge），¥0.041690，58.5s；三条 overall 均 1.00，κ=1.00（各 20 样本，⚠ 草稿） |
 | `20261018T154851Z-fa9db83-controls` | 控制 agent 自检 | 9 任务 × 1 次：oracle 9/9、no-op 0/9、cheating 0/9 且 9/9 标记；零模型调用、零成本 |
 | `20261018T155840Z-fa9db83-compare` | 对照组（E4） | 3 组 × 9 任务 × 2 次：codelotte 18/18（125 调用，¥0.128218，13.9s/案例）、mini-swe-agent 18/18（99 调用，¥0.111146，20.9s/案例）、裸 API 0/18（18 调用，¥0.280970，17.3s/案例）；实验报告 `docs/experiments/e4-scaffolding-tax.md` |
+| `20261018T165516Z-8a01d9f` | 压缩回归（E1 短任务） | 6 任务 × k=0/1/3/5 × 3 组合（minimal/seven、minimal/compact、wide/seven）× 1 次 = 72 条案例；651 任务调用 + 158 探针；主任务 ¥1.185327 + 探针 ¥0.374119 = ¥1.559446；完成率/有效保留率 100%（天花板），compact k=5 −22.8%，wide k=5 +15.8% 但 6/6 有效（按有效案例约 −3.5%；单次重复，k=0 噪声约 18%）；实验报告 `docs/experiments/e1-compaction-curve.md` |
+| `20261019T013233Z-8a01d9f` | 压缩回归（E1 长任务补充） | 007–009 × k=0/1/3/5 × 3 组合 × 1 次 = 36 条案例；311 任务调用，¥2.096687；完成率 100%，保留率 83–97%；compact 93.3% vs 基线 87.8%，总成本 −23.1%；wide 86.7%，+2.2% |
+
+E2 成本曲线记录（不是跑数目录）：
+
+| 日期 | 输入 run | 命中率 | 实际成本 | 无缓存+全峰价 | 总节省 | 报告 |
+|---|---|---|---|---|---|---|
+| 2026-10-19 | `20261018T154112Z-fa9db83` + E4 codelotte | 89.0% / 89.4% | ¥0.205832 / ¥0.128218 | ¥1.071706 / ¥0.688182 | 80.8% / 81.4% | `evals/cost/cost-report.md` |
 
 LLM judge 校准记录（不是跑数目录）：
 
