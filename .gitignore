@@ -39,3 +39,6 @@ credentials.*
 .DS_Store
 Thumbs.db
 *.log
+
+# 其他
+interview.txt
