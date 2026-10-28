@@ -43,7 +43,7 @@ provider / 模型 / API key 配置，也不内置 key；评测适配器会把现
 | 离线自检评测器 | `uv run codelotte eval controls` |
 
 提交前至少跑：`ruff check .`、`pyright`、`pytest -q`。改动涉及 Docker、权限或沙箱时，
-再加跑 `pytest -m docker`。
+再加跑 `pytest -m docker`；涉及 serve 层时加跑 `pytest -m serve`（需要先起 compose）。
 
 ## 代码地图
 
@@ -60,6 +60,7 @@ src/codelotte/
 ├── cost.py            峰谷价 + 缓存命中/未命中的逐次记账
 ├── export.py          HTML / Markdown 单文件导出（纯函数）
 ├── evals/             任务加载、执行、验收、报表、对照、归因、防御
+├── serve/             服务化运行层：配置、中间件客户端工厂、依赖自检（可选依赖组 serve）
 └── tui/               Textual 界面（只呈现事件，不放业务逻辑）
 ```
 
@@ -69,7 +70,8 @@ src/codelotte/
 ## 改动流程
 
 1. **先对齐问题。** 小修可以直接提 PR；行为变化、接口变化或新实验先开 issue 或更新
-   [docs/dev/v2/tickets/](docs/dev/v2/tickets/README.md) 中的票据，说清楚验收标准。
+   [docs/dev/v2/tickets/](docs/dev/v2/tickets/README.md)（当前）或
+   [docs/dev/v3/tickets/](docs/dev/v3/tickets/README.md)（顺延）中的票据，说清楚验收标准。
 2. **测试先行。** 修 bug 先写复现测试；新功能先写行为测试。测试名描述行为
    （`test_returns_401_when_token_expired` 风格），一个测试只验证一件事。
 3. **最小改动。** 不顺手重构无关代码，不引入未使用的依赖或抽象；匹配现有风格。
@@ -82,6 +84,8 @@ src/codelotte/
 - 单元测试不得访问网络、不得使用真实 API key；用脚本化 Provider / 假 harness 驱动。
 - 需要真实模型的验证放在 `evals/`（有明确的任务、预算与报表），不放普通单测。
 - Docker 集成测试用 `@pytest.mark.docker` 标记；默认 `pytest -q` 会跳过。
+- serve 集成测试用 `@pytest.mark.serve` 标记；默认同样跳过。跑之前先 `cd deploy && docker compose up -d`，
+  并 `uv sync --extra serve` 装好可选依赖，再用 `pytest -m serve`。
 - 不依赖测试执行顺序；不 mock 本项目自己的核心逻辑（mock 外部边界）。
 
 ### 评测约定
@@ -116,7 +120,8 @@ src/codelotte/
 
 - 架构决策记录在 [docs/adr/](docs/adr/README.md)：新增/推翻一个关键决策时先写 ADR。
 - 票据是施工单元：开始实现时把状态改为进行中，完成后更新验收项与
-  [docs/dev/v2/tickets/README.md](docs/dev/v2/tickets/README.md) 的状态表；v1 票据已归档在
+  [docs/dev/v2/tickets/README.md](docs/dev/v2/tickets/README.md)、
+  [docs/dev/v3/tickets/README.md](docs/dev/v3/tickets/README.md) 的状态表；v1 票据已归档在
   [docs/dev/v1/tickets/](docs/dev/v1/tickets/README.md)。
 - 数字（成功率、成本、拦截率、测试数）只从报表与命令输出更新；实验结论必须写明
   「证明了什么、不证明什么」。

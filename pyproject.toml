@@ -12,6 +12,14 @@ dependencies = [
 [project.scripts]
 codelotte = "codelotte.cli:main"
 
+[project.optional-dependencies]
+# serve 形态的运行时依赖；不装它时 CLI 行为与 v0.1.x 完全一致（ADR-0010）
+serve = [
+    "redis>=5.2",
+    "confluent-kafka>=2.6",
+    "asyncpg>=0.30",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -27,9 +35,10 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Docker 集成套件是独立组：默认冒烟不跑（不阻塞、也不需要 daemon）；要跑用 `pytest -m docker`
-addopts = "-m 'not docker'"
+addopts = "-m 'not docker and not serve'"
 markers = [
     "docker: 需要本机 Docker daemon 的集成测试（可选执行，不阻塞冒烟；票据 10）",
+    "serve: 需要 docker compose 起的 Redis/Kafka/PostgreSQL 集成测试（票据 01 起）",
 ]
 
 [tool.ruff]

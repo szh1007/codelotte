@@ -1,0 +1,88 @@
+# codelotte serve 的本地依赖：Redis / Kafka / PostgreSQL。
+# 镜像按 digest 固定（与 2026-10-28 本机已拉取的一致），保证换机器也能拿到同一份二进制。
+# api / worker 两个服务在票据 02 接入本文件。
+
+name: codelotte
+
+services:
+  redis:
+    # redis:8.10.0 —— 8.x 内置 Bloom 模块，lab 02 的布隆过滤器可直接用 BF.ADD
+    image: redis@sha256:344e3945a0b431c8ff1eecd58c5573538126bd756f02fc7e218ddf1fc2546366
+    # 显式容器名去掉 compose 的 -1 后缀；这三个服务都是单实例，不存在扩容需求
+    container_name: codelotte-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # 宿主端口统一加 1 前缀，避开本机已装的同类服务
+      - "16379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+
+  kafka:
+    # apache/kafka:4.3.1 —— 4.x 只有 KRaft，不再有 ZooKeeper
+    image: apache/kafka@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
+    container_name: codelotte-kafka
+    ports:
+      - "19092:9092"
+    environment:
+      # 单节点同时扮演 broker + controller
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # 双监听：宿主机走 localhost:19092（映射到容器 9092），compose 网络内走 kafka:29092
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      # EXTERNAL 必须写宿主实际端口 19092，否则宿主机客户端会拿到 9092 而连错
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # 单节点副本因子必须为 1，否则内部 topic 建不起来
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # 关闭自动建 topic：topic 由票据 08/11 显式创建（分区数与保留期见 SPEC）。
+      # 打开的话，topic 名拼错会静默创建一个保留期不对的新 topic。
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  postgres:
+    # postgres:18.6 —— 注意 PGDATA=/var/lib/postgresql/18/docker，
+    # 卷必须挂到 /var/lib/postgresql；挂 /var/lib/postgresql/data 会看不到数据
+    image: postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+    container_name: codelotte-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-codelotte}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-codelotte-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-codelotte}
+    ports:
+      # 宿主机 5432 常被本机原生 PostgreSQL 占用；映射到 15432 避免抢占
+      - "15432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql
+      # 首次建库时执行；已有数据卷时不会重复执行
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-codelotte} -d ${POSTGRES_DB:-codelotte}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+volumes:
+  redis-data:
+  kafka-data:
+  pg-data:
