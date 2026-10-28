@@ -26,7 +26,9 @@ jobs:
       # 必须用精确版本 pin；升级时手动改这里（或后续接 Dependabot）
       - uses: astral-sh/setup-uv@v10.3.0
       - name: Sync dependencies
-        run: uv sync --locked
+        # serve 是可选运行时依赖组：不装它 pyright 解析不到 asyncpg / redis / confluent_kafka，
+        # 会把 serve 包报成 reportMissingImports
+        run: uv sync --locked --extra serve
       - name: Lint
         run: uv run ruff check .
       - name: Type check
