@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 05 · 分布式锁与限流</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 05 · Redis 进阶</span>
+    <h1>锁与限流：Redis 最容易被追问的两个“原子性”</h1>
+    <p class="subtitle">
+      这两类题看起来是背命令，实际上考的是并发正确性：
+      锁会不会误删别人的？任务超时了怎么办？限流在边界会不会放过双倍流量？
+    </p>
+    <div class="meta">
+      <span>30 分钟</span>
+      <span>前置：Lesson 02、04</span>
+      <span>产出：锁/限流代码 + 追问答案</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>写出一把“不会误删、不会死锁”的 Redis 锁，并说清它的正确性边界。</li>
+      <li>讲清 Redlock 的争议，知道什么时候该用 DB 约束/乐观锁而不是 Redis 锁。</li>
+      <li>区分固定窗口、滑动窗口、令牌桶、漏桶，并能用 Redis + Lua 做分布式限流。</li>
+    </ul>
+  </section>
+
+  <h2>1. 一把合格的分布式锁，要满足什么</h2>
+  <ol>
+    <li><strong>互斥</strong>：同一时刻只有一个持有者。</li>
+    <li><strong>不死锁</strong>：持有者崩溃后，锁能自动释放（TTL）。</li>
+    <li><strong>只由持有者释放</strong>：不能把别人的锁删掉。</li>
+    <li><strong>可续期</strong>：任务比 TTL 长时，不能让锁提前失效。</li>
+  </ol>
+
+  <h3>正确的最小写法</h3>
+  <pre><code>import redis
+import uuid
+
+r = redis.Redis()
+lock_key = "lock:order:123"
+token = uuid.uuid4().hex
+
+# 一条命令完成“不存在才设置 + 过期时间”，避免 SETNX 后 EXPIRE 之间崩溃
+ok = r.set(lock_key, token, nx=True, px=30_000)
+if ok:
+    try:
+        do_work()
+    finally:
+        # 只删自己的锁：比较 value 再删除，必须原子
+        r.eval(
+            """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+                return redis.call('del', KEYS[1])
+            end
+            return 0
+            """,
+            1, lock_key, token,
+        )</code></pre>
+  <div class="callout warn">
+    <span class="callout-label">三个常见错误</span>
+    <ul>
+      <li><code>SETNX</code> 成功后再单独 <code>EXPIRE</code>：中间崩溃就永久死锁。</li>
+      <li>解锁直接 <code>DEL</code>：任务超时后锁已属于别人，会误删。</li>
+      <li>value 用固定字符串：无法判断锁是不是自己的。</li>
+    </ul>
+  </div>
+
+  <h3>任务比 TTL 长怎么办</h3>
+  <p>
+    方案一：watchdog 自动续期（如 Redisson 的看门狗）。方案二：把任务拆短，或把 TTL 设得足够长。
+    续期本身也有风险：进程暂停、网络分区时，续期可能发生在锁已经易主之后。
+  </p>
+
+  <h2>2. Redlock 与它的争议</h2>
+  <p>
+    Redlock 的思路是：部署 5 个<strong>独立</strong>的 Redis 主节点，客户端依次加锁，
+    在多数节点成功且总耗时小于锁有效期时，认为加锁成功；释放时删所有节点。
+  </p>
+  <p>
+    Martin Kleppmann 的批评核心有两点：
+  </p>
+  <ul>
+    <li><strong>时钟与暂停</strong>：进程 GC 暂停、时钟跳变，可能让客户端在锁已过期后继续操作。</li>
+    <li><strong>没有 fencing token</strong>：存储层无法拒绝“旧持有者”的写请求，两个客户端可能同时认为自己持有锁。</li>
+  </ul>
+  <p>
+    他的建议是：如果锁是为了<strong>效率</strong>（避免重复计算），Redis 锁够用；
+    如果锁是为了<strong>正确性</strong>（不能有两个写者），要用带单调递增 fencing token 的方案，
+    或 ZooKeeper/etcd 这类共识系统。
+  </p>
+  <div class="callout interview">
+    <span class="callout-label">面试一句话</span>
+    <p>
+      “Redis 锁适合做效率优化，不适合单独承担强一致。真要对正确性负责，
+      我会用数据库唯一约束/乐观锁，或者给锁加 fencing token，
+      让存储层拒绝过期持有者的写。”
+    </p>
+  </div>
+
+  <h2>3. 限流：四种算法，先看要不要允许突发</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>算法</th><th>怎么工作</th><th>优点</th><th>缺点 / 适用</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>固定窗口</strong></td>
+          <td>每个时间窗计数，超过阈值拒绝</td>
+          <td>实现最简单，内存小</td>
+          <td>窗口边界可能放过约 2 倍流量</td>
+        </tr>
+        <tr>
+          <td><strong>滑动窗口日志</strong></td>
+          <td>记录每次请求时间，统计最近 N 秒</td>
+          <td>精确</td>
+          <td>内存随请求量增长</td>
+        </tr>
+        <tr>
+          <td><strong>滑动窗口计数</strong></td>
+          <td>当前窗口 + 上一窗口按比例加权</td>
+          <td>近似且省内存</td>
+          <td>有误差，边界仍非完全精确</td>
+        </tr>
+        <tr>
+          <td><strong>令牌桶</strong></td>
+          <td>按速率放令牌，请求取令牌；桶可积累</td>
+          <td>允许突发，工程最常用</td>
+          <td>要处理桶容量与补充速率</td>
+        </tr>
+        <tr>
+          <td><strong>漏桶</strong></td>
+          <td>请求进桶，按固定速率流出</td>
+          <td>输出平滑，保护下游</td>
+          <td>不允许突发，可能增加延迟</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Redis + Lua 令牌桶</h3>
+  <pre><code>-- KEYS[1] = bucket key
+-- ARGV = capacity, refill_per_sec, now_ms, cost
+local capacity = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local cost = tonumber(ARGV[4])
+
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(data[1]) or capacity
+local ts = tonumber(data[2]) or now
+local delta = math.max(0, now - ts) / 1000
+tokens = math.min(capacity, tokens + delta * rate)
+
+if tokens &lt; cost then
+    redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+    return 0
+end
+
+tokens = tokens - cost
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate * 1000) + 1000)
+return 1</code></pre>
+  <p>
+    这段 Lua 在 Redis 里原子执行，多个应用实例共享同一个桶。
+    返回 0 时，入口层返回 <code>429 Too Many Requests</code>，并带 <code>Retry-After</code>。
+  </p>
+  <div class="callout key">
+    <span class="callout-label">限流放在哪一层</span>
+    <p>
+      网关做粗粒度（IP、租户、接口），应用做细粒度（用户、业务键），
+      Redis 做跨实例共享；本地令牌桶可以做第一层，减少 Redis 往返。
+      只做单机限流，多实例部署后总阈值会被放大。
+    </p>
+  </div>
+
+  <h2>4. 小测：锁与限流</h2>
+
+  <div class="quiz" data-quiz data-explanation="固定窗口在窗口切换时，前一窗口末尾和后一窗口开头各放一批，短时间内可能接近 2 倍阈值。">
+    <p class="quiz-question">固定窗口限流最典型的缺陷是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">内存随请求数增长</button>
+      <button class="quiz-option" type="button" data-correct="true">边界可能放过双倍流量</button>
+      <button class="quiz-option" type="button" data-correct="false">无法分布式部署</button>
+      <button class="quiz-option" type="button" data-correct="false">不能设置阈值</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="令牌桶允许桶里积累的令牌被一次性取走，因此允许突发；漏桶按固定速率流出，输出更平滑。">
+    <p class="quiz-question">希望允许短时突发，但整体速率受限，应选？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="true">令牌桶</button>
+      <button class="quiz-option" type="button" data-correct="false">漏桶</button>
+      <button class="quiz-option" type="button" data-correct="false">固定窗口</button>
+      <button class="quiz-option" type="button" data-correct="false">滑动窗口日志</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="解锁必须先比较 value 再删除，并用 Lua 保证比较和删除原子；直接 DEL 可能删掉已易主的新锁。">
+    <p class="quiz-question">Redis 锁解锁时，正确做法是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">直接 DEL key</button>
+      <button class="quiz-option" type="button" data-correct="false">先 GET 再 DEL</button>
+      <button class="quiz-option" type="button" data-correct="true">Lua 比较后 DEL</button>
+      <button class="quiz-option" type="button" data-correct="false">设置 key 过期即可</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">90 秒口述练习</div>
+    <p class="drill-prompt">
+      你要给一个多租户 LLM 应用做限流：每个租户有不同套餐，允许短时突发，
+      还要防止某个租户把整个服务打满。请说明算法、存储和失败策略。
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>算法：</strong>“用令牌桶，按租户维度建 key，容量对应套餐允许的突发，
+          补充速率对应每秒额度。每次调用按权重扣令牌，LLM 可以按 token 数或请求数计费。”</p>
+        <p><strong>存储：</strong>“桶状态放 Redis Hash，Lua 脚本原子地读时间、补令牌、扣减、写回；
+          key 带租户 ID，设置过期时间避免冷租户占内存。”</p>
+        <p><strong>分层：</strong>“网关做 IP/租户粗限流，应用层做用户/接口细限流；
+          本地桶先挡一层，减少 Redis 热点；Redis 故障时降级为本地限流 + 保守阈值。”</p>
+        <p><strong>失败策略：</strong>“超限返回 429 和 Retry-After；核心租户可以排队，
+          非核心直接拒绝；同时监控每租户的拒绝率和 Redis 延迟，避免限流本身成为瓶颈。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    Redis 官方 · <a href="https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/" target="_blank" rel="noopener">Distributed Locks with Redis</a>，
+    以及 Martin Kleppmann 的 <a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" target="_blank" rel="noopener">How to do distributed locking</a>。
+    两篇一起读，你才能在面试里说出“锁的边界”。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/redis-cheatsheet.html">Redis 速查 · 锁与限流</a> ·
+    <a href="../reference/scenario-playbook.html">场景手册 · 接口限流</a> ·
+    <a href="../reference/interview-question-bank.html">题库 · 锁/限流</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0004-redis-ha-persistence.html">
+      <span class="dir">Prev</span>
+      Lesson 04 · Redis 高可用
+    </a>
+    <a class="next" href="0006-mq-value-and-selection.html">
+      <span class="dir">Next</span>
+      Lesson 06 · MQ 价值与选型
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“看门狗续期怎么做”“令牌桶和漏桶在面试里怎么一句话区分”，
+    下一轮对话里说一声，我会用更短的版本重讲。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

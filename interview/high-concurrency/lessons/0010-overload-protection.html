@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 10 · 过载保护与可观测</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 10 · 稳定性</span>
+    <h1>系统被打挂之前：限流、降级、熔断、隔离</h1>
+    <p class="subtitle">
+      高并发题的最后一段通常是“怎么保证不挂”。答案不是“加机器”，
+      而是让系统在过载时<strong>有秩序地拒绝</strong>，而不是一起雪崩。
+    </p>
+    <div class="meta">
+      <span>30 分钟</span>
+      <span>前置：Lesson 01、05</span>
+      <span>产出：稳定性四件套</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>讲清级联故障的链条：延迟上升 → 线程/连接耗尽 → 超时 → 重试 → 更过载。</li>
+      <li>区分限流、降级、熔断、隔离各自解决什么问题，能组合使用。</li>
+      <li>说出超时、重试、退避、jitter、load shedding 的正确配置和常见错误。</li>
+    </ul>
+  </section>
+
+  <h2>1. 系统是怎么被“打挂”的</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>下游变慢</strong>P99 从 50ms 到 2s</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>连接/线程堆积</strong>池子被占满</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>上游超时</strong>用户开始重试</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>流量放大</strong>重试把系统压垮</div>
+  </div>
+  <p>
+    Google SRE 把这类问题称为<strong>级联故障</strong>：一个下游变慢，导致调用方资源耗尽，
+    进而让更多上游失败。系统不是被“峰值”一下打死的，而是被“延迟 + 重试”慢慢拖死的。
+  </p>
+  <div class="callout key">
+    <span class="callout-label">核心原则</span>
+    <p>
+      过载时，系统必须<strong>主动拒绝一部分请求</strong>，把资源留给能完成的请求。
+      全部接收但全部超时，比拒绝一部分更糟。
+    </p>
+  </div>
+
+  <h2>2. 四件套：限流、降级、熔断、隔离</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>手段</th><th>解决什么</th><th>典型做法</th><th>代价</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>限流</strong></td>
+          <td>入口流量超过系统容量</td>
+          <td>令牌桶/漏桶、按用户/租户/接口、返回 429</td>
+          <td>误杀正常用户；阈值难调</td>
+        </tr>
+        <tr>
+          <td><strong>降级</strong></td>
+          <td>核心链路资源不够</td>
+          <td>关闭非核心功能、返回兜底数据、只读模式</td>
+          <td>体验受损；要提前设计开关</td>
+        </tr>
+        <tr>
+          <td><strong>熔断</strong></td>
+          <td>下游持续失败，调用方被拖死</td>
+          <td>失败率超阈值 → open，快速失败；half-open 探活</td>
+          <td>可能误熔断；恢复策略要调</td>
+        </tr>
+        <tr>
+          <td><strong>隔离</strong></td>
+          <td>一个依赖耗尽所有资源</td>
+          <td>每个依赖独立线程/连接池、舱壁模式、部署隔离</td>
+          <td>资源利用率下降；配置更复杂</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>熔断的三个状态</h3>
+  <ol>
+    <li><strong>Closed</strong>：正常放行，统计失败率。</li>
+    <li><strong>Open</strong>：失败率超阈值，直接快速失败，不再打下游。</li>
+    <li><strong>Half-open</strong>：冷却后放少量请求试探，成功则回到 Closed，失败则继续 Open。</li>
+  </ol>
+  <p>
+    熔断保护的是<strong>调用方</strong>，不是下游；它让调用方快速释放资源，避免被慢下游拖死。
+  </p>
+
+  <h2>3. 超时：每个远程调用都要有，而且要比上游短</h2>
+  <ul>
+    <li>连接超时和请求超时要分开设置；不要用无限超时。</li>
+    <li>超时值参考下游延迟分布，比如允许 0.1% 的误超时，取 P99.9；不是拍脑袋 30 秒。</li>
+    <li>调用链上，下游超时要<strong>小于</strong>上游超时，给上游留出处理失败的时间。</li>
+    <li>给整个请求设一个<strong>超时预算</strong>，每一跳消耗预算，预算耗尽就快速失败。</li>
+  </ul>
+
+  <h2>4. 重试：最强的放大器，也是最容易闯祸的</h2>
+  <p>
+    重试只对<strong>幂等</strong>操作安全；对写操作，必须先有幂等键。
+    重试策略要满足：
+  </p>
+  <ul>
+    <li><strong>指数退避</strong>：等待时间随失败次数指数增长，并设上限。</li>
+    <li><strong>Jitter</strong>：加随机抖动，避免所有客户端同一时刻重试，形成尖峰。</li>
+    <li><strong>只在一层重试</strong>：调用链每层都重试会把请求放大数倍。</li>
+    <li><strong>重试预算</strong>：限制重试流量占总流量的比例，比如 10%。</li>
+    <li><strong>识别错误</strong>：4xx 不重试；超时/5xx/连接失败才考虑重试。</li>
+    <li><strong>熔断配合</strong>：下游持续失败时，重试只会加重过载。</li>
+  </ul>
+  <pre><code># 全抖动（full jitter）示例
+delay = random(0, min(cap, base * 2 ** attempt))
+sleep(delay)</code></pre>
+  <div class="callout warn">
+    <span class="callout-label">重试风暴</span>
+    <p>
+      下游变慢 → 上游超时 → 所有上游同时重试 → 下游更慢。
+      没有 jitter 和预算的重试，会把一次小抖动放大成雪崩。
+    </p>
+  </div>
+
+  <h2>5. Load shedding：过载时主动丢</h2>
+  <p>
+    当队列长度、CPU、内存或延迟超过阈值时，入口直接拒绝一部分请求。
+    Google SRE 的建议包括：
+  </p>
+  <ul>
+    <li>按任务/请求类型限流，而不是等所有请求都排队。</li>
+    <li>限制队列长度；队列满就拒绝，避免延迟无限增长。</li>
+    <li>过载时优先处理新请求/短请求，丢弃已经排队很久、价值低的请求（LIFO、CoDel 思路）。</li>
+    <li>按优先级丢弃：非核心、可重试、低价值请求先丢。</li>
+  </ul>
+
+  <h2>6. 可观测：没有指标就没有稳定性</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>看什么</th><th>用途</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>RED</strong></td>
+          <td>Rate、Errors、Duration</td>
+          <td>服务维度：QPS、错误率、P99</td>
+        </tr>
+        <tr>
+          <td><strong>USE</strong></td>
+          <td>Utilization、Saturation、Errors</td>
+          <td>资源维度：CPU、内存、连接池、队列</td>
+        </tr>
+        <tr>
+          <td><strong>Tracing</strong></td>
+          <td>一次请求经过哪些服务、每段耗时</td>
+          <td>定位慢在下游哪一跳</td>
+        </tr>
+        <tr>
+          <td><strong>Logs</strong></td>
+          <td>request_id、user_id、错误上下文</td>
+          <td>排障与审计；不要记录敏感信息</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    高并发系统还要有：容量看板（QPS/延迟/错误/资源水位）、SLO 与告警、
+    压测（全链路、影子流量）、故障演练（Chaos Engineering）。
+  </p>
+
+  <h2>7. 小测：过载保护</h2>
+
+  <div class="quiz" data-quiz data-explanation="指数退避拉开重试间隔，jitter 打散同时重试的尖峰，再加熔断/重试预算防止持续放大。">
+    <p class="quiz-question">防止重试风暴，最有效的组合是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">固定间隔重试</button>
+      <button class="quiz-option" type="button" data-correct="true">退避 + 抖动 + 预算</button>
+      <button class="quiz-option" type="button" data-correct="false">无限重试直到成功</button>
+      <button class="quiz-option" type="button" data-correct="false">所有层都加重试</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Open 状态下熔断器直接快速失败，不再调用下游；Half-open 才放少量请求试探。">
+    <p class="quiz-question">熔断器处于 Open 状态时，调用方会？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">继续正常调用下游</button>
+      <button class="quiz-option" type="button" data-correct="false">放少量请求试探</button>
+      <button class="quiz-option" type="button" data-correct="true">快速失败不调下游</button>
+      <button class="quiz-option" type="button" data-correct="false">自动扩容下游</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="舱壁/隔离让每个依赖使用独立的线程或连接池，一个慢依赖不会耗尽所有资源。">
+    <p class="quiz-question">“隔离”在过载保护里的典型做法是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">所有依赖共用一个连接池</button>
+      <button class="quiz-option" type="button" data-correct="false">关闭所有非核心服务</button>
+      <button class="quiz-option" type="button" data-correct="false">把超时设成无限</button>
+      <button class="quiz-option" type="button" data-correct="true">每个依赖独立资源池</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="过载时要按优先级丢弃：非核心、可重试、低价值请求先丢，保留核心链路的处理能力。">
+    <p class="quiz-question">系统过载时，应该优先丢弃哪类请求？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">支付确认请求</button>
+      <button class="quiz-option" type="button" data-correct="false">登录鉴权请求</button>
+      <button class="quiz-option" type="button" data-correct="true">非核心推荐请求</button>
+      <button class="quiz-option" type="button" data-correct="false">库存扣减请求</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">2 分钟口述练习</div>
+    <p class="drill-prompt">
+      面试官问：“大促流量是平时的 10 倍，你怎么保证系统不挂？”
+      请按“容量 → 入口 → 依赖 → 兜底 → 验证”回答。
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>容量：</strong>“先按 10 倍峰值做容量评估，压测核心链路，留 30–50% 余量；
+          确认 DB、Redis、MQ 的连接数、分区数和磁盘都够。”</p>
+        <p><strong>入口：</strong>“网关按用户/租户/接口限流，超限返回 429；
+          非核心入口直接关闭；前端静态化、按钮置灰，减少无效请求。”</p>
+        <p><strong>依赖：</strong>“每个下游独立连接池和超时；下游失败率超阈值就熔断，
+          走兜底数据；重试只在一层做，指数退避 + jitter + 重试预算。”</p>
+        <p><strong>兜底：</strong>“核心链路降级到只读/排队；非核心功能关闭；
+          缓存多级兜底；消息积压时限流生产、扩消费者、死信兜底。”</p>
+        <p><strong>验证：</strong>“全链路压测 + 影子流量 + 故障演练；监控 RED/USE、
+          告警到人；大促前做预案和回滚开关。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    Google SRE Book · <a href="https://sre.google/sre-book/handling-overload/" target="_blank" rel="noopener">Handling Overload</a>
+    与 <a href="https://sre.google/sre-book/addressing-cascading-failures/" target="_blank" rel="noopener">Addressing Cascading Failures</a>。
+    再配合 AWS 的 <a href="https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/" target="_blank" rel="noopener">Timeouts, Retries, and Backoff with Jitter</a>。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/scenario-playbook.html">场景手册 · 大促削峰</a> ·
+    <a href="../reference/glossary.html">术语表 · 稳定性</a> ·
+    <a href="../reference/interview-question-bank.html">题库 · 稳定性</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0009-delay-queue-and-transaction.html">
+      <span class="dir">Prev</span>
+      Lesson 09 · 延迟队列与 Outbox
+    </a>
+    <a class="next" href="0011-ai-agent-backend.html">
+      <span class="dir">Next</span>
+      Lesson 11 · AI 后端映射与模拟面试
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“熔断阈值怎么定”“超时预算怎么在 FastAPI 里实现”，
+    下一轮对话里说一声，我会给你代码和配置示例。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

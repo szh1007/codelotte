@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>高并发后端中间件 · 面试作战手册</title>
+  <link rel="stylesheet" href="assets/course.css">
+</head>
+<body>
+<main class="index">
+
+  <header class="index-header">
+    <span class="kicker">Interview Field Guide · Redis / Kafka / MQ</span>
+    <h1>高并发后端中间件：从“没货说”到能接追问</h1>
+    <p class="index-subtitle">
+      面向 AI/Agent 后端（Python）岗位的 11 课速成包。主线只有一条：
+      <strong>先量化，再找瓶颈，然后用缓存 / 异步 / 扩展 / 兜底四类手段做取舍。</strong>
+      每一课都能在 20–30 分钟内读完，并附 60 秒口述练习。
+    </p>
+    <div class="meta">
+      <span>11 lessons</span>
+      <span>8 references</span>
+      <span>Python 示例</span>
+      <span>零实操起点</span>
+    </div>
+  </header>
+
+  <section class="index-section">
+    <h2>先读这一页：怎么用</h2>
+    <div class="callout key">
+      <span class="callout-label">使用顺序</span>
+      <ol>
+        <li><strong>每天面试前 20 分钟</strong>：翻 <a href="reference/scenario-playbook.html">场景手册</a> 里当天最可能被问的 2 个场景，照着“30 秒骨架”出声说一遍。</li>
+        <li><strong>有整块时间</strong>：按 01 → 11 顺序读；每课做完选择题和口述练习，再看答案。</li>
+        <li><strong>面试后 10 分钟</strong>：把被追问住的问题记到 <a href="reference/interview-question-bank.html">题库</a> 对应条目旁，下一次先复述它。</li>
+        <li><strong>不要背全文</strong>：只背每课的“面试一句话”和场景骨架；原理用你自己的话复述。</li>
+        <li><strong>完全没接触过 MQ</strong>：先看 <a href="reference/mq-code-basics.html">MQ 代码层入门</a>，把生产者/消费者/Topic/Partition 和代码对上，再读 L06、L07。</li>
+      </ol>
+    </div>
+    <div class="callout warn">
+      <span class="callout-label">诚实边界</span>
+      <p>
+        你目前没有 Redis / Kafka 的生产经验。面试时不要说“我在项目里用过”，
+        正确说法是“我在项目里没有生产级使用，但我设计过 / 本地跑过 / 理解它的取舍”。
+        这套课会给你可讲的设计和实验，不给你假的经历。
+      </p>
+    </div>
+  </section>
+
+  <section class="index-section">
+    <h2>课程地图</h2>
+    <div class="course-grid">
+      <a class="lesson-card" href="lessons/0001-answer-framework.html">
+        <span class="num">LESSON 01</span>
+        <span class="title">先开口：高并发答题四层骨架 + 容量估算</span>
+        <span class="desc">量化 → 找瓶颈 → 三板斧 → 兜底；Little's Law 与 30 秒估算。</span>
+        <span class="time">25 分钟 · 总纲</span>
+      </a>
+      <a class="lesson-card" href="lessons/0002-redis-data-structures.html">
+        <span class="num">LESSON 02</span>
+        <span class="title">Redis 全景：为什么快 + 数据结构选型</span>
+        <span class="desc">单线程事件循环、8 种结构、编码与 big key，10 秒选对结构。</span>
+        <span class="time">25 分钟 · Redis</span>
+      </a>
+      <a class="lesson-card" href="lessons/0003-cache-problems-and-consistency.html">
+        <span class="num">LESSON 03</span>
+        <span class="title">穿透、击穿、雪崩 + 缓存一致性</span>
+        <span class="desc">三个词、三套解法；cache-aside、延迟双删、binlog 订阅。</span>
+        <span class="time">30 分钟 · 缓存</span>
+      </a>
+      <a class="lesson-card" href="lessons/0004-redis-ha-persistence.html">
+        <span class="num">LESSON 04</span>
+        <span class="title">RDB / AOF / 主从 / Sentinel / Cluster</span>
+        <span class="desc">持久化取舍、复制延迟、故障切换、16384 slots、淘汰与热 key。</span>
+        <span class="time">30 分钟 · Redis 运维</span>
+      </a>
+      <a class="lesson-card" href="lessons/0005-redis-lock-and-rate-limit.html">
+        <span class="num">LESSON 05</span>
+        <span class="title">分布式锁 + 限流：两个“原子性”</span>
+        <span class="desc">SET NX PX、Lua 解锁、Redlock 争议、令牌桶 / 漏桶 / 滑动窗口。</span>
+        <span class="time">30 分钟 · Redis 进阶</span>
+      </a>
+      <a class="lesson-card" href="lessons/0006-mq-value-and-selection.html">
+        <span class="num">LESSON 06</span>
+        <span class="title">为什么上 MQ：三种收益，四种代价</span>
+        <span class="desc">解耦 / 异步 / 削峰；Kafka、RabbitMQ、RocketMQ 怎么选。</span>
+        <span class="time">25 分钟 · MQ</span>
+      </a>
+      <a class="lesson-card" href="lessons/0007-kafka-architecture-reliability.html">
+        <span class="num">LESSON 07</span>
+        <span class="title">Kafka 一张图：分区、副本、ISR、消费者组</span>
+        <span class="desc">acks、不丢、不重、有序、积压；exactly-once 的边界。</span>
+        <span class="time">35 分钟 · Kafka</span>
+      </a>
+      <a class="lesson-card" href="lessons/0008-seckill-inventory.html">
+        <span class="num">LESSON 08</span>
+        <span class="title">秒杀系统：把 10 万 QPS 挡在数据库之前</span>
+        <span class="desc">分层削峰、Redis Lua 扣库存、MQ 异步下单、防超卖与对账。</span>
+        <span class="time">35 分钟 · 场景</span>
+      </a>
+      <a class="lesson-card" href="lessons/0009-delay-queue-and-transaction.html">
+        <span class="num">LESSON 09</span>
+        <span class="title">订单 30 分钟未支付：延迟队列与 Outbox</span>
+        <span class="desc">ZSet / RabbitMQ DLX / RocketMQ / DB 轮询；幂等与支付竞态。</span>
+        <span class="time">30 分钟 · 场景</span>
+      </a>
+      <a class="lesson-card" href="lessons/0010-overload-protection.html">
+        <span class="num">LESSON 10</span>
+        <span class="title">系统被打挂之前：限流、降级、熔断、隔离</span>
+        <span class="desc">级联故障、超时预算、重试风暴、load shedding、可观测。</span>
+        <span class="time">30 分钟 · 稳定性</span>
+      </a>
+      <a class="lesson-card" href="lessons/0011-ai-agent-backend.html">
+        <span class="num">LESSON 11</span>
+        <span class="title">把你的 Agent 项目讲成高并发系统</span>
+        <span class="desc">Redis / Kafka 映射到 AI 后端；10 道模拟追问与自评表。</span>
+        <span class="time">35 分钟 · 结合项目</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="index-section">
+    <h2>速查文档（面试前翻这些）</h2>
+    <div class="ref-grid">
+      <a class="ref-card" href="reference/glossary.html">
+        <strong>术语表</strong>
+        <span>QPS、P99、ISR、rebalance、雪崩、fencing token……一页对齐黑话。</span>
+      </a>
+      <a class="ref-card" href="reference/redis-cheatsheet.html">
+        <strong>Redis 速查</strong>
+        <span>结构选型、缓存问题、持久化、集群、锁、限流、淘汰策略。</span>
+      </a>
+      <a class="ref-card" href="reference/kafka-cheatsheet.html">
+        <strong>Kafka 速查</strong>
+        <span>架构、关键配置、投递语义、积压处理、选型对比。</span>
+      </a>
+      <a class="ref-card" href="reference/scenario-playbook.html">
+        <strong>12 个场景手册</strong>
+        <span>每题 30 秒骨架 + 关键取舍 + 常见追问，面试前直接背。</span>
+      </a>
+      <a class="ref-card" href="reference/capacity-numbers.html">
+        <strong>容量数字与公式</strong>
+        <span>Little's Law、峰值系数、缓存命中、Kafka 存储估算、可用计算器。</span>
+      </a>
+      <a class="ref-card" href="reference/interview-question-bank.html">
+        <strong>面试题库</strong>
+        <span>50 道高频题的一句话答案 + 追问链，用来自测而不是通读。</span>
+      </a>
+      <a class="ref-card" href="reference/ai-agent-backend.html">
+        <strong>AI 后端一页纸</strong>
+        <span>把 Redis/Kafka 映射到 Agent 项目，附诚实说法和本地实验。</span>
+      </a>
+      <a class="ref-card" href="reference/mq-code-basics.html">
+        <strong>MQ 代码层入门</strong>
+        <span>生产者/消费者 SDK、Topic/Partition 创建、key 与消费组，附 Python 代码。</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="index-section">
+    <h2>5 天冲刺计划（每天面试也能用）</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>时间</th><th>读什么</th><th>开口练什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Day 0 · 今天</td>
+            <td>Lesson 01 + 02 + 术语表</td>
+            <td>用四层骨架回答“日订单 100 万怎么设计”，录音 2 分钟</td>
+          </tr>
+          <tr>
+            <td>Day 1</td>
+            <td>Lesson 03 + 04 + Redis 速查</td>
+            <td>缓存三大问题、Redis 挂了怎么办</td>
+          </tr>
+          <tr>
+            <td>Day 2</td>
+            <td>Lesson 05 + 06</td>
+            <td>分布式锁的正确写法、MQ 选型</td>
+          </tr>
+          <tr>
+            <td>Day 3</td>
+            <td>Lesson 07 + Kafka 速查</td>
+            <td>消息不丢 / 不重 / 有序 / 积压四连问</td>
+          </tr>
+          <tr>
+            <td>Day 4</td>
+            <td>Lesson 08 + 09 + 场景手册</td>
+            <td>秒杀、订单超时，各讲 3 分钟</td>
+          </tr>
+          <tr>
+            <td>Day 5</td>
+            <td>Lesson 10 + 11 + 题库</td>
+            <td>10 道模拟追问，按 4 分制自评</td>
+          </tr>
+          <tr>
+            <td>每天面试前</td>
+            <td>场景手册 2 题 + 题库 10 题</td>
+            <td>出声说，不默读</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="index-section">
+    <h2>进度清单</h2>
+    <p class="progress-count">已完成：<strong data-progress-count>0 / 0</strong></p>
+    <ul class="progress-list">
+      <li><label><input type="checkbox" data-progress="lesson-01"> Lesson 01 · 答题骨架与容量估算</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-02"> Lesson 02 · Redis 全景与数据结构</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-03"> Lesson 03 · 缓存三大问题与一致性</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-04"> Lesson 04 · Redis 高可用与持久化</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-05"> Lesson 05 · 分布式锁与限流</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-06"> Lesson 06 · MQ 价值与选型</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-07"> Lesson 07 · Kafka 架构与可靠性</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-08"> Lesson 08 · 秒杀与库存扣减</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-09"> Lesson 09 · 延迟队列与 Outbox</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-10"> Lesson 10 · 过载保护与可观测</label></li>
+      <li><label><input type="checkbox" data-progress="lesson-11"> Lesson 11 · AI 后端映射与模拟面试</label></li>
+    </ul>
+    <button class="progress-reset" data-progress-reset type="button">重置进度</button>
+  </section>
+
+  <section class="index-section">
+    <h2>工作区文件</h2>
+    <p>
+      <a href="MISSION.md">MISSION.md</a> ·
+      <a href="RESOURCES.md">RESOURCES.md</a> ·
+      <a href="NOTES.md">NOTES.md</a> ·
+      <a href="learning-records/0001-prior-knowledge.md">learning record 0001</a>
+    </p>
+  </section>
+
+  <div class="ask-teacher">
+    <strong>卡住了就直接问老师。</strong>
+    这套课是你和 agent 的共同工作区：任何一题想听“更短的口述版”“更深的追问版”“换成我的项目怎么讲”，
+    直接在下一次对话里说，不用自己硬啃。
+  </div>
+
+</main>
+<script src="assets/lesson.js"></script>
+</body>
+</html>

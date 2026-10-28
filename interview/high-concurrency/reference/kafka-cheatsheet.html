@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kafka 速查 · 高并发面试</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="reference">
+
+  <header class="ref-header">
+    <span class="kicker">Reference · Kafka / MQ</span>
+    <h1>Kafka 速查</h1>
+    <p class="ref-lead">
+      面试前翻这一页：架构图、关键配置、可靠性四连问、积压处理、选型对比。
+      记住因果链：分区决定并行与有序，副本与 acks 决定不丢，offset 提交决定重复。
+    </p>
+  </header>
+
+  <nav class="toc">
+    <a href="#arch">架构</a>
+    <a href="#config">关键配置</a>
+    <a href="#semantics">投递语义</a>
+    <a href="#loss">不丢 / 不重 / 有序</a>
+    <a href="#lag">积压处理</a>
+    <a href="#rebalance">Rebalance</a>
+    <a href="#select">选型对比</a>
+    <a href="#commands">命令速查</a>
+    <a href="#qa">面试一句话</a>
+  </nav>
+
+  <h2 id="arch">1. 架构：一张图</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>Producer</strong>批量、按 key 选分区</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>Partition</strong>有序追加日志，leader 读写</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>ISR</strong>follower 同步副本</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>Consumer Group</strong>按 offset 拉取</div>
+  </div>
+  <ul>
+    <li><strong>Topic</strong> 逻辑类别；<strong>Partition</strong> 物理有序日志，是并行和有序的单位。</li>
+    <li><strong>Offset</strong> 消费者位置；提交 offset = 处理进度。</li>
+    <li><strong>Consumer Group</strong> 同一分区只给一个消费者；不同 group 各消费全量。</li>
+    <li><strong>ISR</strong> 与 leader 同步的副本集合；<strong>HW</strong> 高水位，消费者只能读到已提交消息。</li>
+    <li><strong>KRaft</strong> 新版本的元数据模式，替代 ZooKeeper。</li>
+  </ul>
+
+  <h2 id="config">2. 关键配置</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>常用值</th><th>作用/取舍</th></tr></thead>
+      <tbody>
+        <tr><td><code>acks</code></td><td><code>all</code></td><td>ISR 全部确认；可靠性最高，延迟最高</td></tr>
+        <tr><td><code>replication.factor</code></td><td>3</td><td>副本数；容忍 1–2 个 broker 故障</td></tr>
+        <tr><td><code>min.insync.replicas</code></td><td>2</td><td>至少 2 个 ISR；不足时拒绝写，避免静默丢</td></tr>
+        <tr><td><code>unclean.leader.election.enable</code></td><td>false</td><td>不让落后副本当 leader；牺牲可用性保数据</td></tr>
+        <tr><td><code>enable.idempotence</code></td><td>true</td><td>producer 重试去重（PID + 序列号）</td></tr>
+        <tr><td><code>enable.auto.commit</code></td><td>false</td><td>手动提交，处理成功后再 commit</td></tr>
+        <tr><td><code>max.poll.interval.ms</code></td><td>按处理时长</td><td>两次 poll 的最大间隔；超时会踢出 group 触发 rebalance</td></tr>
+        <tr><td><code>session.timeout.ms</code></td><td>10–30s</td><td>心跳超时；太短易误判，太长故障发现慢</td></tr>
+        <tr><td><code>auto.offset.reset</code></td><td><code>earliest</code>/<code>latest</code></td><td>没有已提交 offset 时从哪开始</td></tr>
+        <tr><td><code>max.poll.records</code></td><td>按处理能力</td><td>一次 poll 的消息数；太大易超 max.poll.interval</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout key">
+    <span class="callout-label">经典组合</span>
+    <p><code>RF=3 + min.insync.replicas=2 + acks=all + unclean=false</code>：挂 1 个 broker 继续写，挂 2 个拒绝写以保数据。</p>
+  </div>
+
+  <h2 id="semantics">3. 投递语义</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>语义</th><th>做法</th><th>结果</th></tr></thead>
+      <tbody>
+        <tr><td>At most once</td><td>先 commit offset，再处理</td><td>可能丢，不重复</td></tr>
+        <tr><td>At least once</td><td>处理成功后 commit；失败重试</td><td>不丢，可能重复（默认）</td></tr>
+        <tr><td>Exactly once</td><td>幂等 producer + 事务 + read_committed</td><td>Kafka 内部不重不丢；外部系统仍需幂等</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    exactly-once 的边界：Kafka 事务覆盖“读 Kafka → 处理 → 写 Kafka”；
+    如果写 MySQL/Redis/第三方 API，需要幂等 sink、事务消息或 Outbox。
+  </p>
+
+  <h2 id="loss">4. 不丢 / 不重 / 有序</h2>
+  <h3>不丢：三段检查</h3>
+  <ol>
+    <li><strong>Producer</strong>：<code>acks=all</code>、重试、<code>enable.idempotence=true</code>、合理 <code>delivery.timeout</code>。</li>
+    <li><strong>Broker</strong>：RF=3、min.insync=2、<code>unclean.leader.election=false</code>、磁盘/ISR 监控。</li>
+    <li><strong>Consumer</strong>：关闭自动提交，处理成功后 commit；失败重试/死信。</li>
+  </ol>
+  <h3>不重：消费端幂等</h3>
+  <ul>
+    <li>业务唯一键 + 唯一索引（如 <code>order_id</code>）。</li>
+    <li>去重表：处理前插入 <code>message_id</code>，冲突则跳过。</li>
+    <li>状态机条件更新：<code>WHERE status='WAIT_PAY'</code>。</li>
+    <li>版本号/乐观锁：旧版本不覆盖新版本。</li>
+  </ul>
+  <h3>有序</h3>
+  <ul>
+    <li>同一业务 key 发到同一分区（默认按 key 哈希）。</li>
+    <li>一个分区同一时刻只被一个消费者处理。</li>
+    <li>不追求全局有序；全局有序 = 单分区 = 吞吐上限。</li>
+    <li>消费端并行处理会破坏顺序；要顺序就单线程处理该分区，或按 key 内部串行。</li>
+  </ul>
+
+  <h2 id="lag">5. 积压处理</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>看 lag</strong>生产 offset − 消费 offset</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>定位</strong>突增 / 消费慢 / 分区倾斜</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>扩容</strong>消费者 ≤ 分区数</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>兜底</strong>降级 / 转存 / 死信</div>
+  </div>
+  <ul>
+    <li>消费者数超过分区数不会提升并行度，只会多空闲实例。</li>
+    <li>增加分区会改变 key 的分区映射，影响既有顺序；高峰期慎用。</li>
+    <li>先优化消费逻辑里的同步慢调用，再考虑加消费者。</li>
+    <li>积压严重可临时转存到新 topic/对象存储，先恢复主链路。</li>
+    <li>持续监控 lag、消费耗时、失败率、死信量。</li>
+  </ul>
+
+  <h2 id="rebalance">6. Rebalance</h2>
+  <ul>
+    <li><strong>触发</strong>：消费者加入/离开、分区变化、心跳超时、<code>max.poll.interval.ms</code> 超时。</li>
+    <li><strong>影响</strong>：分区重新分配，期间消费暂停；频繁 rebalance 会导致重复消费和延迟。</li>
+    <li><strong>优化</strong>：cooperative sticky 分配、static membership、合理 session timeout、减小 <code>max.poll.records</code>、把长处理异步化。</li>
+  </ul>
+
+  <h2 id="select">7. 选型对比</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th></th><th>Kafka</th><th>RabbitMQ</th><th>RocketMQ</th></tr></thead>
+      <tbody>
+        <tr><td>模型</td><td>分区日志，pull</td><td>队列/交换机，可 push</td><td>分区队列，pull</td></tr>
+        <tr><td>强项</td><td>高吞吐、保留/重放、流处理</td><td>灵活路由、低延迟、单条 ack、DLX</td><td>事务消息、延迟消息、顺序消息</td></tr>
+        <tr><td>弱项</td><td>原生延迟/优先级弱</td><td>吞吐较低、积压性能下降</td><td>生态/国际化较弱</td></tr>
+        <tr><td>场景</td><td>日志、埋点、事件流、削峰</td><td>业务解耦、任务队列</td><td>电商交易、订单、支付</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>RabbitMQ 最小知识</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>概念</th><th>一句话</th><th>面试用途</th></tr></thead>
+      <tbody>
+        <tr><td>direct exchange</td><td>按 routing key 精确匹配</td><td>点对点业务消息</td></tr>
+        <tr><td>topic exchange</td><td><code>*</code> 匹配一个词，<code>#</code> 匹配多个词</td><td>按业务维度订阅</td></tr>
+        <tr><td>fanout exchange</td><td>广播到所有绑定队列</td><td>通知/缓存失效</td></tr>
+        <tr><td>headers exchange</td><td>按消息头匹配</td><td>少用，复杂路由</td></tr>
+        <tr><td>ack / prefetch</td><td>消费者确认；prefetch 控制未确认上限</td><td>不丢 + 限速</td></tr>
+        <tr><td>DLX</td><td>死信交换机，处理失败/过期/超限消息</td><td>重试与延迟队列</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>RocketMQ 最小知识</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>概念</th><th>一句话</th><th>面试用途</th></tr></thead>
+      <tbody>
+        <tr><td>NameServer</td><td>轻量路由注册中心，客户端从中拿 Broker 地址</td><td>与 Kafka 的元数据角色对比</td></tr>
+        <tr><td>Broker</td><td>存储消息、处理读写</td><td>类似 Kafka broker</td></tr>
+        <tr><td>事务消息</td><td>半消息 → 本地事务 → commit/rollback → 回查</td><td>本地事务与发消息最终一致</td></tr>
+        <tr><td>延迟消息</td><td>4.x 固定级别；5.x 支持任意时间</td><td>订单超时取消</td></tr>
+        <tr><td>顺序消息</td><td>同一队列按顺序消费</td><td>订单状态流转</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="commands">8. 命令速查</h2>
+  <pre><code># topic
+kafka-topics.sh --create --topic orders --partitions 6 \
+  --replication-factor 3 --bootstrap-server localhost:9092
+kafka-topics.sh --describe --topic orders --bootstrap-server localhost:9092
+
+# 生产/消费
+kafka-console-producer.sh --topic orders --bootstrap-server localhost:9092
+kafka-console-consumer.sh --topic orders --from-beginning \
+  --bootstrap-server localhost:9092 --group demo
+
+# 消费组与 lag
+kafka-consumer-groups.sh --describe --group demo --bootstrap-server localhost:9092
+kafka-consumer-groups.sh --reset-offsets --to-earliest \
+  --group demo --topic orders --execute --bootstrap-server localhost:9092</code></pre>
+
+  <h2 id="qa">9. 面试一句话</h2>
+  <div class="qa-list">
+    <div class="qa"><div class="qa-q">Kafka 为什么快？</div><div class="qa-a">顺序追加写、page cache、批量压缩、零拷贝、分区并行、pull 背压。</div></div>
+    <div class="qa"><div class="qa-q">分区的作用？</div><div class="qa-a">并行单位 + 有序单位；分区内有序，全局有序要单分区。</div></div>
+    <div class="qa"><div class="qa-q">怎么保证不丢？</div><div class="qa-a">producer acks=all+重试+幂等；broker RF=3+min.insync=2+unclean=false；consumer 处理后再 commit。</div></div>
+    <div class="qa"><div class="qa-q">怎么保证不重？</div><div class="qa-a">默认 at-least-once，消费端幂等：唯一键/去重表/状态机/版本号。</div></div>
+    <div class="qa"><div class="qa-q">exactly-once 边界？</div><div class="qa-a">Kafka 内部事务链路成立；外部系统要幂等 sink/事务消息/Outbox。</div></div>
+    <div class="qa"><div class="qa-q">怎么保证顺序？</div><div class="qa-a">同 key 同分区，单消费者单分区处理；不追求全局有序。</div></div>
+    <div class="qa"><div class="qa-q">积压怎么办？</div><div class="qa-a">看 lag 定位；扩消费者≤分区数；加分区/批处理/异步；降级/转存/死信。</div></div>
+    <div class="qa"><div class="qa-q">rebalance 原因？</div><div class="qa-a">成员变化、心跳超时、poll 超时、分区变化；用 cooperative/static/合理超时优化。</div></div>
+    <div class="qa"><div class="qa-q">Kafka vs RabbitMQ？</div><div class="qa-a">Kafka 高吞吐日志/重放；RabbitMQ 灵活路由/单条 ack/低延迟。</div></div>
+    <div class="qa"><div class="qa-q">为什么用 MQ？</div><div class="qa-a">解耦、异步、削峰；代价是最终一致、重复、顺序、运维复杂度。</div></div>
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套课程</span>
+    <a href="../lessons/0006-mq-value-and-selection.html">L06 MQ 价值与选型</a> ·
+    <a href="../lessons/0007-kafka-architecture-reliability.html">L07 Kafka 架构</a> ·
+    <a href="../lessons/0009-delay-queue-and-transaction.html">L09 延迟队列与 Outbox</a>
+  </div>
+
+</main>
+</body>
+</html>

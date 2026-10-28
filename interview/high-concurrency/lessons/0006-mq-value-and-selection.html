@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 06 · MQ 价值与选型</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 06 · 消息队列</span>
+    <h1>为什么上 MQ：三种收益，四种代价</h1>
+    <p class="subtitle">
+      面试官问“为什么要用消息队列”，最差的回答是“为了解耦”。
+      好的回答会接着说：解耦换来什么、代价是什么、什么场景不该用。
+    </p>
+    <div class="meta">
+      <span>25 分钟</span>
+      <span>前置：Lesson 01</span>
+      <span>产出：MQ 选型答法</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>用“解耦、异步、削峰”解释 MQ 的收益，并各举一个业务例子。</li>
+      <li>说出 MQ 带来的四种代价，知道什么时候不该上 MQ。</li>
+      <li>按吞吐、路由、延迟、事务、顺序、生态对比 Kafka / RabbitMQ / RocketMQ。</li>
+    </ul>
+  </section>
+
+  <h2>1. 三种收益：解耦、异步、削峰</h2>
+  <h3>解耦</h3>
+  <p>
+    订单服务创建订单后，不需要知道后面有多少消费者：积分、短信、报表、风控、推荐。
+    新增一个消费者，只订阅 topic，不改订单服务。
+  </p>
+  <div class="flow">
+    <div class="flow-step"><strong>订单服务</strong>只发 OrderCreated</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>MQ</strong>保存事件</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>积分 / 短信 / 报表</strong>各自订阅</div>
+  </div>
+
+  <h3>异步</h3>
+  <p>
+    同步调用三个下游，每个 200 ms，用户要等 600 ms；改成“主流程写库 + 发 MQ”，
+    主路径可能只要 200 ms，剩下的在后台完成。
+  </p>
+  <pre><code>同步：创建订单 200ms + 积分 200ms + 短信 200ms + 报表 200ms = 800ms
+异步：创建订单 200ms + 发消息 10ms = 210ms，其余后台处理</code></pre>
+
+  <h3>削峰</h3>
+  <p>
+    秒杀瞬时 10 万 QPS，DB 只能扛 2 千。MQ 把请求缓冲起来，消费者按 DB 能承受的速率处理。
+    代价是用户等待时间变长，且要处理“消息积压”和“最终一致”。
+  </p>
+
+  <h2>2. 四种代价：不要只讲好处</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>代价</th><th>具体表现</th><th>应对</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>最终一致</strong></td>
+          <td>订单已创建，积分还没到账；用户看到的状态短暂不一致</td>
+          <td>状态机、补偿、对账、前端提示“处理中”</td>
+        </tr>
+        <tr>
+          <td><strong>重复消费</strong></td>
+          <td>网络超时、重试、offset 提交失败，消息可能被处理两次</td>
+          <td>业务唯一键、幂等表、状态机条件更新</td>
+        </tr>
+        <tr>
+          <td><strong>顺序问题</strong></td>
+          <td>同一订单的创建、支付、取消消息乱序</td>
+          <td>按业务键分区、单分区单消费者、序列号</td>
+        </tr>
+        <tr>
+          <td><strong>运维复杂度</strong></td>
+          <td>积压、死信、重平衡、磁盘、监控、升级</td>
+          <td>容量规划、lag 监控、DLQ、演练</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout warn">
+    <span class="callout-label">什么时候不该上 MQ</span>
+    <ul>
+      <li>业务要求强一致、同步返回结果（比如扣款结果必须立刻知道）。</li>
+      <li>调用关系简单、量很小，引入 MQ 只是增加故障面。</li>
+      <li>团队没有能力维护 MQ 的积压、死信、重平衡和监控。</li>
+      <li>用 MQ 来掩盖下游本身就应该优化的问题（慢 SQL、N+1）。</li>
+    </ul>
+  </div>
+
+  <h2>3. 队列模型 vs 日志模型</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th></th><th>队列模型（RabbitMQ 典型）</th><th>日志模型（Kafka 典型）</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>消息消费后</td><td>通常从队列删除</td><td>保留在日志中，按 offset 消费</td></tr>
+        <tr><td>重复读</td><td>不支持（除非重新入队）</td><td>可以重置 offset 重放</td></tr>
+        <tr><td>路由</td><td>exchange + routing key，灵活</td><td>topic + partition，相对简单</td></tr>
+        <tr><td>吞吐</td><td>中等，单条确认</td><td>高，批量 + 顺序写</td></tr>
+        <tr><td>典型场景</td><td>业务解耦、任务队列、复杂路由</td><td>日志、事件流、指标、削峰、重放</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    还有一点常被忽略：<strong>push vs pull</strong>。RabbitMQ 可以 push 给消费者；
+    Kafka 是消费者 pull，消费者能自己控制速率，天然有背压（但也会积压）。
+  </p>
+
+  <h2>4. 三家怎么选</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>Kafka</th><th>RabbitMQ</th><th>RocketMQ</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>强项</td>
+          <td>高吞吐、日志保留、重放、流处理生态</td>
+          <td>灵活路由、低延迟、单条确认、DLX/优先级</td>
+          <td>高吞吐、事务消息、延迟消息、顺序消息</td>
+        </tr>
+        <tr>
+          <td>弱项</td>
+          <td>原生延迟/优先级弱；分区过多有开销</td>
+          <td>吞吐相对低；大量积压时性能下降</td>
+          <td>生态和国际化不如 Kafka；运维依赖 NameServer</td>
+        </tr>
+        <tr>
+          <td>典型场景</td>
+          <td>日志、埋点、事件流、指标、削峰</td>
+          <td>业务解耦、任务队列、复杂路由、RPC 异步化</td>
+          <td>电商交易、订单、支付、延迟取消</td>
+        </tr>
+        <tr>
+          <td>一句话</td>
+          <td>“能存能重放的分布式日志”</td>
+          <td>“路由灵活的业务消息总线”</td>
+          <td>“为交易场景补了事务和延迟”</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    如果规模很小、只想在 Redis 里做个轻量队列，可以用 <strong>Redis Stream</strong>：
+    有消费组、pending list 和 ACK，但不要把它当 Kafka 的替代品——
+    保留策略、吞吐、生态和运维能力都不是一个量级。
+  </p>
+
+  <div class="callout interview">
+    <span class="callout-label">面试一句话</span>
+    <p>
+      “选型先看三件事：吞吐和保留、路由和延迟、事务和顺序。
+      Kafka 适合高吞吐事件流和重放；RabbitMQ 适合复杂路由和业务任务；
+      RocketMQ 适合交易场景的事务消息、延迟消息和顺序消息。
+      如果只是小规模异步，Redis Stream 或直接线程池可能更划算。”
+    </p>
+  </div>
+
+  <h2>5. 小测：收益、代价与选型</h2>
+
+  <div class="quiz" data-quiz data-explanation="解耦的核心是生产者和消费者互不知道对方，新增消费者不需要改生产者；吞吐和延迟是另外两个维度。">
+    <p class="quiz-question">“解耦”在 MQ 里最核心的含义是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">提高单机吞吐</button>
+      <button class="quiz-option" type="button" data-correct="true">解耦生产与消费</button>
+      <button class="quiz-option" type="button" data-correct="false">保证强一致</button>
+      <button class="quiz-option" type="button" data-correct="false">降低存储成本</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="削峰把瞬时流量缓冲到 MQ，消费者按自身能力处理，代价是用户等待变长、系统变成最终一致。">
+    <p class="quiz-question">用 MQ 削峰，最需要接受的代价是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">吞吐下降</button>
+      <button class="quiz-option" type="button" data-correct="false">路由能力变弱</button>
+      <button class="quiz-option" type="button" data-correct="true">延迟与最终一致</button>
+      <button class="quiz-option" type="button" data-correct="false">消息不能持久化</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="需要复杂路由、优先级、单条确认和延迟/死信时，RabbitMQ 更贴合；Kafka 强在日志吞吐和重放。">
+    <p class="quiz-question">业务需要复杂路由、优先级和单条确认，优先考虑？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">Kafka</button>
+      <button class="quiz-option" type="button" data-correct="true">RabbitMQ</button>
+      <button class="quiz-option" type="button" data-correct="false">Redis Stream</button>
+      <button class="quiz-option" type="button" data-correct="false">对象存储</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="RocketMQ 为交易场景提供了事务消息、延迟消息和顺序消息，国内电商使用较多；Kafka 原生不擅长这些。">
+    <p class="quiz-question">电商订单需要事务消息、延迟取消和顺序消费，优先考虑？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">Kafka</button>
+      <button class="quiz-option" type="button" data-correct="false">RabbitMQ</button>
+      <button class="quiz-option" type="button" data-correct="true">RocketMQ</button>
+      <button class="quiz-option" type="button" data-correct="false">Redis List</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">90 秒口述练习</div>
+    <p class="drill-prompt">
+      面试官问：“你们的订单系统为什么要上 MQ？不上行不行？”
+      请按“收益 → 代价 → 替代方案 → 结论”回答。
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>收益：</strong>“订单创建后要发积分、短信、报表、风控。同步调用会让主链路变长，
+          任一消费者故障都会拖慢下单；上 MQ 后主流程只写订单和发事件，
+          新增消费者也不用改订单服务，同时峰值可以被缓冲。”</p>
+        <p><strong>代价：</strong>“会变成最终一致，积分可能延迟；消息可能重复，需要业务唯一键幂等；
+          同一订单的多条消息要按订单 ID 分区保证顺序；还要运维积压、死信和重平衡。”</p>
+        <p><strong>替代方案：</strong>“如果量很小、下游很少，直接同步调用或线程池更简单；
+          如果只是延迟任务，Redis ZSet 或 DB 轮询也够。MQ 不是默认答案。”</p>
+        <p><strong>结论：</strong>“这个场景下游多、峰值明显、允许最终一致，所以值得上；
+          我会选 Kafka 或 RocketMQ，按订单 ID 做 key，消费端幂等，配死信和 lag 监控。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    Apache Kafka 官方 · <a href="https://kafka.apache.org/documentation/" target="_blank" rel="noopener">Documentation</a>
+    的 Introduction 与 Design 两节；再配合 RabbitMQ 的
+    <a href="https://www.rabbitmq.com/docs/confirms" target="_blank" rel="noopener">Confirms</a>
+    看两家的语义差异。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/mq-code-basics.html">MQ 代码层入门</a> ·
+    <a href="../reference/kafka-cheatsheet.html">Kafka 速查 · 选型对比</a> ·
+    <a href="../reference/scenario-playbook.html">场景手册 · MQ 削峰</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0005-redis-lock-and-rate-limit.html">
+      <span class="dir">Prev</span>
+      Lesson 05 · 分布式锁与限流
+    </a>
+    <a class="next" href="0007-kafka-architecture-reliability.html">
+      <span class="dir">Next</span>
+      Lesson 07 · Kafka 架构与可靠性
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“Kafka 和 RabbitMQ 在面试里怎么三句话对比”“什么时候用 Redis Stream 就够”，
+    下一轮对话里说一声，我会按你的项目重讲。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

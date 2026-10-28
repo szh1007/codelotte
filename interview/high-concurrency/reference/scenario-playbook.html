@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>12 个经典高并发场景 · 答题手册</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="reference">
+
+  <header class="ref-header">
+    <span class="kicker">Reference · Scenario Playbook</span>
+    <h1>12 个经典高并发场景</h1>
+    <p class="ref-lead">
+      每个场景给一套 30–60 秒的答题骨架，再列关键取舍和常见追问。
+      面试前不要通读，挑 2–3 个最可能问的，出声说一遍。
+    </p>
+  </header>
+
+  <nav class="toc">
+    <a href="#s1">1. 秒杀 / 库存扣减</a>
+    <a href="#s2">2. 订单超时取消</a>
+    <a href="#s3">3. 缓存与 DB 一致性</a>
+    <a href="#s4">4. 排行榜</a>
+    <a href="#s5">5. 点赞 / 计数</a>
+    <a href="#s6">6. 接口限流</a>
+    <a href="#s7">7. 消息积压</a>
+    <a href="#s8">8. 重复消费 / 幂等</a>
+    <a href="#s9">9. 分布式锁</a>
+    <a href="#s10">10. Feed 流 / 时间线</a>
+    <a href="#s11">11. 大促削峰</a>
+    <a href="#s12">12. AI Agent 高并发</a>
+  </nav>
+
+  <h2 id="s1">1. 秒杀 / 库存扣减</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>入口挡</strong>：CDN 静态页、验证码、网关按用户/IP 限流、按钮置灰。</li>
+      <li><strong>Redis 预扣</strong>：Lua 原子完成查库存、判重、扣减、记录用户。</li>
+      <li><strong>MQ 削峰</strong>：扣减成功才发消息，异步创建订单。</li>
+      <li><strong>DB 兜底</strong>：条件更新 <code>stock &gt;= 1</code> + 唯一索引 <code>(user_id, activity_id)</code>。</li>
+      <li><strong>对账降级</strong>：Redis/DB 对账、回补库存；Redis 挂了限流降级，宁可少卖不超卖。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>Redis 预扣保证性能，DB 条件更新保证正确性；少卖可补，超卖不可接受；热 key 用分桶/本地库存/请求合并，不要用 hash tag 绑在一起。</p>
+  <p><strong>常见追问：</strong>Redis 扣成功但 MQ 失败怎么办？→ 发送重试 + Outbox/本地消息表 + 对账。库存分桶怎么汇总？→ 各桶扣减后汇总，活动结束对账。</p>
+
+  <h2 id="s2">2. 订单超时取消</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>延迟方案</strong>：Redis ZSet（score=到期时间）、RabbitMQ TTL+DLX、RocketMQ 延迟消息、DB 轮询，按规模和运维选。</li>
+      <li><strong>到期处理</strong>：<code>UPDATE ... WHERE status='WAIT_PAY'</code> 条件更新，只有一个请求能成功。</li>
+      <li><strong>资源释放</strong>：取消成功后释放库存/优惠券，动作幂等。</li>
+      <li><strong>支付竞态</strong>：支付也做条件更新；支付赢了取消影响 0 行，取消赢了支付走退款/失败。</li>
+      <li><strong>可靠性</strong>：至少一次触发 + 幂等；失败重试/死信；DB 兜底扫描。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>延迟队列只负责“到点触发”，不保证只触发一次；正确性靠状态机 + 条件更新 + 幂等。</p>
+  <p><strong>常见追问：</strong>Redis ZSet 怎么只消费一次？→ Lua 原子领取/删除，失败重入队。RabbitMQ 同队列不同 TTL？→ 队头阻塞，按延迟分队列或用插件。</p>
+
+  <h2 id="s3">3. 缓存与 DB 一致性</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>先问要求</strong>：能接受秒级旧数据，还是必须强一致？</li>
+      <li><strong>常规方案</strong>：cache-aside；更新 DB 后删缓存，不直接更新缓存。</li>
+      <li><strong>并发回填</strong>：延迟双删，或订阅 binlog 发 MQ 删缓存，value 带版本号。</li>
+      <li><strong>读己之写</strong>：写后短时间读主库，或写后主动删缓存。</li>
+      <li><strong>强一致</strong>：缓存不承担正确性，用 DB 事务/唯一约束/乐观锁；TTL 永远兜底。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>删缓存比更新缓存简单且幂等；延迟双删降低概率但不是强一致；binlog 方案更可靠但更重。</p>
+  <p><strong>常见追问：</strong>为什么先更新 DB 再删缓存？→ 反过来旧值更容易被回填。缓存挂了怎么办？→ 限流回源 + 本地缓存 + 降级。</p>
+
+  <h2 id="s4">4. 排行榜</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>结构</strong>：ZSet，member=用户/作品，score=分数。</li>
+      <li><strong>写</strong>：<code>ZINCRBY</code> 更新分数；高频写入可先本地聚合再批量写。</li>
+      <li><strong>读</strong>：<code>ZREVRANGE</code> 取 Top N；分页用 <code>ZREVRANGE start stop</code> 或按分数游标。</li>
+      <li><strong>同分</strong>：score 相同按 member 字典序；需要业务规则就拼复合 score 或二次排序。</li>
+      <li><strong>规模</strong>：大 ZSet 拆分/分页缓存/离线快照；热榜结果缓存几秒。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>ZSet 适合实时 Top N，不适合海量历史明细；榜单可接受秒级延迟，用缓存挡读。</p>
+  <p><strong>常见追问：</strong>百万用户榜单怎么扩容？→ 分片榜单 + 合并 Top N；或离线计算 + Redis 只存结果。</p>
+
+  <h2 id="s5">5. 点赞 / 计数</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>去重</strong>：Set <code>like:post:{id}</code> 存用户，<code>SADD</code>/<code>SISMEMBER</code>/<code>SREM</code>。</li>
+      <li><strong>计数</strong>：<code>SCARD</code> 或 String <code>INCR/DECR</code>；两者要一致。</li>
+      <li><strong>热度</strong>：ZSet <code>hot:posts</code>，<code>ZINCRBY</code> 加减分。</li>
+      <li><strong>落库</strong>：点赞事件发 MQ，异步写 DB；<code>(user_id, post_id)</code> 唯一索引幂等。</li>
+      <li><strong>热点</strong>：大帖 Set 分片/只保留近期；热帖本地缓存 + 请求合并。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>Redis 做实时计数和去重，DB 做最终明细；允许点赞数短暂不一致，用对账修复。</p>
+  <p><strong>常见追问：</strong>重复点赞怎么防？→ Set 天然去重 + DB 唯一索引。Redis 丢了怎么办？→ 从 DB 重建或接受降级。</p>
+
+  <h2 id="s6">6. 接口限流</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>维度</strong>：IP、用户、租户、接口、全局；不同维度不同阈值。</li>
+      <li><strong>算法</strong>：允许突发用令牌桶；平滑用漏桶；简单用固定/滑动窗口。</li>
+      <li><strong>层次</strong>：网关粗限流 + 应用细限流 + 本地桶兜底，Redis 共享状态。</li>
+      <li><strong>反馈</strong>：429 + <code>Retry-After</code>；核心请求可排队，非核心直接拒绝。</li>
+      <li><strong>兜底</strong>：Redis 故障降级本地限流；监控拒绝率和误杀。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>阈值太松保护不了，太紧误杀；分布式限流依赖 Redis，必须设计降级。</p>
+  <p><strong>常见追问：</strong>固定窗口边界双倍怎么办？→ 滑动窗口/令牌桶。多实例怎么共享？→ Redis Lua 原子扣减。</p>
+
+  <h2 id="s7">7. 消息积压</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>看 lag</strong>：生产 offset − 消费 offset，按分区看是否倾斜。</li>
+      <li><strong>定位</strong>：生产突增、消费变慢、下游慢调用、分区数不足、rebalance 抖动。</li>
+      <li><strong>扩容</strong>：消费者加到不超过分区数；必要时加分区（注意 key 顺序）。</li>
+      <li><strong>提效</strong>：批量、异步化、优化慢 SQL/HTTP；消费端并行但要保序。</li>
+      <li><strong>兜底</strong>：临时转存、降级非核心、死信、限流生产；事后补数据。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>加消费者最快但有上限；加分区会改变 key 映射；转存能救主链路但增加复杂度。</p>
+  <p><strong>常见追问：</strong>消费者超过分区数有用吗？→ 没有，多出来的空闲。积压时能丢消息吗？→ 非核心可丢/转死信，核心不能。</p>
+
+  <h2 id="s8">8. 重复消费 / 幂等</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>承认语义</strong>：大多数 MQ 是 at-least-once，重复不可避免。</li>
+      <li><strong>唯一键</strong>：业务唯一 ID + DB 唯一索引，冲突即已处理。</li>
+      <li><strong>去重表</strong>：处理前插入 message_id，失败回滚；或 Redis SETNX 短期去重。</li>
+      <li><strong>状态机</strong>：条件更新 <code>WHERE status='...'</code>，只允许合法跃迁。</li>
+      <li><strong>对账</strong>：定期核对消息与业务结果，补漏/纠错。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>幂等要落在业务侧，不能依赖 MQ 的 exactly-once；去重表有存储成本，Redis 去重有丢失窗口。</p>
+  <p><strong>常见追问：</strong>先提交 offset 还是先处理？→ 先处理再提交，接受重复；先提交会丢。幂等键怎么选？→ 业务唯一键，不是消息 ID。</p>
+
+  <h2 id="s9">9. 分布式锁</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>加锁</strong>：<code>SET key token NX PX ttl</code>，一条命令完成。</li>
+      <li><strong>解锁</strong>：Lua 比较 token 后再 DEL，避免误删别人的锁。</li>
+      <li><strong>续期</strong>：长任务 watchdog 续期；或拆短任务/设足 TTL。</li>
+      <li><strong>正确性</strong>：Redis 锁适合效率；强正确性用 DB 唯一约束/乐观锁或 fencing token。</li>
+      <li><strong>Redlock</strong>：多节点多数派，有时钟/暂停争议；面试要能说出双方观点。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>锁的粒度、TTL、续期、失败重试；锁越强，性能和复杂度越高。</p>
+  <p><strong>常见追问：</strong>任务超时锁失效怎么办？→ 续期 + fencing token。Redis 主从切换丢锁？→ 异步复制导致，正确性不靠它。</p>
+
+  <h2 id="s10">10. Feed 流 / 时间线</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>推拉结合</strong>：普通用户写扩散（推），大 V 读扩散（拉）。</li>
+      <li><strong>存储</strong>：收件箱用 Redis List/ZSet 存 feed ID，按时间排序。</li>
+      <li><strong>读</strong>：取收件箱 ID，再批量取内容；分页用游标，不用 offset。</li>
+      <li><strong>去重/排序</strong>：发布时间 + ID 复合 score；重复内容去重。</li>
+      <li><strong>规模</strong>：大 V 粉丝多，推模式会写放大；冷用户延迟构建。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>推模式读快写慢，拉模式写快读慢；大 V 是分水岭；缓存和分页策略决定体验。</p>
+  <p><strong>常见追问：</strong>粉丝千万怎么推？→ 大 V 拉模式/异步推 + 收件箱合并。分页重复怎么办？→ 游标 + 去重。</p>
+
+  <h2 id="s11">11. 大促削峰</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>容量</strong>：按 10 倍峰值评估，压测核心链路，留 30–50% 余量。</li>
+      <li><strong>入口</strong>：网关限流、验证码、静态页、非核心入口关闭。</li>
+      <li><strong>缓冲</strong>：MQ 削峰，消费者按 DB 能力限速；队列长度和 lag 监控。</li>
+      <li><strong>保护</strong>：熔断下游、降级非核心、超时预算、重试退避+jitter。</li>
+      <li><strong>预案</strong>：开关、回滚、扩容、对账、故障演练。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>削峰换来延迟和最终一致；限流会误杀；降级要提前设计开关，不能临时改代码。</p>
+  <p><strong>常见追问：</strong>MQ 积压怎么办？→ 扩消费者/加分区/转存/降级。DB 扛不住？→ 限流 + 缓存 + 批量 + 分库分表（最后手段）。</p>
+
+  <h2 id="s12">12. AI Agent 高并发</h2>
+  <div class="callout interview">
+    <span class="callout-label">30 秒骨架</span>
+    <ol>
+      <li><strong>量化</strong>：在线用户 ≠ QPS；估算活跃请求、LLM 调用频率、token 成本。</li>
+      <li><strong>入口</strong>：网关鉴权 + Redis 租户令牌桶 + 配额，超限 429。</li>
+      <li><strong>应用</strong>：FastAPI/uvicorn 多 worker，asyncio + 异步 LLM 客户端连接池，超时/取消。</li>
+      <li><strong>缓存与异步</strong>：Redis 会话/精确响应缓存；Kafka 长任务、审计、用量事件；Kafka 不做请求-响应。</li>
+      <li><strong>保护</strong>：LLM 供应商熔断 + 备用模型 + 队列背压 + 成本预算；监控 TTFT/tokens/成本/lag。</li>
+    </ol>
+  </div>
+  <p><strong>关键取舍：</strong>长 LLM 调用靠异步而非线程；语义缓存要租户隔离和阈值；成本是硬约束，必须做预算和降级。</p>
+  <p><strong>常见追问：</strong>GIL 影响吗？→ I/O 等待释放，CPU 密集才受限。没用过 Redis/Kafka 怎么答？→ 诚实说设计过/本地跑过，讲取舍和失败场景。</p>
+
+  <div class="ref-links">
+    <span class="label">配套课程</span>
+    <a href="../lessons/0008-seckill-inventory.html">L08 秒杀</a> ·
+    <a href="../lessons/0009-delay-queue-and-transaction.html">L09 延迟队列</a> ·
+    <a href="../lessons/0010-overload-protection.html">L10 过载保护</a> ·
+    <a href="../lessons/0011-ai-agent-backend.html">L11 AI 后端</a>
+  </div>
+
+</main>
+</body>
+</html>

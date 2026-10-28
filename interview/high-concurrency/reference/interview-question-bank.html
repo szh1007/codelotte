@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>50 道高频题 · 高并发面试题库</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="reference">
+
+  <header class="ref-header">
+    <span class="kicker">Reference · Question Bank</span>
+    <h1>50 道高频题</h1>
+    <p class="ref-lead">
+      用法：遮住答案，先出声说 30 秒，再看“一句话答案”和“追问”。
+      不要通读——通读会给你虚假的熟悉感。每天挑 10 题，面试前挑 5 题。
+    </p>
+  </header>
+
+  <nav class="toc">
+    <a href="#redis">Redis（1–18）</a>
+    <a href="#mq">Kafka / MQ（19–35）</a>
+    <a href="#system">稳定性与场景（36–50）</a>
+  </nav>
+
+  <h2 id="redis">Redis</h2>
+  <div class="qa-list">
+
+    <div class="qa">
+      <div class="qa-q">1. Redis 为什么快？</div>
+      <div class="qa-a">纯内存、IO 多路复用、命令单线程无锁、紧凑编码；瓶颈在网络/CPU/大 key。</div>
+      <div class="qa-follow">那它为什么不用多线程执行命令？→ 避免锁和上下文切换，简单可控；多实例/Cluster 扩核。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">2. Redis 单线程为什么能高并发？</div>
+      <div class="qa-a">“单线程”指命令执行；epoll 同时管大量连接，命令串行执行避免竞争，内存操作极快。</div>
+      <div class="qa-follow">瓶颈在哪？→ 网络带宽、复杂命令、大 key、持久化 fork；用 pipeline/拆分/Cluster。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">3. Redis 6 的多线程用在哪？</div>
+      <div class="qa-a">网络读写；命令执行仍是单线程。</div>
+      <div class="qa-follow">为什么不把命令也多线程？→ 共享数据结构要加锁，复杂度高，收益有限。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">4. Redis 数据结构怎么选？</div>
+      <div class="qa-a">计数 String，对象 Hash，去重 Set，排序 ZSet，队列 List/Stream，UV HyperLogLog，签到 Bitmap。</div>
+      <div class="qa-follow">排行榜用 ZSet 怎么取 Top N？→ <code>ZREVRANGE 0 N-1</code>，同分按 member 排序。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">5. 缓存穿透是什么，怎么解决？</div>
+      <div class="qa-a">查不存在的 key，缓存和 DB 都没有，每次打 DB；用空值缓存、布隆过滤器、参数校验、限流。</div>
+      <div class="qa-follow">布隆过滤器有什么缺点？→ 假阳性、删除困难；只能挡大部分无效请求。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">6. 缓存击穿是什么，怎么解决？</div>
+      <div class="qa-a">单个热 key 过期，大量并发同时回源；用互斥重建、逻辑过期、永不过期+后台刷新、请求合并。</div>
+      <div class="qa-follow">互斥锁的代价？→ 延迟和吞吐下降；要设 TTL 防死锁。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">7. 缓存雪崩是什么，怎么解决？</div>
+      <div class="qa-a">大量 key 同时失效或 Redis 整体故障；用 TTL 抖动、多级缓存、Sentinel/Cluster、限流降级、预热。</div>
+      <div class="qa-follow">和击穿的区别？→ 击穿是单个热 key，雪崩是大面积或整体。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">8. 缓存和 DB 一致性怎么保证？</div>
+      <div class="qa-a">先问一致性要求；常规 cache-aside + 更新 DB 后删缓存 + TTL；并发回填用延迟双删/binlog；强一致不靠缓存。</div>
+      <div class="qa-follow">为什么删缓存而不是更新缓存？→ 更新有并发覆盖问题，删除更简单且幂等。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">9. 延迟双删解决了什么，没解决什么？</div>
+      <div class="qa-a">降低“读回填旧值”的概率；不能保证强一致，仍有窗口，需要 TTL/binlog/版本号兜底。</div>
+      <div class="qa-follow">延迟多久？→ 覆盖一次读回填的时间，通常几百 ms 到 1 s，按读耗时估。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">10. RDB 和 AOF 怎么选？</div>
+      <div class="qa-a">按 RPO/RTO：RDB 恢复快、可能丢一段；AOF 更安全、恢复慢；常用 AOF everysec + RDB 混合。</div>
+      <div class="qa-follow">RPO=0 怎么办？→ AOF always，接受写延迟；复制默认异步，仍不是强一致。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">11. Redis 主从复制是同步还是异步？</div>
+      <div class="qa-a">默认异步；从节点可能读到旧数据，主挂了未同步的写可能丢。</div>
+      <div class="qa-follow">WAIT 能保证强一致吗？→ 不能，只是等待副本确认，故障切换仍可能丢。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">12. Sentinel 和 Cluster 的区别？</div>
+      <div class="qa-a">Sentinel 只做监控和自动故障切换，不分片；Cluster 分片 + 故障切换。</div>
+      <div class="qa-follow">数据超过单机内存怎么办？→ Cluster 分片；或业务拆分多个 Redis。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">13. Cluster 为什么是 16384 个槽？</div>
+      <div class="qa-a">槽数在集群规模和 gossip 消息大小之间取平衡；16384 足够分散，又不会让心跳包过大。</div>
+      <div class="qa-follow">多 key 操作怎么办？→ 同槽（hash tag）或业务拆分。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">14. 分布式锁怎么实现？</div>
+      <div class="qa-a"><code>SET key token NX PX ttl</code>；解锁用 Lua 比较 token 后 DEL；长任务续期。</div>
+      <div class="qa-follow">为什么不能直接 DEL？→ 锁可能已过期易主，会误删别人的锁。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">15. Redlock 有什么争议？</div>
+      <div class="qa-a">依赖时钟和进程不暂停；没有 fencing token，过期持有者可能继续写；正确性场景用 DB 约束/共识系统。</div>
+      <div class="qa-follow">Redis 锁还能用吗？→ 适合效率型（防重复计算），不适合单独承担强正确性。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">16. 限流算法怎么选？</div>
+      <div class="qa-a">允许突发用令牌桶；平滑用漏桶；简单用固定/滑动窗口；分布式用 Redis + Lua。</div>
+      <div class="qa-follow">固定窗口的问题？→ 边界可能放过约 2 倍流量。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">17. 热 key 和 big key 怎么处理？</div>
+      <div class="qa-a">热 key：本地缓存、拆 key、读副本、请求合并、限流；big key：拆分、UNLINK、压缩、TTL、扫描。</div>
+      <div class="qa-follow">为什么 hash tag 不能解决热 key？→ 它把相关 key 放同一槽，热点更集中。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">18. Redis 内存满了怎么办？</div>
+      <div class="qa-a">按业务选淘汰策略；不能丢用 noeviction + 监控扩容；缓存用 allkeys-lru/lfu；根本是 TTL/拆分/分片。</div>
+      <div class="qa-follow">淘汰策略能当容量规划吗？→ 不能，只是兜底。</div>
+    </div>
+  </div>
+
+  <h2 id="mq">Kafka / MQ</h2>
+  <div class="qa-list">
+
+    <div class="qa">
+      <div class="qa-q">19. 为什么用 MQ？</div>
+      <div class="qa-a">解耦、异步、削峰；代价是最终一致、重复、顺序、运维复杂度。</div>
+      <div class="qa-follow">什么时候不该用？→ 强一致、同步返回、量小、团队运维不了。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">20. MQ 带来哪些代价？</div>
+      <div class="qa-a">最终一致、重复消费、顺序问题、积压/死信/重平衡等运维成本。</div>
+      <div class="qa-follow">怎么降低？→ 幂等、状态机、分区有序、lag 监控、死信。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">21. Kafka 为什么快？</div>
+      <div class="qa-a">顺序追加写、page cache、批量压缩、零拷贝、分区并行、pull 背压。</div>
+      <div class="qa-follow">零拷贝有什么前提？→ sendfile；TLS/压缩等场景可能退化。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">22. topic、partition、offset 是什么？</div>
+      <div class="qa-a">topic 是逻辑类别；partition 是有序日志和并行单位；offset 是消费者位置。</div>
+      <div class="qa-follow">为什么只保证分区内有序？→ 全局有序要单分区，吞吐会被锁死。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">23. 分区数怎么定？</div>
+      <div class="qa-a">按目标吞吐/单分区吞吐、消费者并行度、未来增长定；不是越多越好，分区多有元数据/rebalance 开销。</div>
+      <div class="qa-follow">加分区有什么风险？→ 改变 key 映射，影响既有顺序。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">24. acks=0/1/all 的区别？</div>
+      <div class="qa-a">0 不等确认；1 等 leader；all 等 ISR 全部确认。可靠性依次提高，延迟也提高。</div>
+      <div class="qa-follow">acks=all 就不会丢吗？→ 还要 RF、min.insync、unclean=false 配合。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">25. ISR 是什么？</div>
+      <div class="qa-a">与 leader 保持同步的副本集合；acks=all 时等 ISR 确认，ISR 不足会拒绝写（配合 min.insync）。</div>
+      <div class="qa-follow">ISR 收缩意味着什么？→ 副本落后/故障，可靠性下降，要告警。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">26. 怎么保证消息不丢？</div>
+      <div class="qa-a">producer acks=all+重试+幂等；broker RF=3+min.insync=2+unclean=false；consumer 处理成功后再 commit。</div>
+      <div class="qa-follow">三个环节哪个最容易漏？→ 消费端先 commit 后处理，或者 producer 吞异常。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">27. 怎么保证消息不重复？</div>
+      <div class="qa-a">默认 at-least-once，重复不可避免；消费端幂等：唯一键、去重表、状态机、版本号。</div>
+      <div class="qa-follow">能用 exactly-once 吗？→ Kafka 内部可以，外部系统仍要幂等。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">28. Kafka exactly-once 的边界？</div>
+      <div class="qa-a">幂等 producer + 事务 + read_committed，覆盖 Kafka 内读-处理-写；写外部系统要幂等 sink/Outbox。</div>
+      <div class="qa-follow">事务消息和 Kafka 事务是一回事吗？→ 不是；RocketMQ 事务消息是本地事务+消息最终一致。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">29. 怎么保证消息顺序？</div>
+      <div class="qa-a">同一业务 key 发同一分区；一个分区同一时刻只被一个消费者处理；不追求全局有序。</div>
+      <div class="qa-follow">消费端多线程会乱序吗？→ 会；要按 key 串行或分区内单线程。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">30. 消息积压怎么办？</div>
+      <div class="qa-a">看 lag 定位；扩消费者≤分区数；加分区/批处理/异步化；降级、转存、死信；限流生产。</div>
+      <div class="qa-follow">消费者超过分区数有用吗？→ 没有，多出来空闲。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">31. rebalance 的原因和优化？</div>
+      <div class="qa-a">成员变化、心跳超时、poll 超时、分区变化；用 cooperative sticky、static membership、合理超时、减小 poll records。</div>
+      <div class="qa-follow">rebalance 期间会怎样？→ 消费暂停，可能重复消费。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">32. Kafka、RabbitMQ、RocketMQ 怎么选？</div>
+      <div class="qa-a">Kafka 高吞吐日志/重放；RabbitMQ 灵活路由/低延迟/单条 ack；RocketMQ 事务/延迟/顺序，电商交易。</div>
+      <div class="qa-follow">小规模异步呢？→ Redis Stream 或线程池可能更简单。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">33. RabbitMQ 怎么保证不丢？</div>
+      <div class="qa-a">publisher confirms + durable exchange/queue + persistent message + 手动 ack + DLX。</div>
+      <div class="qa-follow">消费者 ack 前挂了？→ 消息重新投递，可能重复，要幂等。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">34. RocketMQ 事务消息原理？</div>
+      <div class="qa-a">发半消息 → 执行本地事务 → commit/rollback；失败时 Broker 回查本地事务状态。</div>
+      <div class="qa-follow">解决什么问题？→ 本地事务与发消息的最终一致，避免双写。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">35. 延迟队列有哪些实现？</div>
+      <div class="qa-a">Redis ZSet、RabbitMQ TTL+DLX、RocketMQ 延迟消息、DB 轮询；Kafka 无原生延迟。</div>
+      <div class="qa-follow">RabbitMQ 同队列不同 TTL 的坑？→ 队头阻塞，按延迟分队列或用插件。</div>
+    </div>
+  </div>
+
+  <h2 id="system">稳定性与场景</h2>
+  <div class="qa-list">
+
+    <div class="qa">
+      <div class="qa-q">36. 高并发系统怎么设计？</div>
+      <div class="qa-a">量化 → 找瓶颈 → 缓存/异步/水平扩展 + 限流降级 → 一致性/幂等/可观测兜底。</div>
+      <div class="qa-follow">先上 Redis 还是先上 MQ？→ 看瓶颈在读还是写，不要先堆中间件。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">37. 容量怎么估算？</div>
+      <div class="qa-a">日均→峰值（×系数）→并发（Little's Law）→缓存/DB 分层→留 30–50% 余量。</div>
+      <div class="qa-follow">峰值系数怎么定？→ 日常 3–10 倍，大促更高；先假设再压测修正。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">38. 秒杀怎么设计？</div>
+      <div class="qa-a">入口挡→Redis Lua 预扣→MQ 异步→DB 条件更新+唯一索引→对账/降级。</div>
+      <div class="qa-follow">超卖和少卖怎么选？→ 宁可少卖；Redis 预扣+DB 条件更新双保险。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">39. 订单超时取消怎么设计？</div>
+      <div class="qa-a">延迟队列触发→条件更新状态→释放资源→支付竞态用状态机→幂等+对账。</div>
+      <div class="qa-follow">延迟消息重复怎么办？→ 条件更新+幂等，重复不影响结果。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">40. 排行榜怎么设计？</div>
+      <div class="qa-a">ZSet 存 score，ZINCRBY 更新，ZREVRANGE 取 Top N；大榜单分片/离线快照/结果缓存。</div>
+      <div class="qa-follow">同分怎么排？→ 复合 score 或按 member 字典序，再按业务规则二次排序。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">41. 点赞/计数怎么设计？</div>
+      <div class="qa-a">Set 去重 + String 计数 + ZSet 热度；MQ 异步落库；DB 唯一索引幂等。</div>
+      <div class="qa-follow">Redis 和 DB 不一致怎么办？→ 允许短暂不一致，定时对账/重建。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">42. 分布式事务怎么选？</div>
+      <div class="qa-a">能避免就避免；必须跨服务优先 Outbox/事务消息+幂等+补偿；强一致少量用 2PC/TCC。</div>
+      <div class="qa-follow">Saga 的难点？→ 补偿动作设计和补偿失败处理。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">43. 限流放在哪一层？</div>
+      <div class="qa-a">网关粗粒度（IP/租户/接口）+ 应用细粒度（用户/业务键）+ 本地桶兜底；Redis 共享状态。</div>
+      <div class="qa-follow">只做单机限流行吗？→ 多实例总阈值会被放大。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">44. 熔断、降级、隔离的区别？</div>
+      <div class="qa-a">熔断是下游失败时快速失败；降级是关非核心/返回兜底；隔离是每个依赖独立资源池。</div>
+      <div class="qa-follow">熔断器三个状态？→ closed/open/half-open。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">45. 怎么防止重试风暴？</div>
+      <div class="qa-a">指数退避 + jitter + 重试预算 + 只在一层重试 + 熔断；只重试幂等操作。</div>
+      <div class="qa-follow">4xx 要重试吗？→ 不重试；客户端错误重试也不会成功。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">46. 超时怎么设置？</div>
+      <div class="qa-a">每个远程调用都要有；参考下游延迟分位（如 P99.9）；下游超时小于上游；给整条链路超时预算。</div>
+      <div class="qa-follow">超时太短会怎样？→ 误超时触发重试，放大负载。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">47. 大促 10 倍流量怎么保证不挂？</div>
+      <div class="qa-a">容量+压测；入口限流；MQ 削峰；熔断降级隔离；超时/重试预算；预案和演练。</div>
+      <div class="qa-follow">先保什么？→ 核心交易链路；非核心推荐/报表先降级。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">48. 数据库连接池打满怎么办？</div>
+      <div class="qa-a">看慢 SQL/长事务/连接泄漏；限流+超时+熔断；读写分离/分页/批量；扩容或分库分表。</div>
+      <div class="qa-follow">直接调大连接池行吗？→ 可能把 DB 压得更死，先找根因。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">49. AI Agent 10 万用户怎么设计？</div>
+      <div class="qa-a">租户限流/配额；FastAPI 多 worker + asyncio；Redis 会话/缓存；Kafka 长任务/用量事件；LLM 熔断+备用+成本预算。</div>
+      <div class="qa-follow">为什么不用 Kafka 做请求-响应？→ 用户要实时流式回答，Kafka 是异步事件。</div>
+    </div>
+
+    <div class="qa">
+      <div class="qa-q">50. 没用过 Redis/Kafka，怎么回答？</div>
+      <div class="qa-a">诚实说没有生产经验；讲设计取舍、本地实验、失败场景和验证方法；不编造数字。</div>
+      <div class="qa-follow">那你怎么证明会用？→ 本地 Docker 跑过、能写 Lua/客户端代码、能讲清边界。</div>
+    </div>
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套课程</span>
+    <a href="../index.html">课程地图</a> ·
+    <a href="scenario-playbook.html">场景手册</a> ·
+    <a href="redis-cheatsheet.html">Redis 速查</a> ·
+    <a href="kafka-cheatsheet.html">Kafka 速查</a>
+  </div>
+
+</main>
+</body>
+</html>

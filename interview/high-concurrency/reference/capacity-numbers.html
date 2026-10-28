@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>容量数字与公式 · 高并发面试</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="reference">
+
+  <header class="ref-header">
+    <span class="kicker">Reference · Capacity</span>
+    <h1>容量数字与公式</h1>
+    <p class="ref-lead">
+      高并发面试最缺的不是方案，而是“先算一下”的习惯。
+      这一页给你四个公式、几张数量级表、三个完整算例；数字只需对到量级，面试时说出假设即可。
+    </p>
+  </header>
+
+  <nav class="toc">
+    <a href="#formulas">四个公式</a>
+    <a href="#steps">六步估算</a>
+    <a href="#orders">数量级参考</a>
+    <a href="#storage">存储估算</a>
+    <a href="#examples">三个算例</a>
+    <a href="#availability">可用性</a>
+    <a href="#calc">计算器</a>
+    <a href="#talk">面试话术</a>
+  </nav>
+
+  <h2 id="formulas">1. 四个公式</h2>
+  <pre><code>平均 QPS       = 日请求量 / 86400
+峰值 QPS       = 平均 QPS × 峰值系数
+并发数 L       = 峰值 QPS × 平均延迟（秒）        # Little's Law
+回源 DB 读 QPS = 总读 QPS × (1 − 缓存命中率)</code></pre>
+  <p>
+    Little's Law 还可以反用：已知线程/连接池大小和延迟，估算能扛多少 QPS：
+    <code>QPS ≈ 并发数 / 延迟秒数</code>。
+  </p>
+
+  <h2 id="steps">2. 六步估算</h2>
+  <ol>
+    <li><strong>日请求量</strong>：订单、页面、API 调用，分别估。</li>
+    <li><strong>峰值系数</strong>：日常 3–10 倍；大促 10–50 倍；不确定就说假设。</li>
+    <li><strong>读写比</strong>：常见 9:1 或 10:1；社交/内容可能 100:1。</li>
+    <li><strong>缓存命中率</strong>：热数据 90–99%；冷启动另算。</li>
+    <li><strong>分层压力</strong>：缓存 QPS、DB 读/写 QPS、MQ 消息量、存储量。</li>
+    <li><strong>余量</strong>：容量留 30–50%，用于峰值、故障切换、发布抖动。</li>
+  </ol>
+
+  <h2 id="orders">3. 数量级参考</h2>
+  <div class="callout warn">
+    <span class="callout-label">先声明</span>
+    <p>
+      下面是“面试够用的量级”，不是 benchmark 承诺。真实值取决于硬件、命令复杂度、
+      pipeline、网络、持久化、副本和索引。面试时说“按经验量级估算，实际以压测为准”最稳。
+    </p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>组件</th><th>量级</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Redis 单节点</td><td>5 万–10 万 QPS</td><td>简单 GET/SET；pipeline 更高；复杂命令/大 key 更低</td></tr>
+        <tr><td>MySQL 单实例</td><td>几千 QPS</td><td>点查；写更少；受索引、事务、连接池影响</td></tr>
+        <tr><td>Kafka 单分区</td><td>几 MB/s–几十 MB/s</td><td>批量/压缩影响大；集群可到百万级消息/s</td></tr>
+        <tr><td>RabbitMQ 单节点</td><td>万级 QPS</td><td>持久化 + 单条 ack 会下降</td></tr>
+        <tr><td>1 Gbps 网络</td><td>约 125 MB/s</td><td>带宽换算，实际留协议开销</td></tr>
+        <tr><td>Python FastAPI 单实例</td><td>数百–数千 QPS</td><td>取决于 I/O、序列化、worker 数；以压测为准</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="storage">4. 存储估算</h2>
+  <h3>Redis 内存</h3>
+  <pre><code>内存 ≈ key 数 × (value 大小 + key/对象开销) × 冗余系数
+冗余系数经验 1.5–2；主从复制再 ×2
+
+例：1000 万 key × 1 KB = 10 GB 原始
+    × 1.5 开销 ≈ 15 GB；带一个副本 ≈ 30 GB</code></pre>
+  <h3>Kafka 存储</h3>
+  <pre><code>存储 = 写入吞吐 × 保留时长 × 副本数
+
+例：10 MB/s × 86400 s × 7 天 × 3 副本
+    = 10 × 86400 × 7 × 3 MB ≈ 18.1 TB</code></pre>
+  <p>实际还要加索引、日志段、压缩率、峰值余量；压缩后可能显著下降，但不要按最好情况规划。</p>
+
+  <h2 id="examples">5. 三个算例</h2>
+  <h3>算例 A：日订单 100 万</h3>
+  <pre><code>日均：1,000,000 / 86400 ≈ 11.6 单/s
+峰值 2 小时承担 40%：400,000 / 7200 ≈ 55.6 单/s
+峰值系数 3：写峰值 ≈ 167 单/s
+读是写的 10 倍：读峰值 ≈ 1670 QPS
+缓存命中 95%：DB 读 ≈ 83.5 QPS
+DB 合计 ≈ 83.5 + 167 ≈ 250 QPS</code></pre>
+  <p><strong>结论：</strong>这个量级单库 + 缓存通常够；先做读缓存、写异步、留余量，不要一上来分库分表。</p>
+
+  <h3>算例 B：秒杀 10 万 QPS，1000 件库存</h3>
+  <pre><code>入口 100,000 QPS
+Redis Lua 预扣：单 key 热，需要分桶/集群
+DB 最终只处理约 1000 个成功订单
+MQ 缓冲 100,000 条，消费者 2,000/s → 约 50 秒排空</code></pre>
+  <p><strong>结论：</strong>瓶颈在入口和 Redis 热 key，不在 DB；DB 只需扛住少量成功写。</p>
+
+  <h3>算例 C：AI Agent 10 万在线</h3>
+  <pre><code>10 万在线 × 10% 同时活跃 = 10,000 活跃用户
+每 30 秒一次请求 → 10,000 / 30 ≈ 333 QPS
+每次 LLM 调用 5 秒 → 并发 ≈ 333 × 5 ≈ 1,665
+若供应商只允许 1,000 并发 → 需要队列/背压/降级</code></pre>
+  <p><strong>结论：</strong>AI 后端的瓶颈通常是外部 LLM 并发和成本，不是 CPU；用异步 I/O、队列、限流和备用模型。</p>
+
+  <h2 id="availability">6. 可用性换算</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>可用性</th><th>每年不可用</th><th>记忆</th></tr></thead>
+      <tbody>
+        <tr><td>99%</td><td>约 3.65 天</td><td>两个 9</td></tr>
+        <tr><td>99.9%</td><td>约 8.76 小时</td><td>三个 9</td></tr>
+        <tr><td>99.99%</td><td>约 52.6 分钟</td><td>四个 9</td></tr>
+        <tr><td>99.999%</td><td>约 5.26 分钟</td><td>五个 9</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>每多一个 9，成本和复杂度都会显著上升；先问业务需要几个 9，再谈架构。</p>
+
+  <h2 id="calc">7. 计算器</h2>
+  <div class="calculator" data-calculator>
+    <div class="calc-grid">
+      <label class="calc-field">峰值 QPS
+        <input type="number" data-input="qps" value="1000" min="0" step="100">
+      </label>
+      <label class="calc-field">平均延迟（ms）
+        <input type="number" data-input="latency" value="100" min="0" step="10">
+      </label>
+      <label class="calc-field">读请求占比（%）
+        <input type="number" data-input="readRatio" value="90" min="0" max="100" step="5">
+      </label>
+      <label class="calc-field">缓存命中率（%）
+        <input type="number" data-input="hit" value="95" min="0" max="100" step="1">
+      </label>
+    </div>
+    <div class="calc-outputs">
+      <div class="calc-output">并发请求数<strong data-output="concurrency">—</strong></div>
+      <div class="calc-output">读 QPS<strong data-output="readQps">—</strong></div>
+      <div class="calc-output">缓存承担<strong data-output="cacheQps">—</strong></div>
+      <div class="calc-output">DB 读<strong data-output="dbReadQps">—</strong></div>
+      <div class="calc-output">DB 写<strong data-output="dbWriteQps">—</strong></div>
+      <div class="calc-output">DB 合计<strong data-output="dbTotalQps">—</strong></div>
+    </div>
+  </div>
+
+  <h2 id="talk">8. 面试话术</h2>
+  <div class="callout quote">
+    <p>
+      “我先按日请求量估平均 QPS，再乘峰值系数得到峰值；
+      用 Little's Law 估并发和连接池；读路径乘缓存命中率，算回源 DB 的压力；
+      最后留 30–50% 余量。具体数字是量级估算，实际以压测为准。”
+    </p>
+  </div>
+  <p>
+    这句话的价值在于：你展示了<strong>可复现的估算过程</strong>，而不是背一个数字。
+    面试官追问时，你可以改假设，而不是僵住。
+  </p>
+
+  <div class="ref-links">
+    <span class="label">配套课程</span>
+    <a href="../lessons/0001-answer-framework.html">L01 答题骨架</a> ·
+    <a href="../lessons/0008-seckill-inventory.html">L08 秒杀</a> ·
+    <a href="../reference/scenario-playbook.html">场景手册</a>
+  </div>
+
+</main>
+<script src="../assets/calculator.js"></script>
+</body>
+</html>

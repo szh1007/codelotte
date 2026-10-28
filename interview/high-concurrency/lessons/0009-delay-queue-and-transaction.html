@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 09 · 延迟队列与 Outbox</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 09 · 经典场景</span>
+    <h1>订单 30 分钟未支付：延迟队列与 Outbox</h1>
+    <p class="subtitle">
+      “订单超时取消”是延迟队列的经典题；再往下追问，就会碰到
+      “取消和支付同时发生怎么办”“DB 写成功但消息没发出去怎么办”。
+      这一课把这两个坑一起填上。
+    </p>
+    <div class="meta">
+      <span>30 分钟</span>
+      <span>前置：Lesson 06–08</span>
+      <span>产出：延迟队列选型 + 幂等状态机</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>说出 Redis ZSet、RabbitMQ TTL+DLX、RocketMQ 延迟消息、DB 轮询四种方案的取舍。</li>
+      <li>用状态机 + 条件更新解决“取消”和“支付”的竞态。</li>
+      <li>用 Outbox 解决“DB 写成功但 MQ 没发出去”的双写不一致。</li>
+    </ul>
+  </section>
+
+  <h2>1. 场景：30 分钟未支付，取消订单并释放库存</h2>
+  <p>
+    订单创建后进入 <code>WAIT_PAY</code>，30 分钟内未支付则取消，释放库存和优惠券。
+    需求看似简单，实际有三个难点：
+  </p>
+  <ol>
+    <li><strong>定时</strong>：30 分钟后触发，不能靠用户刷新页面。</li>
+    <li><strong>竞态</strong>：取消和支付可能同时发生，只能有一个成功。</li>
+    <li><strong>可靠</strong>：消息不能丢，重复触发要幂等。</li>
+  </ol>
+
+  <h2>2. 四种延迟队列实现</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方案</th><th>怎么做</th><th>优点</th><th>缺点 / 注意</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Redis ZSet</strong></td>
+          <td>score = 执行时间戳，member = 订单 ID；轮询到期元素</td>
+          <td>简单、延迟低、量级可控</td>
+          <td>要自己保证“取出后只处理一次”；Redis 挂了要能恢复</td>
+        </tr>
+        <tr>
+          <td><strong>RabbitMQ TTL + DLX</strong></td>
+          <td>消息设 TTL，过期后进入死信交换机，消费者处理</td>
+          <td>成熟、支持单条确认</td>
+          <td>同一队列里不同 TTL 会队头阻塞；用每队列 TTL 或延迟插件</td>
+        </tr>
+        <tr>
+          <td><strong>RocketMQ 延迟消息</strong></td>
+          <td>发送时指定延迟级别/时间，到期投递</td>
+          <td>原生支持，运维简单</td>
+          <td>4.x 是固定级别；5.x 才支持任意时间</td>
+        </tr>
+        <tr>
+          <td><strong>DB 轮询</strong></td>
+          <td>按 <code>expire_at</code> 扫到期订单，条件更新后处理</td>
+          <td>最可靠、易对账</td>
+          <td>DB 压力；要索引、分批、<code>SKIP LOCKED</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Redis ZSet 的关键细节</h3>
+  <pre><code># 下单时写入，score 是到期时间
+ZADD delay:order &lt;execute_at_ms&gt; &lt;order_id&gt;
+
+# 轮询到期任务
+ZRANGEBYSCORE delay:order 0 &lt;now_ms&gt; LIMIT 0 100
+
+# 取出后先原子删除，再处理；处理失败重新放回
+# 多实例消费时，用 Lua 比较 member 后 ZREM，避免重复处理</code></pre>
+  <p>
+    不要用“先 ZRANGE 再 ZREM”两条命令，否则多个消费者可能拿到同一条。
+    删除和领取要原子；处理失败要重新入队，并设置最大重试次数。
+  </p>
+
+  <h3>RabbitMQ 的坑</h3>
+  <p>
+    在同一个队列里给每条消息设不同 TTL，RabbitMQ 只会在<strong>队头</strong>消息过期时处理，
+    后面的消息即使到期也要排队，造成延迟不准。正确做法是每个延迟时长一个队列，
+    或使用 delayed message exchange 插件。
+  </p>
+
+  <h2>3. 取消与支付的竞态：让状态机裁决</h2>
+  <p>
+    不要用“先查状态，再更新”的两步操作；两个请求可能同时查到 <code>WAIT_PAY</code>。
+    用<strong>条件更新</strong>让数据库裁决：
+  </p>
+  <pre><code>-- 取消：只有仍处于待支付才取消
+UPDATE orders
+SET status = 'CANCELLED'
+WHERE id = ? AND status = 'WAIT_PAY';
+
+-- 支付：只有仍处于待支付才支付
+UPDATE orders
+SET status = 'PAID'
+WHERE id = ? AND status = 'WAIT_PAY';</code></pre>
+  <p>
+    两条 SQL 只有一个能影响 1 行。取消成功后再释放库存/优惠券；支付成功后再发支付事件。
+    如果取消赢了，支付回调要识别“订单已取消”，走退款或失败处理。
+    所有后续动作都要<strong>幂等</strong>：重复取消、重复释放库存不能产生副作用。
+  </p>
+  <div class="callout key">
+    <span class="callout-label">面试一句话</span>
+    <p>
+      “延迟队列只负责‘到点触发’，不负责‘一定只触发一次’。
+      正确性靠状态机 + 条件更新 + 幂等，而不是靠 MQ 的 exactly-once。”
+    </p>
+  </div>
+
+  <h2>4. Outbox：解决 DB 与 MQ 的双写不一致</h2>
+  <p>
+    下单成功后要发 <code>OrderCreated</code>。如果先写 DB 再发 MQ，发 MQ 失败就漏消息；
+    如果先发 MQ 再写 DB，DB 失败就发了不存在的订单。这就是双写问题。
+  </p>
+  <div class="flow">
+    <div class="flow-step"><strong>本地事务</strong>写订单 + 写 outbox</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>Relay</strong>读 outbox 发 MQ</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>标记已发送</strong>或重试</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>消费者</strong>幂等处理</div>
+  </div>
+  <pre><code>BEGIN;
+INSERT INTO orders (...) VALUES (...);
+INSERT INTO outbox (aggregate_id, event_type, payload, status)
+VALUES (?, 'OrderCreated', ?, 'PENDING');
+COMMIT;
+
+-- Relay 独立进程/线程：
+SELECT * FROM outbox
+WHERE status = 'PENDING'
+ORDER BY id
+LIMIT 100
+FOR UPDATE SKIP LOCKED;
+
+-- 发 MQ 成功后：
+UPDATE outbox SET status = 'SENT' WHERE id = ?;</code></pre>
+  <ul>
+    <li>业务数据和 outbox 在同一个本地事务里，保证“要么都写，要么都不写”。</li>
+    <li>Relay 至少一次发送；消费者必须幂等，所以重复没关系。</li>
+    <li>可以用 CDC（如 Debezium）监听 outbox 表，省掉轮询。</li>
+    <li>outbox 表要定期清理，避免无限增长。</li>
+  </ul>
+
+  <h2>5. 分布式事务：先问“能不能不做”</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方案</th><th>一致性</th><th>代价</th><th>适用</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>2PC</strong></td>
+          <td>强一致</td>
+          <td>阻塞、协调者单点、性能差</td>
+          <td>少量强一致、内部系统</td>
+        </tr>
+        <tr>
+          <td><strong>TCC</strong></td>
+          <td>最终一致</td>
+          <td>要写 Try/Confirm/Cancel 三个接口，业务侵入大</td>
+          <td>资金、库存等需要预留资源</td>
+        </tr>
+        <tr>
+          <td><strong>Saga</strong></td>
+          <td>最终一致</td>
+          <td>要设计补偿动作，补偿也可能失败</td>
+          <td>长流程、跨服务编排</td>
+        </tr>
+        <tr>
+          <td><strong>事务消息</strong></td>
+          <td>最终一致</td>
+          <td>依赖 MQ 支持（如 RocketMQ）</td>
+          <td>本地事务 + 发消息</td>
+        </tr>
+        <tr>
+          <td><strong>Outbox</strong></td>
+          <td>最终一致</td>
+          <td>多一张表、Relay、清理</td>
+          <td>大多数“DB + MQ”场景</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    面试里最稳的立场：<strong>能通过业务设计避免分布式事务，就不要上</strong>；
+    必须跨服务时，优先 Outbox/事务消息 + 幂等 + 补偿，而不是硬上 2PC。
+  </p>
+
+  <h2>6. 小测：延迟与一致性</h2>
+
+  <div class="quiz" data-quiz data-explanation="ZSet 的 score 存到期时间戳，ZRANGEBYSCORE 取出到期任务；member 存订单 ID。">
+    <p class="quiz-question">用 Redis ZSet 做延迟队列，score 通常存什么？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">订单金额</button>
+      <button class="quiz-option" type="button" data-correct="true">到期时间戳</button>
+      <button class="quiz-option" type="button" data-correct="false">用户 ID</button>
+      <button class="quiz-option" type="button" data-correct="false">消息重试次数</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="同一队列里不同 TTL 时，只有队头过期才会处理，后面的消息会被阻塞；应按延迟时长分队列或用延迟插件。">
+    <p class="quiz-question">RabbitMQ 同一队列里设置不同消息 TTL，主要问题是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">消息无法持久化</button>
+      <button class="quiz-option" type="button" data-correct="true">队头阻塞延迟不准</button>
+      <button class="quiz-option" type="button" data-correct="false">交换机无法路由</button>
+      <button class="quiz-option" type="button" data-correct="false">消费者无法确认</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="取消和支付都用 WHERE status='WAIT_PAY' 的条件更新，数据库保证只有一个能成功，避免先查后改的竞态。">
+    <p class="quiz-question">取消和支付同时到达，最可靠的裁决方式是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">先查状态再分别更新</button>
+      <button class="quiz-option" type="button" data-correct="false">在应用层加锁</button>
+      <button class="quiz-option" type="button" data-correct="true">条件更新状态字段</button>
+      <button class="quiz-option" type="button" data-correct="false">让 MQ 决定顺序</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Outbox 把业务数据和待发消息放在同一个本地事务里，Relay 再发 MQ，避免 DB 写成功但消息丢失的双写不一致。">
+    <p class="quiz-question">Outbox 模式主要解决什么问题？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">提高 MQ 吞吐</button>
+      <button class="quiz-option" type="button" data-correct="true">解决双写不一致</button>
+      <button class="quiz-option" type="button" data-correct="false">减少 Redis 内存</button>
+      <button class="quiz-option" type="button" data-correct="false">保证全局有序</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">2 分钟口述练习</div>
+    <p class="drill-prompt">
+      面试官问：“订单 30 分钟未支付自动取消，怎么设计？”
+      请按“延迟方案 → 竞态 → 幂等 → 双写兜底”回答。
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>延迟方案：</strong>“量不大用 Redis ZSet，score 存到期时间，轮询取出到期订单；
+          要更可靠就用 RocketMQ 延迟消息或 DB 轮询，按团队运维能力选。”</p>
+        <p><strong>竞态：</strong>“取消时执行 <code>UPDATE ... WHERE status='WAIT_PAY'</code>，
+          支付也做同样的条件更新；只有一个能成功。取消成功后再释放库存和优惠券。”</p>
+        <p><strong>幂等：</strong>“延迟消息可能重复，取消和释放库存都要幂等；
+          用状态机保证已取消的订单不会再次取消，库存只回补一次。”</p>
+        <p><strong>双写兜底：</strong>“下单写 DB 和发 MQ 用 Outbox，同一个本地事务写业务表和 outbox，
+          Relay 至少一次发送；消费端幂等。这样不会出现订单写了、消息没发的情况。”</p>
+        <p><strong>收尾：</strong>“延迟队列只负责触发，正确性靠状态机、条件更新和幂等；
+          同时监控延迟、失败重试和死信。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    microservices.io · <a href="https://microservices.io/patterns/data/transactional-outbox.html" target="_blank" rel="noopener">Transactional Outbox</a>，
+    以及 RocketMQ 的延迟消息/事务消息文档。前者给你模式，后者给你产品实现。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/scenario-playbook.html">场景手册 · 订单超时</a> ·
+    <a href="../reference/kafka-cheatsheet.html">Kafka 速查 · 延迟/重试</a> ·
+    <a href="../reference/glossary.html">术语表</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0008-seckill-inventory.html">
+      <span class="dir">Prev</span>
+      Lesson 08 · 秒杀与库存
+    </a>
+    <a class="next" href="0010-overload-protection.html">
+      <span class="dir">Next</span>
+      Lesson 10 · 过载保护与可观测
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“Outbox 的 Relay 用线程还是 CDC”“Redis ZSet 延迟队列怎么保证只消费一次”，
+    下一轮对话里说一声，我会给你代码骨架。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

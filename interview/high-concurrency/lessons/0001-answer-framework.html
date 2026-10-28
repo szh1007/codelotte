@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 01 · 高并发答题四层骨架</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 01 · 总纲</span>
+    <h1>先开口：高并发答题的四层骨架</h1>
+    <p class="subtitle">
+      面试里最亏的不是“不知道”，而是知道几个名词却拼不成一段话。
+      这一课给你一个任何高并发题都能套的骨架，再教你用 30 秒把“高并发”变成数字。
+    </p>
+    <div class="meta">
+      <span>25 分钟</span>
+      <span>前置：无</span>
+      <span>产出：60 秒口述模板</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>用“量化 → 找瓶颈 → 三板斧 → 兜底”四层骨架回答任意高并发题。</li>
+      <li>用 Little's Law、读写比、缓存命中率做一次 30 秒容量估算。</li>
+      <li>把“高并发”从形容词变成 QPS、并发数、延迟、数据量四组数字。</li>
+    </ul>
+  </section>
+
+  <h2>1. 面试官到底在考什么</h2>
+  <p>
+    高并发题不是让你背中间件说明书。面试官想确认三件事：
+  </p>
+  <ol>
+    <li><strong>你会不会定位瓶颈</strong>：是 CPU、内存、连接数、锁、数据库，还是下游服务？</li>
+    <li><strong>你会不会做取舍</strong>：缓存换来一致性风险，MQ 换来复杂度，扩容换来成本。</li>
+    <li><strong>你有没有兜底意识</strong>：缓存挂了、MQ 积压、下游超时、重复消费时，系统会怎样？</li>
+  </ol>
+  <div class="callout interview">
+    <span class="callout-label">面试一句话</span>
+    <p>
+      “高并发设计不是堆中间件，而是先量化流量和一致性要求，找到瓶颈，
+      再用缓存、异步、水平扩展和限流降级做取舍，最后补一致性和可观测。”
+    </p>
+  </div>
+
+  <h2>2. 四层骨架：任何题都能套</h2>
+  <p>
+    把下面四层按顺序说，面试官会立刻知道你是有结构的，而不是在背题库。
+  </p>
+  <div class="layers">
+    <div class="layer">
+      <div class="layer-num">01</div>
+      <div class="layer-body">
+        <strong>量化需求</strong>
+        <span>峰值 QPS、读写比、数据量、延迟目标（P99）、一致性要求、可用性目标。没有数字就先假设，并说出来。</span>
+      </div>
+    </div>
+    <div class="layer">
+      <div class="layer-num">02</div>
+      <div class="layer-body">
+        <strong>找瓶颈</strong>
+        <span>接入层、应用层、缓存、数据库、MQ、下游依赖；再看 CPU、内存、磁盘 IO、连接池、锁、网络。</span>
+      </div>
+    </div>
+    <div class="layer">
+      <div class="layer-num">03</div>
+      <div class="layer-body">
+        <strong>三板斧 + 保护</strong>
+        <span>读多写少上缓存；写多/慢操作上异步与 MQ 削峰；无状态服务水平扩展；再叠加限流、降级、熔断、隔离。</span>
+      </div>
+    </div>
+    <div class="layer">
+      <div class="layer-num">04</div>
+      <div class="layer-body">
+        <strong>兜底与验证</strong>
+        <span>一致性、幂等、消息不丢、缓存故障、容量余量、监控告警、压测与故障演练。</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout key">
+    <span class="callout-label">顺序不能反</span>
+    <p>
+      先讲“上 Kafka”再讲为什么，听起来像背产品名；先讲“写路径峰值 5 万 QPS、DB 只能扛 5 千，
+      所以需要削峰”，Kafka 就成了自然结论。
+    </p>
+  </div>
+
+  <h2>3. 30 秒量化：把形容词变成数字</h2>
+  <p>
+    面试里最常用的一条公式是 <strong>Little's Law</strong>：
+  </p>
+  <pre><code>并发数 L = 到达率 λ × 平均停留时间 W
+
+例如：1000 QPS × 100 ms = 100 个并发请求</code></pre>
+  <p>
+    它解决的是“QPS 高不高”和“要多少线程/连接”之间的换算。
+    另一个常用换算是缓存命中率：
+  </p>
+  <pre><code>回源 DB 的读 QPS = 总读 QPS × (1 − 缓存命中率)
+
+例如：8000 读 QPS × (1 − 95%) = 400 QPS 打到 DB</code></pre>
+
+  <h3>三步估算</h3>
+  <ol>
+    <li><strong>平均 QPS</strong> = 日请求量 ÷ 86400 秒。</li>
+    <li><strong>峰值 QPS</strong> = 平均 QPS × 峰值系数。日常业务常见 3–10 倍，大促更高；不确定就说“我按 5 倍估”。</li>
+    <li><strong>分层压力</strong>：读 QPS × 命中率 → 缓存压力；读 QPS × (1−命中率) + 写 QPS → DB 压力。</li>
+  </ol>
+
+  <div class="calculator" data-calculator>
+    <div class="calc-grid">
+      <label class="calc-field">峰值 QPS
+        <input type="number" data-input="qps" value="1000" min="0" step="100">
+      </label>
+      <label class="calc-field">平均延迟（ms）
+        <input type="number" data-input="latency" value="100" min="0" step="10">
+      </label>
+      <label class="calc-field">读请求占比（%）
+        <input type="number" data-input="readRatio" value="90" min="0" max="100" step="5">
+      </label>
+      <label class="calc-field">缓存命中率（%）
+        <input type="number" data-input="hit" value="95" min="0" max="100" step="1">
+      </label>
+    </div>
+    <div class="calc-outputs">
+      <div class="calc-output">并发请求数<strong data-output="concurrency">—</strong></div>
+      <div class="calc-output">读 QPS<strong data-output="readQps">—</strong></div>
+      <div class="calc-output">缓存承担<strong data-output="cacheQps">—</strong></div>
+      <div class="calc-output">DB 读<strong data-output="dbReadQps">—</strong></div>
+      <div class="calc-output">DB 写<strong data-output="dbWriteQps">—</strong></div>
+      <div class="calc-output">DB 合计<strong data-output="dbTotalQps">—</strong></div>
+    </div>
+  </div>
+
+  <p>
+    改一改输入，你会看到：<strong>缓存命中率从 95% 掉到 90%，DB 读压力会翻倍</strong>。
+    这就是面试里“为什么缓存命中率这么重要”的量化答案。
+  </p>
+
+  <h2>4. 三板斧：每个瓶颈对应一类手段</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>瓶颈</th><th>首选手段</th><th>代价 / 追问</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>读多写少，DB 被读打满</td>
+          <td>缓存（本地 + Redis）、读写分离、读副本</td>
+          <td>一致性、缓存穿透/击穿/雪崩、热 key</td>
+        </tr>
+        <tr>
+          <td>写路径有慢操作，峰值扛不住</td>
+          <td>MQ 异步化、削峰、批量写</td>
+          <td>最终一致性、重复消费、积压、顺序</td>
+        </tr>
+        <tr>
+          <td>单机 CPU/连接数到顶</td>
+          <td>无状态化 + 水平扩展 + 负载均衡</td>
+          <td>会话外置、分布式锁、数据分片</td>
+        </tr>
+        <tr>
+          <td>下游变慢或挂掉，拖垮调用方</td>
+          <td>限流、降级、熔断、隔离、超时</td>
+          <td>误杀、降级范围、重试风暴</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout warn">
+    <span class="callout-label">常见扣分点</span>
+    <ul>
+      <li>一上来就“加 Redis、加 Kafka”，不说为什么、不说代价。</li>
+      <li>只说平均 QPS，不说峰值、读写比、延迟目标。</li>
+      <li>说“保证一致性”却不区分强一致和最终一致。</li>
+      <li>不说失败场景：缓存挂了怎么办？MQ 积压怎么办？重复消费怎么办？</li>
+    </ul>
+  </div>
+
+  <h2>5. 60 秒答题模板</h2>
+  <p>
+    把下面这段话改成你自己的语气，背到能脱口而出。括号里的内容按题目替换。
+  </p>
+  <div class="callout quote">
+    <p>
+      “我先确认量级：这个系统峰值大概（X QPS），读写比（9:1），
+      核心要求是（不超卖 / 不丢消息 / 允许秒级不一致）。
+      按这个量级，瓶颈主要在（数据库写 / 热点读 / 下游慢调用）。
+      读路径我会用（cache-aside + 本地缓存）把大部分流量挡在 DB 前；
+      写路径用（MQ 削峰 + 批量落库）把峰值摊平；
+      应用层保持无状态，方便水平扩展。
+      代价是（缓存一致性 / 消息重复 / 运维复杂度），
+      所以我会补（延迟双删 / 幂等消费 / 死信和对账），
+      再加（限流、降级、监控告警）做兜底。”
+    </p>
+  </div>
+
+  <h2>6. 小测：把数字和手段对上</h2>
+
+  <div class="quiz" data-quiz data-explanation="Little's Law：并发 = QPS × 延迟秒数 = 1000 × 0.1 = 100。">
+    <p class="quiz-question">峰值 1000 QPS，平均延迟 100 ms，按 Little's Law 并发请求数约为？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">10 个并发</button>
+      <button class="quiz-option" type="button" data-correct="false">1000 个并发</button>
+      <button class="quiz-option" type="button" data-correct="true">100 个并发</button>
+      <button class="quiz-option" type="button" data-correct="false">10000 个并发</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="回源读 = 8000 × (1 − 0.95) = 400 QPS；缓存命中越高，DB 越轻松。">
+    <p class="quiz-question">读请求 8000 QPS，缓存命中率 95%，回源到数据库的读 QPS 约为？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">40 QPS</button>
+      <button class="quiz-option" type="button" data-correct="true">400 QPS</button>
+      <button class="quiz-option" type="button" data-correct="false">800 QPS</button>
+      <button class="quiz-option" type="button" data-correct="false">4000 QPS</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="写多读少、允许短暂不一致、要求不丢：MQ 削峰 + 异步落库最贴合；加缓存和读副本解决的是读压力。">
+    <p class="quiz-question">写多读少、允许秒级不一致、要求消息不丢，优先补哪一层？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">加 Redis 缓存</button>
+      <button class="quiz-option" type="button" data-correct="false">加数据库读副本</button>
+      <button class="quiz-option" type="button" data-correct="false">加本地缓存</button>
+      <button class="quiz-option" type="button" data-correct="true">加 MQ 异步削峰</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">60 秒口述练习</div>
+    <p class="drill-prompt">
+      日订单 100 万，流量集中在晚上 2 小时，读请求约为写请求的 10 倍。
+      请用四层骨架，口述这个订单系统的容量和架构。
+    </p>
+    <p>先自己说 60 秒，再展开参考答案。重点不是数字精确，而是结构完整。</p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>量化：</strong>日订单 100 万；峰值 2 小时承担 40%，约 40 万单，
+          平均 55.6 单/s；按 3 倍峰值系数，写峰值约 167 QPS。读是写的 10 倍，
+          读峰值约 1670 QPS。</p>
+        <p><strong>瓶颈：</strong>写路径要落订单、扣库存、发通知，DB 写和下游调用是瓶颈；
+          读路径是订单查询，DB 读会被打满。</p>
+        <p><strong>三板斧：</strong>读路径用 Redis cache-aside，按 95% 命中率估算，
+          DB 读约 83 QPS；写路径用 MQ 把“创建订单”与“发积分/发短信/写报表”解耦，
+          峰值被摊平；应用层无状态，按 QPS 水平扩容。</p>
+        <p><strong>兜底：</strong>缓存更新用“先更新 DB 再删缓存 + TTL 兜底”；
+          消费端用业务唯一键幂等；MQ 配置 acks=all、副本 3、消费失败进死信；
+          入口按用户和 IP 限流；监控 P99、DB 连接池、MQ lag。</p>
+        <p><strong>一句话收尾：</strong>“这个量级不需要一上来分库分表，
+          先把读缓存和写异步做好，留 30–50% 余量，再根据压测结果决定是否拆库。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    Google SRE Book · <a href="https://sre.google/sre-book/handling-overload/" target="_blank" rel="noopener">Handling Overload</a>。
+    读这一章，重点看“过载时系统为什么会级联失败、为什么要主动丢负载”。
+    它是后面限流、降级、熔断课的地基。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/capacity-numbers.html">容量数字与公式</a> ·
+    <a href="../reference/glossary.html">术语表</a> ·
+    <a href="../reference/scenario-playbook.html">场景手册</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="../index.html">
+      <span class="dir">Index</span>
+      课程地图
+    </a>
+    <a class="next" href="0002-redis-data-structures.html">
+      <span class="dir">Next</span>
+      Lesson 02 · Redis 全景与数据结构
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“我这个项目到底该不该上 MQ”“100 万订单的估算能不能再简化”，
+    下一轮对话里说一声，我会按你的项目背景重讲。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+<script src="../assets/calculator.js"></script>
+</body>
+</html>

@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>术语表 · 高并发后端中间件</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="reference">
+
+  <header class="ref-header">
+    <span class="kicker">Reference · Glossary</span>
+    <h1>术语表</h1>
+    <p class="ref-lead">
+      面试里“听不懂题”往往不是不会，而是黑话没对齐。这一页只给一句话定义 + 面试里的用法。
+      后面的课程和速查都按这里的叫法。
+    </p>
+  </header>
+
+  <nav class="toc">
+    <a href="#metrics">指标与容量</a>
+    <a href="#cache">缓存</a>
+    <a href="#redis">Redis</a>
+    <a href="#mq">MQ / Kafka</a>
+    <a href="#stability">稳定性</a>
+    <a href="#tx">分布式事务</a>
+  </nav>
+
+  <h2 id="metrics">指标与容量</h2>
+  <div class="term-grid">
+    <dl class="term">
+      <dt>QPS</dt>
+      <dd>每秒请求数。面试先问“峰值 QPS”，不要只给日均。</dd>
+    </dl>
+    <dl class="term">
+      <dt>TPS</dt>
+      <dd>每秒事务数。常和 QPS 混用；严格说一个事务可能包含多个请求。</dd>
+    </dl>
+    <dl class="term">
+      <dt>并发数</dt>
+      <dd>同一时刻正在处理的请求数。Little's Law：并发 ≈ QPS × 平均延迟（秒）。</dd>
+    </dl>
+    <dl class="term">
+      <dt>P99 / P999</dt>
+      <dd>99% / 99.9% 请求的延迟上界。平均延迟会掩盖长尾，面试要说 P99。</dd>
+    </dl>
+    <dl class="term">
+      <dt>吞吐量</dt>
+      <dd>单位时间处理的数据量/请求量。和延迟一起看，不能只看一个。</dd>
+    </dl>
+    <dl class="term">
+      <dt>峰值系数</dt>
+      <dd>峰值 QPS ÷ 平均 QPS。日常业务常见 3–10 倍，大促更高；估算时先假设再修正。</dd>
+    </dl>
+    <dl class="term">
+      <dt>RPO</dt>
+      <dd>恢复点目标：故障时最多能丢多少数据。RPO=0 表示尽量不丢。</dd>
+    </dl>
+    <dl class="term">
+      <dt>RTO</dt>
+      <dd>恢复时间目标：故障后多久能恢复服务。和 RPO 一起决定持久化/副本方案。</dd>
+    </dl>
+    <dl class="term">
+      <dt>SLO / SLI</dt>
+      <dd>SLO 是目标（如 P99 &lt; 200ms），SLI 是实际测量值。稳定性设计要围绕 SLO。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Headroom</dt>
+      <dd>容量余量。常见留 30–50%，用来吸收峰值、故障切换和发布抖动。</dd>
+    </dl>
+  </div>
+
+  <h2 id="cache">缓存</h2>
+  <div class="term-grid">
+    <dl class="term">
+      <dt>Cache-aside</dt>
+      <dd>应用先查缓存，未命中查 DB 再回填；写时更新 DB 后删缓存。最常用的缓存模式。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Write-through</dt>
+      <dd>写请求同时写缓存和 DB，缓存始终较新；写延迟高，适合读多且要求较新。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Write-behind</dt>
+      <dd>先写缓存，异步批量写 DB；写快，但缓存故障可能丢数据。</dd>
+    </dl>
+    <dl class="term">
+      <dt>缓存穿透</dt>
+      <dd>查不存在的 key，缓存和 DB 都没有，每次都打 DB。解法：空值缓存、布隆过滤器、参数校验。</dd>
+    </dl>
+    <dl class="term">
+      <dt>缓存击穿</dt>
+      <dd>单个热点 key 过期，大量并发同时回源。解法：互斥重建、逻辑过期、本地缓存。</dd>
+    </dl>
+    <dl class="term">
+      <dt>缓存雪崩</dt>
+      <dd>大量 key 同时失效或缓存整体故障，流量全部打 DB。解法：TTL 抖动、多级缓存、限流降级。</dd>
+    </dl>
+    <dl class="term">
+      <dt>热 key</dt>
+      <dd>访问量集中在单个 key，打满一个分片。解法：本地缓存、拆 key、读副本、请求合并。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Big key</dt>
+      <dd>超大 String 或超大集合。危害：慢操作、网络包大、删除阻塞、数据倾斜。解法：拆分、UNLINK、压缩。</dd>
+    </dl>
+    <dl class="term">
+      <dt>布隆过滤器</dt>
+      <dd>用位数组 + 多个哈希判断“可能存在/一定不存在”；有假阳性、无假阴性，删除困难。</dd>
+    </dl>
+    <dl class="term">
+      <dt>延迟双删</dt>
+      <dd>更新 DB 后删缓存，延迟一段时间再删一次，降低并发读回填旧值的概率；不是强一致。</dd>
+    </dl>
+    <dl class="term">
+      <dt>缓存命中率</dt>
+      <dd>命中缓存的读请求占比。命中率下降会直接放大 DB 读压力。</dd>
+    </dl>
+    <dl class="term">
+      <dt>读己之写</dt>
+      <dd>用户写完立刻读，必须看到自己的更新。缓存场景常用写后读主库/会话粘滞。</dd>
+    </dl>
+  </div>
+
+  <h2 id="redis">Redis</h2>
+  <div class="term-grid">
+    <dl class="term">
+      <dt>RDB</dt>
+      <dd>某一时刻的数据快照。恢复快，但可能丢最后一次快照后的数据。</dd>
+    </dl>
+    <dl class="term">
+      <dt>AOF</dt>
+      <dd>追加写命令日志。fsync=always 最安全，everysec 最多丢约 1 秒，no 交给 OS。</dd>
+    </dl>
+    <dl class="term">
+      <dt>混合持久化</dt>
+      <dd>Redis 4.0+：AOF 重写时前半段 RDB、后半段增量命令，兼顾恢复速度和丢失窗口。</dd>
+    </dl>
+    <dl class="term">
+      <dt>主从复制</dt>
+      <dd>主节点异步把写命令同步给从节点；从节点可分担读，但可能读到旧数据。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Sentinel</dt>
+      <dd>监控主从并自动故障切换；不做数据分片。至少 3 个 Sentinel。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Cluster</dt>
+      <dd>把 key 分成 16384 个 hash slot 分片到多个主节点；自带故障转移。</dd>
+    </dl>
+    <dl class="term">
+      <dt>MOVED / ASK</dt>
+      <dd>Cluster 的重定向：MOVED 表示槽已迁走，ASK 表示迁移中临时去新节点。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Hash tag</dt>
+      <dd>用 <code>{user:1}</code> 让多个 key 落同一槽，便于多 key 操作；但会让热点更集中。</dd>
+    </dl>
+    <dl class="term">
+      <dt>淘汰策略</dt>
+      <dd>内存满时的处理：noeviction、allkeys-lru/lfu、volatile-lru/lfu/ttl/random。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Redlock</dt>
+      <dd>多个独立 Redis 主节点多数派加锁的算法；有时钟/暂停假设争议，正确性场景需 fencing token。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Fencing token</dt>
+      <dd>锁的单调递增编号；存储层拒绝旧 token 的写，防止过期持有者继续操作。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Pipeline</dt>
+      <dd>一次发送多条命令减少 RTT，但不保证原子；原子性用 Lua/事务。</dd>
+    </dl>
+  </div>
+
+  <h2 id="mq">MQ / Kafka</h2>
+  <div class="term-grid">
+    <dl class="term">
+      <dt>Broker</dt>
+      <dd>Kafka 的一个节点；多个 broker 组成集群，负责存储和复制分区。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Topic / Partition</dt>
+      <dd>Topic 是逻辑类别，Partition 是有序日志，是 Kafka 并行和有序的单位。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Offset</dt>
+      <dd>消费者在分区中的位置；提交 offset 表示“处理到哪”。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Consumer Group</dt>
+      <dd>同一 group 内一个分区只分给一个消费者；不同 group 各自消费全量。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Rebalance</dt>
+      <dd>消费者加入/离开/超时导致分区重新分配；期间消费暂停，要优化超时和分配策略。</dd>
+    </dl>
+    <dl class="term">
+      <dt>ISR</dt>
+      <dd>In-Sync Replicas，与 leader 保持同步的副本集合；acks=all 等 ISR 确认。</dd>
+    </dl>
+    <dl class="term">
+      <dt>acks</dt>
+      <dd>0 不等确认、1 等 leader、all 等 ISR 全部确认。可靠性依次提高，延迟也提高。</dd>
+    </dl>
+    <dl class="term">
+      <dt>min.insync.replicas</dt>
+      <dd>最少同步副本数；配合 acks=all，副本不足时拒绝写，避免静默丢数据。</dd>
+    </dl>
+    <dl class="term">
+      <dt>At-most-once</dt>
+      <dd>先提交 offset 再处理，可能丢、不重复。</dd>
+    </dl>
+    <dl class="term">
+      <dt>At-least-once</dt>
+      <dd>处理成功再提交 offset，不丢、可能重复；消费端必须幂等。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Exactly-once</dt>
+      <dd>Kafka 内用幂等 producer + 事务 + read_committed；外部系统仍要幂等 sink。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Consumer lag</dt>
+      <dd>生产 offset 与消费 offset 的差；积压的核心指标。</dd>
+    </dl>
+    <dl class="term">
+      <dt>DLQ</dt>
+      <dd>死信队列：处理失败/过期的消息转进去，避免阻塞主链路，便于人工排查。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Retention / Compaction</dt>
+      <dd>按时间/大小保留消息；compaction 按 key 保留最新值，适合 changelog。</dd>
+    </dl>
+    <dl class="term">
+      <dt>KRaft</dt>
+      <dd>Kafka 用 Raft 管理元数据，替代 ZooKeeper；新版本默认模式。</dd>
+    </dl>
+  </div>
+
+  <h2 id="stability">稳定性</h2>
+  <div class="term-grid">
+    <dl class="term">
+      <dt>限流</dt>
+      <dd>控制进入系统的速率，保护容量；入口层常用令牌桶/漏桶，超限 429。</dd>
+    </dl>
+    <dl class="term">
+      <dt>降级</dt>
+      <dd>资源不足时关闭非核心功能/返回兜底数据，保住核心链路。</dd>
+    </dl>
+    <dl class="term">
+      <dt>熔断</dt>
+      <dd>下游失败率超阈值时快速失败，避免调用方被拖死；状态 closed/open/half-open。</dd>
+    </dl>
+    <dl class="term">
+      <dt>隔离 / 舱壁</dt>
+      <dd>每个依赖独立线程/连接池，一个慢依赖不耗尽全部资源。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Load shedding</dt>
+      <dd>过载时主动丢弃部分请求（优先非核心），保持系统可服务。</dd>
+    </dl>
+    <dl class="term">
+      <dt>重试风暴</dt>
+      <dd>大量客户端同时重试，把下游压得更慢；用退避、jitter、预算、熔断防。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Jitter</dt>
+      <dd>给退避/定时任务加随机抖动，打散同时重试或同时执行的尖峰。</dd>
+    </dl>
+    <dl class="term">
+      <dt>超时预算</dt>
+      <dd>整个请求的总时间预算，每跳消耗；预算耗尽快速失败，避免无意义等待。</dd>
+    </dl>
+    <dl class="term">
+      <dt>RED / USE</dt>
+      <dd>RED：Rate/Errors/Duration；USE：Utilization/Saturation/Errors。可观测的两套视角。</dd>
+    </dl>
+    <dl class="term">
+      <dt>全链路压测</dt>
+      <dd>按真实链路和流量模型压测，找瓶颈和容量上限；注意数据隔离和影子表。</dd>
+    </dl>
+  </div>
+
+  <h2 id="tx">分布式事务</h2>
+  <div class="term-grid">
+    <dl class="term">
+      <dt>2PC</dt>
+      <dd>两阶段提交：准备 + 提交；强一致但阻塞、协调者单点，性能差。</dd>
+    </dl>
+    <dl class="term">
+      <dt>TCC</dt>
+      <dd>Try 预留、Confirm 确认、Cancel 取消；业务侵入大，适合资金/库存。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Saga</dt>
+      <dd>一串本地事务 + 失败补偿；最终一致，补偿也可能失败，需要幂等。</dd>
+    </dl>
+    <dl class="term">
+      <dt>Outbox</dt>
+      <dd>业务表和待发消息同事务写入，Relay 异步发 MQ；解决 DB 与 MQ 双写不一致。</dd>
+    </dl>
+    <dl class="term">
+      <dt>事务消息</dt>
+      <dd>MQ 提供半消息 + 回查，保证本地事务与发消息最终一致；RocketMQ 典型。</dd>
+    </dl>
+    <dl class="term">
+      <dt>幂等</dt>
+      <dd>同一操作执行多次结果一致；实现：唯一键、去重表、状态机条件更新、版本号。</dd>
+    </dl>
+  </div>
+
+  <div class="ref-links">
+    <span class="label">下一步</span>
+    回到 <a href="../index.html">课程地图</a>，或直接看
+    <a href="scenario-playbook.html">场景手册</a> / <a href="interview-question-bank.html">题库</a>。
+  </div>
+
+</main>
+</body>
+</html>

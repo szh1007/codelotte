@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 03 · 缓存三大问题与一致性</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 03 · 缓存</span>
+    <h1>穿透、击穿、雪崩：三个词，三套解法</h1>
+    <p class="subtitle">
+      这是 Redis 面试出现频率最高的一组题。难点不在背定义，而在
+      “看到现象能判断是哪一类”以及“说出方案背后的代价”。
+    </p>
+    <div class="meta">
+      <span>30 分钟</span>
+      <span>前置：Lesson 02</span>
+      <span>产出：缓存故障诊断 + 一致性答法</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>用一句话区分穿透、击穿、雪崩，并各说出 2–3 个解法。</li>
+      <li>讲清 cache-aside 的读写路径，以及“为什么更新 DB 后删缓存而不是更新缓存”。</li>
+      <li>面对“缓存和数据库一致性”能按一致性要求分层回答，而不是一句“延迟双删”。</li>
+    </ul>
+  </section>
+
+  <h2>1. 先把 cache-aside 的路径画出来</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>读请求</strong>先 GET 缓存</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>命中</strong>直接返回</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>未命中</strong>查 DB</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>回填</strong>SET 缓存 + TTL</div>
+  </div>
+  <p>
+    写路径通常是：<strong>先更新数据库，再删除缓存</strong>（不是更新缓存）。
+    这是最常见的 cache-aside 模式，<a href="https://redis.io/docs/latest/develop/use-cases/cache-aside/" target="_blank" rel="noopener">Redis 官方文档</a>
+    也是这么描述的：应用负责读写缓存，缓存未命中时回源，写入时让缓存失效。
+  </p>
+  <div class="callout key">
+    <span class="callout-label">为什么删缓存而不是更新缓存</span>
+    <p>
+      更新缓存要处理“两次并发写谁覆盖谁”的顺序问题，还要把 DB 的复杂查询结果重新组装；
+      删除更简单、幂等，下一次读自然回填。代价是下一次读会 miss，需要防击穿。
+    </p>
+  </div>
+
+  <h2>2. 穿透：查一个根本不存在的东西</h2>
+  <p>
+    <strong>现象：</strong>请求的 key 在缓存和 DB 里都不存在。每次请求都穿过缓存打到 DB。
+    常见于恶意刷不存在的 ID、爬虫、参数错误。
+  </p>
+  <p><strong>解法：</strong></p>
+  <ul>
+    <li><strong>缓存空值</strong>：DB 查不到也写一个短 TTL 的空值（如 30–60 秒），让后续请求命中缓存。</li>
+    <li><strong>布隆过滤器</strong>：写入数据时把 key 放进布隆过滤器；查询前先问它。说“不存在”就一定不存在，说“存在”可能是误判。</li>
+    <li><strong>参数校验 + 限流</strong>：ID 格式、范围、签名校验；对同一用户/IP 的异常请求限流。</li>
+  </ul>
+  <div class="callout warn">
+    <span class="callout-label">布隆过滤器的边界</span>
+    <p>
+      有假阳性、没有假阴性；删除元素麻烦（需要计数布隆或定期重建）。
+      面试里主动说“它只能挡掉大部分无效请求，不能当唯一正确性保障”。
+    </p>
+  </div>
+
+  <h2>3. 击穿：一个热点 key 过期了</h2>
+  <p>
+    <strong>现象：</strong>某个高频访问的 key 刚好过期，大量并发请求同时未命中，一起打到 DB。
+    注意是<strong>单个热点 key</strong>，不是大面积 key。
+  </p>
+  <p><strong>解法：</strong></p>
+  <ul>
+    <li><strong>互斥重建</strong>：只让一个请求拿到 <code>SET NX</code> 锁去查 DB、回填，其他请求短暂等待或返回旧值。</li>
+    <li><strong>逻辑过期</strong>：value 里带一个 <code>expireAt</code>，Redis key 本身不设 TTL；发现逻辑过期后异步刷新，读请求先返回旧值。</li>
+    <li><strong>永不过期 + 后台刷新</strong>：适合变化不频繁、能接受短暂旧值的热点数据。</li>
+    <li><strong>本地缓存 / 请求合并</strong>：同一进程内只发一次回源请求。</li>
+  </ul>
+  <p>
+    互斥锁的代价是延迟和吞吐；逻辑过期的代价是可能返回旧值。面试里要说出你选哪个、为什么。
+  </p>
+
+  <h2>4. 雪崩：大面积 key 同时失效，或缓存整体挂了</h2>
+  <p>
+    <strong>现象：</strong>大量 key 在同一时间过期（比如统一设置为 1 小时），
+    或者 Redis 集群故障，流量瞬间全部打到 DB，DB 被拖垮，进而拖垮整个系统。
+  </p>
+  <p><strong>解法：</strong></p>
+  <ul>
+    <li><strong>TTL 加随机抖动</strong>：不要让一批 key 在同一秒过期。</li>
+    <li><strong>多级缓存</strong>：本地缓存 + Redis，Redis 挂了还有本地兜底（注意一致性）。</li>
+    <li><strong>Redis 高可用</strong>：主从 + Sentinel 或 Cluster，避免单点。</li>
+    <li><strong>限流 + 熔断 + 降级</strong>：DB 压力过大时挡住部分请求，返回兜底数据。</li>
+    <li><strong>预热</strong>：大促前把热点数据提前加载，避免冷启动。</li>
+  </ul>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>问题</th><th>触发范围</th><th>一句话记忆</th><th>首选解法</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>穿透</strong></td><td>不存在的 key</td><td>查了个空气</td><td>空值缓存 / 布隆过滤器</td></tr>
+        <tr><td><strong>击穿</strong></td><td>单个热点 key</td><td>一个热点刚过期</td><td>互斥重建 / 逻辑过期</td></tr>
+        <tr><td><strong>雪崩</strong></td><td>大量 key 或整个缓存</td><td>一片同时失效</td><td>TTL 抖动 / 多级缓存 / 限流降级</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>5. 缓存一致性：先问要求，再谈方案</h2>
+  <p>
+    “缓存和 DB 怎么保证一致性”没有单一答案。先反问一句：
+    <strong>业务能接受多长时间的旧数据？</strong>
+  </p>
+  <ul>
+    <li><strong>能接受秒级/分钟级旧数据</strong>：cache-aside + 更新 DB 后删缓存 + TTL 兜底，足够。</li>
+    <li><strong>不能接受旧数据（余额、库存扣减）</strong>：不要把强一致寄托在缓存上；用 DB 事务、唯一约束、版本号、分布式锁，缓存只做读加速。</li>
+    <li><strong>要读到自己刚写的数据</strong>：写后短时间读主库，或写后主动更新/删除缓存，并处理并发回填。</li>
+  </ul>
+
+  <h3>为什么“更新 DB 后删缓存”仍可能不一致</h3>
+  <p>经典竞态：</p>
+  <pre><code>1. 读请求 A 缓存未命中，读 DB 得到旧值 V1
+2. 写请求 B 更新 DB 为 V2，然后删除缓存
+3. 读请求 A 把 V1 回填缓存
+4. 后续读请求一直读到 V1，直到 TTL 过期</code></pre>
+  <p>应对手段：</p>
+  <ul>
+    <li><strong>延迟双删</strong>：更新 DB 后删一次，延迟一段时间（覆盖一次读回填的窗口）再删一次。能降低概率，但不是强一致。</li>
+    <li><strong>订阅 binlog</strong>：用 Canal / Debezium 监听 DB 变更，发 MQ 异步删缓存。删除动作发生在 DB 提交之后，工程上更可靠。</li>
+    <li><strong>版本号 / 逻辑过期</strong>：缓存 value 带版本，写入时版本递增，回填时旧版本不覆盖新版本。</li>
+    <li><strong>TTL 兜底</strong>：无论哪种方案，都保留一个最大过期时间，防止永久脏数据。</li>
+  </ul>
+
+  <div class="callout interview">
+    <span class="callout-label">面试一句话</span>
+    <p>
+      “缓存一致性要先分级：大多数读多写少业务接受最终一致，用 cache-aside、
+      更新 DB 后删缓存、TTL 兜底；对并发回填的脏数据，用延迟双删或订阅 binlog 删缓存。
+      如果是余额、库存这种强一致场景，我不会让缓存承担正确性，正确性放 DB 事务和约束。”
+    </p>
+  </div>
+
+  <h2>6. 小测：先判断是哪一类</h2>
+
+  <div class="quiz" data-quiz data-explanation="key 在缓存和 DB 都不存在，每次都穿透到 DB，这是穿透；空值缓存和布隆过滤器是典型解法。">
+    <p class="quiz-question">攻击者用大量不存在的商品 ID 请求详情页，每次都打到数据库。这是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="true">缓存穿透</button>
+      <button class="quiz-option" type="button" data-correct="false">缓存击穿</button>
+      <button class="quiz-option" type="button" data-correct="false">缓存雪崩</button>
+      <button class="quiz-option" type="button" data-correct="false">缓存一致性</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="单个热点 key 过期，大量并发同时回源，是击穿；互斥重建或逻辑过期可以挡住。">
+    <p class="quiz-question">首页某个爆款商品的缓存刚过期，几千个请求同时回源数据库。这是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">缓存雪崩</button>
+      <button class="quiz-option" type="button" data-correct="true">缓存击穿</button>
+      <button class="quiz-option" type="button" data-correct="false">缓存穿透</button>
+      <button class="quiz-option" type="button" data-correct="false">缓存污染</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="读请求在写请求删缓存之后，把之前读到的旧值回填，导致缓存长期是旧值；延迟双删/binlog 订阅/版本号都是在缩小这个窗口。">
+    <p class="quiz-question">“先更新 DB 再删缓存”仍可能不一致，主要原因是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">Redis 命令不原子</button>
+      <button class="quiz-option" type="button" data-correct="false">数据库主从延迟</button>
+      <button class="quiz-option" type="button" data-correct="true">并发读回填了旧值</button>
+      <button class="quiz-option" type="button" data-correct="false">缓存未设置过期时间</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">90 秒口述练习</div>
+    <p class="drill-prompt">
+      面试官问：“你们的缓存和数据库一致性怎么保证？”
+      请按“先问要求 → 常规方案 → 并发兜底 → 强一致场景”四步回答。
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>先问要求：</strong>“先确认业务能接受多长时间的旧数据。商品详情能接受秒级，
+          余额和库存不能接受，所以方案要分开。”</p>
+        <p><strong>常规方案：</strong>“读走 cache-aside，未命中查 DB 回填；写先更新 DB，
+          再删除缓存，不直接更新缓存。所有缓存 key 带 TTL 兜底。”</p>
+        <p><strong>并发兜底：</strong>“更新后删缓存仍有并发回填旧值的窗口，
+          可以用延迟双删降低概率；更稳的是订阅 binlog，DB 提交后发 MQ 删缓存；
+          缓存 value 带版本号，旧版本不覆盖新版本。”</p>
+        <p><strong>强一致场景：</strong>“库存、余额这类不让缓存承担正确性：
+          扣减走 DB 事务 + 条件更新/唯一约束，缓存只做展示加速；
+          需要读己之写就短时间读主库。”</p>
+        <p><strong>收尾：</strong>“所以我的答案是最终一致为主、强一致场景下缓存不参与正确性，
+          再用 TTL 和监控兜底。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    Redis 官方 · <a href="https://redis.io/docs/latest/develop/use-cases/cache-aside/" target="_blank" rel="noopener">Cache-aside</a>。
+    重点看它如何描述“未命中回源、写入失效、TTL 限制脏数据窗口”，这是最稳的答题底稿。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/redis-cheatsheet.html">Redis 速查 · 缓存问题</a> ·
+    <a href="../reference/scenario-playbook.html">场景手册 · 缓存一致性</a> ·
+    <a href="../reference/glossary.html">术语表</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0002-redis-data-structures.html">
+      <span class="dir">Prev</span>
+      Lesson 02 · Redis 全景
+    </a>
+    <a class="next" href="0004-redis-ha-persistence.html">
+      <span class="dir">Next</span>
+      Lesson 04 · Redis 高可用与持久化
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“延迟双删到底延迟多久”“binlog 方案是不是太重”，
+    下一轮对话里说一声，我会按你的业务量级给出取舍。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

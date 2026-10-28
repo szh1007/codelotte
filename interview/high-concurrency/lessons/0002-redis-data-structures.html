@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 02 · Redis 全景与数据结构</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 02 · Redis</span>
+    <h1>Redis 不是只有 String：一张表记住 8 种结构</h1>
+    <p class="subtitle">
+      面试里 Redis 的第一层追问永远是“为什么快”和“这个场景用什么结构”。
+      这一课把这两个问题一次讲透，并给你一个 10 秒选结构的判断法。
+    </p>
+    <div class="meta">
+      <span>25 分钟</span>
+      <span>前置：Lesson 01</span>
+      <span>产出：结构选型直觉</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>用 4 个原因解释 Redis 为什么快，并说清“单线程”到底指什么。</li>
+      <li>记住 8 种核心结构的语义、命令和典型场景。</li>
+      <li>看到“排行榜 / 去重 / 计数 / 队列 / UV”能在 10 秒内选对结构。</li>
+    </ul>
+  </section>
+
+  <h2>1. Redis 是什么，不是什么</h2>
+  <p>
+    Redis 是一个<strong>内存键值数据库</strong>，支持持久化、主从复制、Sentinel 高可用和 Cluster 分片。
+    它常被当作缓存，但它的能力不止缓存：计数器、排行榜、分布式锁、限流、轻量消息队列都能做。
+  </p>
+  <div class="callout warn">
+    <span class="callout-label">不要把它说成“万能数据库”</span>
+    <p>
+      Redis 的数据主要在内存，成本高；持久化是异步/准实时，不能当强一致的唯一数据源；
+      大 key、热 key、缓存击穿都会让它变成故障源。面试里主动说这些边界，比只夸它快更加分。
+    </p>
+  </div>
+
+  <h2>2. 为什么快：四个原因 + 一个澄清</h2>
+  <ol>
+    <li><strong>纯内存操作</strong>：大部分命令是内存读写，不走磁盘。</li>
+    <li><strong>事件循环 + IO 多路复用</strong>：单线程用 epoll/kqueue 同时监听大量连接，避免“一个连接一个线程”的切换成本。</li>
+    <li><strong>命令执行不加锁</strong>：命令在单线程里串行执行，天然没有多线程竞争和锁开销。</li>
+    <li><strong>高效的数据结构</strong>：小集合用 listpack/intset 等紧凑编码，大集合用跳表、哈希表，按规模切换。</li>
+  </ol>
+  <div class="callout key">
+    <span class="callout-label">澄清：单线程指命令执行</span>
+    <p>
+      Redis 6 开始用多线程处理<strong>网络读写</strong>，但<strong>命令执行仍然是单线程</strong>。
+      所以“Redis 单线程”不等于“整个进程只有一个线程”；它也不等于“单线程一定比多线程快”，
+      而是“单线程省掉了锁和上下文切换，瓶颈通常在网络和内存”。
+    </p>
+  </div>
+  <p>
+    对应的面试追问是“那 Redis 的瓶颈在哪？”答案：网络带宽、CPU（复杂命令）、大 key、慢查询、
+    内存容量和持久化 fork。解决办法是 pipeline、拆分 big key、读写分离、Cluster 分片、避免
+    <code>KEYS *</code> / <code>FLUSHALL</code> 这类阻塞命令。
+  </p>
+
+  <h2>3. 八种结构：语义 + 命令 + 场景</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>结构</th><th>核心命令</th><th>典型场景</th><th>注意点</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>String</strong></td>
+          <td><code>SET</code> <code>GET</code> <code>INCR</code> <code>SET NX PX</code> <code>SETBIT</code></td>
+          <td>缓存 JSON、计数器、分布式锁、位图签到</td>
+          <td>value 上限 512 MB；大字符串是 big key</td>
+        </tr>
+        <tr>
+          <td><strong>Hash</strong></td>
+          <td><code>HSET</code> <code>HGET</code> <code>HGETALL</code> <code>HINCRBY</code></td>
+          <td>对象字段、用户资料、会话、部分更新</td>
+          <td>字段很多时不要 <code>HGETALL</code>；按字段读</td>
+        </tr>
+        <tr>
+          <td><strong>List</strong></td>
+          <td><code>LPUSH</code> <code>RPUSH</code> <code>LPOP</code> <code>BRPOP</code></td>
+          <td>简单队列/栈、最新列表、时间线</td>
+          <td>阻塞弹出不保证可靠消费；可靠队列用 Stream</td>
+        </tr>
+        <tr>
+          <td><strong>Set</strong></td>
+          <td><code>SADD</code> <code>SISMEMBER</code> <code>SINTER</code> <code>SCARD</code></td>
+          <td>去重、标签、共同好友、抽奖、点赞集合</td>
+          <td>大集合的 <code>SINTER</code> 可能很慢</td>
+        </tr>
+        <tr>
+          <td><strong>ZSet</strong></td>
+          <td><code>ZADD</code> <code>ZRANGE</code> <code>ZRANGEBYSCORE</code> <code>ZINCRBY</code></td>
+          <td>排行榜、延迟队列、滑动窗口限流</td>
+          <td>score 相同按 member 排序；注意大 ZSet 的范围查询</td>
+        </tr>
+        <tr>
+          <td><strong>Bitmap</strong></td>
+          <td><code>SETBIT</code> <code>GETBIT</code> <code>BITCOUNT</code> <code>BITOP</code></td>
+          <td>签到、DAU、布尔标记、布隆过滤器思路</td>
+          <td>按用户 ID 映射位偏移；ID 太稀疏会浪费内存</td>
+        </tr>
+        <tr>
+          <td><strong>HyperLogLog</strong></td>
+          <td><code>PFADD</code> <code>PFCOUNT</code> <code>PFMERGE</code></td>
+          <td>近似 UV、独立访客数、基数统计</td>
+          <td>只给近似值（标准误差约 0.81%），拿不到成员</td>
+        </tr>
+        <tr>
+          <td><strong>Stream</strong></td>
+          <td><code>XADD</code> <code>XREAD</code> <code>XGROUP</code> <code>XACK</code></td>
+          <td>轻量消息队列、消费组、待处理列表</td>
+          <td>不是 Kafka 替代品；吞吐和保留策略按场景评估</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>10 秒选结构</h3>
+  <ul>
+    <li>要<strong>计数/自增</strong> → String（<code>INCR</code>）。</li>
+    <li>要<strong>存一个对象的多个字段</strong> → Hash。</li>
+    <li>要<strong>去重/判断存在/交并差</strong> → Set。</li>
+    <li>要<strong>排序/排名/按分数范围取</strong> → ZSet。</li>
+    <li>要<strong>队列</strong> → List（简单）或 Stream（要消费组/ACK）。</li>
+    <li>要<strong>布尔标记/签到</strong> → Bitmap。</li>
+    <li>要<strong>近似 UV</strong> → HyperLogLog。</li>
+  </ul>
+
+  <div class="callout interview">
+    <span class="callout-label">面试一句话</span>
+    <p>
+      “Redis 的结构选型本质是看访问模式：计数用 String，对象用 Hash，
+      去重用 Set，排序用 ZSet，队列用 List/Stream，UV 用 HyperLogLog。
+      结构选错，后面靠加机器也救不回来。”
+    </p>
+  </div>
+
+  <h2>4. 编码、big key 与热 key</h2>
+  <h3>编码</h3>
+  <p>
+    Redis 会按集合大小自动切换编码。小 Hash 用 listpack，小 Set 用 intset/listpack，
+    小 ZSet 用 listpack，大 ZSet 才用跳表 + 字典。你可以用 <code>OBJECT ENCODING key</code> 查看。
+    这也是为什么“同样 1 万个 key，有的省内存、有的费内存”。
+  </p>
+
+  <h3>big key</h3>
+  <p>
+    经验阈值：String 超过 10 KB，或集合元素超过 5000 个，就值得警惕。
+    危害是：单次操作耗时长、网络包大、删除时阻塞、Cluster 里造成数据倾斜。
+    处理：拆成多个 key、用 <code>UNLINK</code> 异步删除、压缩 value、设置 TTL、用
+    <code>redis-cli --bigkeys</code> 定期扫描。
+  </p>
+
+  <h3>热 key</h3>
+  <p>
+    某个 key 的访问量远超其他 key，可能把单个分片打满。处理：本地缓存、key 拆分成多个副本、
+    读副本分担、请求合并（singleflight）、限流。面试里先问“热到什么程度”，再谈方案。
+  </p>
+
+  <h2>5. key 设计与 TTL</h2>
+  <pre><code># 推荐：业务:实体:id:字段
+order:123:status
+user:456:profile
+stock:sku:789
+
+# Cluster 下需要多 key 同槽时，用 hash tag
+{user:456}:profile
+{user:456}:sessions</code></pre>
+  <ul>
+    <li>所有缓存 key 都要有 TTL；TTL 加随机抖动，避免同一时刻集体过期。</li>
+    <li>不要用 <code>KEYS *</code> 扫全库；用 <code>SCAN</code> 渐进遍历。</li>
+    <li>Cluster 下多 key 操作必须同槽；跨槽用业务拆分或 hash tag。</li>
+  </ul>
+
+  <h2>6. 小测：结构选型</h2>
+
+  <div class="quiz" data-quiz data-explanation="ZSet 的 score 天然适合分数排序，ZRANGE/ZREVRANGE 取 Top N，ZINCRBY 更新分数。">
+    <p class="quiz-question">做一个游戏排行榜，按分数取 Top 100，应该用哪种结构？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">Hash</button>
+      <button class="quiz-option" type="button" data-correct="false">List</button>
+      <button class="quiz-option" type="button" data-correct="true">ZSet</button>
+      <button class="quiz-option" type="button" data-correct="false">Set</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Set 的 SADD 去重、SISMEMBER 判断存在，正好对应“是否已点赞/是否已参加”。">
+    <p class="quiz-question">记录一篇帖子被哪些用户点赞，并且要快速判断“我是否点过”，用哪种结构？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">String</button>
+      <button class="quiz-option" type="button" data-correct="true">Set</button>
+      <button class="quiz-option" type="button" data-correct="false">ZSet</button>
+      <button class="quiz-option" type="button" data-correct="false">HyperLogLog</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="HyperLogLog 用固定约 12 KB 估算基数，误差约 0.81%，适合 UV，不适合要精确成员列表的场景。">
+    <p class="quiz-question">统计每天独立访客 UV，允许约 1% 误差、要求内存固定，用哪种结构？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="true">HyperLogLog</button>
+      <button class="quiz-option" type="button" data-correct="false">Bitmap</button>
+      <button class="quiz-option" type="button" data-correct="false">Set</button>
+      <button class="quiz-option" type="button" data-correct="false">List</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Redis 6 的多线程用于网络读写，命令执行仍是单线程；这既提升网络吞吐，又保留命令串行执行的简单性。">
+    <p class="quiz-question">Redis 6 引入的多线程，主要用于哪一部分？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">命令执行</button>
+      <button class="quiz-option" type="button" data-correct="true">网络读写</button>
+      <button class="quiz-option" type="button" data-correct="false">持久化落盘</button>
+      <button class="quiz-option" type="button" data-correct="false">主从复制</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">90 秒口述练习</div>
+    <p class="drill-prompt">
+      设计一个帖子点赞系统：要显示点赞数、判断当前用户是否点赞、按热度排序。
+      请说明 Redis 用什么结构、写路径怎么走、如何防止重复点赞。
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>结构：</strong>每篇帖子一个 Set <code>like:post:{id}</code> 存点赞用户，
+          用 <code>SADD</code> 去重、<code>SISMEMBER</code> 判断是否点过、<code>SCARD</code> 取点赞数；
+          热度榜用 ZSet <code>hot:posts</code>，<code>ZINCRBY</code> 加分、<code>ZREVRANGE</code> 取 Top N。</p>
+        <p><strong>写路径：</strong>点赞请求先校验登录和帖子状态，再执行
+          <code>SADD</code>；如果返回 1，说明是新点赞，才 <code>ZINCRBY</code> 加热度，
+          并异步发 MQ 事件落 DB。取消点赞 <code>SREM</code>，返回 1 才减热度。</p>
+        <p><strong>幂等：</strong>Set 天然去重，重复点赞不会重复计数；DB 侧再用
+          <code>(user_id, post_id)</code> 唯一索引兜底。MQ 消费失败重试也安全。</p>
+        <p><strong>规模与兜底：</strong>大帖子的 Set 可能很大，可按帖子 ID 分片或只保留近期用户；
+          热帖用本地缓存 + 请求合并；Redis 挂了降级为“点赞数延迟展示”，不阻塞主流程。</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    Redis 官方文档 · <a href="https://redis.io/docs/latest/develop/data-types/" target="_blank" rel="noopener">Data types</a>。
+    每个结构只需要读第一屏：它解决什么问题、核心命令、复杂度。不要背命令全集。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/redis-cheatsheet.html">Redis 速查</a> ·
+    <a href="../reference/glossary.html">术语表</a> ·
+    <a href="../reference/scenario-playbook.html">场景手册</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0001-answer-framework.html">
+      <span class="dir">Prev</span>
+      Lesson 01 · 答题骨架
+    </a>
+    <a class="next" href="0003-cache-problems-and-consistency.html">
+      <span class="dir">Next</span>
+      Lesson 03 · 缓存三大问题与一致性
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“为什么 List 不能做可靠队列”“Stream 和 Kafka 到底差在哪”，
+    下一轮对话里说一声，我会用你的项目场景重讲。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MQ 代码层入门 · 生产者、消费者、Topic、Partition</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="reference">
+
+  <header class="ref-header">
+    <span class="kicker">Reference · MQ Code Basics</span>
+    <h1>MQ 在代码里长什么样</h1>
+    <p class="ref-lead">
+      你的理解基本正确：生产者是代码调用客户端库往 broker 写消息，消费者是代码调用客户端库取消息并执行。
+      需要补三件事：<strong>MQ 是异步的</strong>、<strong>消费者是你的应用而不是 Kafka</strong>、
+      <strong>Topic/Partition 是集群资源</strong>。这一页用 Python 代码把它们对齐。
+    </p>
+  </header>
+
+  <nav class="toc">
+    <a href="#model">1. 心智模型</a>
+    <a href="#producer">2. 生产者代码</a>
+    <a href="#consumer">3. 消费者代码</a>
+    <a href="#where">4. 哪些东西在哪里设置</a>
+    <a href="#topic">5. Topic / Partition 怎么创建</a>
+    <a href="#key">6. key、partition、group 的关系</a>
+    <a href="#rabbit">7. RabbitMQ 的写法</a>
+    <a href="#run">8. 本地跑通</a>
+    <a href="#qa">9. 面试一句话</a>
+  </nav>
+
+  <h2 id="model">1. 心智模型：没有“直接调用”</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>生产者应用</strong>调用 Producer SDK</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>Broker</strong>把消息追加到 Topic/Partition</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>消费者应用</strong>调用 Consumer SDK 拉取</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>你的 handler</strong>执行业务逻辑</div>
+  </div>
+  <p>
+    Kafka 不是 RPC：生产者发完消息不会等消费者执行，broker 只是把消息存进日志。
+    消费者什么时候处理、处理多久，由消费者应用决定。
+  </p>
+  <div class="callout key">
+    <span class="callout-label">一句话</span>
+    <p>
+      <strong>Broker 只负责存和转发；执行业务代码的是消费者应用。</strong>
+      所谓“消费者”，不是一个 Kafka 进程，而是一段调用 Consumer SDK 的你的代码。
+    </p>
+  </div>
+  <p>
+    客户端库（SDK）替你做很多事：连接 broker、拉取元数据、按 key 选分区、批量发送、重试、
+    消费者组协调、提交 offset。你只需要配置和写业务 handler。
+  </p>
+
+  <h2 id="producer">2. 生产者代码：往 topic 写一条消息</h2>
+  <p>以 Python 的 <code>confluent-kafka</code> 为例（生产环境常用；asyncio 场景可用 <code>aiokafka</code>）：</p>
+  <pre><code>import json
+from confluent_kafka import Producer
+
+producer = Producer({
+    "bootstrap.servers": "localhost:9092",  # broker 地址
+    "acks": "all",                          # 等 ISR 确认，偏可靠
+    "enable.idempotence": True,             # 重试不产生重复
+})
+
+def on_delivery(err, msg):
+    if err:
+        print("发送失败:", err)
+    else:
+        print(f"已写入 {msg.topic()}[{msg.partition()}] offset={msg.offset()}")
+
+producer.produce(
+    topic="orders",          # topic 名只是字符串
+    key="order-123",         # 同一个 key 默认进同一分区
+    value=json.dumps({"order_id": "order-123", "amount": 99}),
+    callback=on_delivery,
+)
+producer.flush()             # 等发送完成；进程退出前要调用</code></pre>
+  <ul>
+    <li><strong>bootstrap.servers</strong>：客户端先连其中一台，再自动发现整个集群。</li>
+    <li><strong>produce(topic, key, value)</strong>：SDK 根据 key 算出分区，发给该分区的 leader。</li>
+    <li><strong>callback</strong>：异步回调，告诉你写入哪个分区、offset 是多少，或者失败原因。</li>
+    <li><strong>flush</strong>：等待缓冲区里的消息发完；不调用可能丢未发送的消息。</li>
+  </ul>
+  <div class="callout warn">
+    <span class="callout-label">消息不是“对象”</span>
+    <p>
+      Kafka 只存字节。JSON、Avro、Protobuf 都只是你和消费者约定的序列化格式；
+      生产者和消费者必须用同一套格式，否则消费者解析会失败。
+    </p>
+  </div>
+
+  <h2 id="consumer">3. 消费者代码：拉取、执行、提交 offset</h2>
+  <pre><code>import json
+from confluent_kafka import Consumer
+
+consumer = Consumer({
+    "bootstrap.servers": "localhost:9092",
+    "group.id": "order-workers",       # 同一 group 分担分区
+    "auto.offset.reset": "earliest",   # 没有已提交 offset 时从头读
+    "enable.auto.commit": False,       # 处理成功后再手动提交
+})
+
+consumer.subscribe(["orders"])
+
+def handle(payload):
+    print("执行业务逻辑:", payload)
+
+try:
+    while True:
+        msg = consumer.poll(1.0)       # 拉取一条，超时 1 秒
+        if msg is None:
+            continue
+        if msg.error():
+            print("consumer error:", msg.error())
+            continue
+        try:
+            handle(json.loads(msg.value()))
+            consumer.commit(message=msg)   # 成功后才提交 offset
+        except Exception as e:
+            print("处理失败，不提交，等待重试/死信:", e)
+finally:
+    consumer.close()</code></pre>
+  <ul>
+    <li><strong>group.id</strong>：同一个 group 的消费者分担 topic 的分区；不同 group 各自消费全量。</li>
+    <li><strong>subscribe</strong>：订阅 topic；具体分到哪个分区由 Kafka 的组协调器决定。</li>
+    <li><strong>poll</strong>：主动拉取消息；Kafka 是 pull 模型，消费者能控制速率。</li>
+    <li><strong>commit(message=msg)</strong>：处理成功后提交 offset；先处理再提交 = at-least-once，可能重复，所以 handler 要幂等。</li>
+  </ul>
+  <div class="callout interview">
+    <span class="callout-label">面试一句话</span>
+    <p>
+      “消费者不是 Kafka 替我执行任务，而是我的应用 poll 到消息后调用自己的 handler；
+      处理成功再提交 offset，失败就不提交，靠重试和幂等兜底。”
+    </p>
+  </div>
+
+  <h2 id="where">4. 哪些东西在哪里设置</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>设置</th><th>在哪里</th><th>例子</th></tr></thead>
+      <tbody>
+        <tr><td>集群地址</td><td>Producer/Consumer 配置</td><td><code>bootstrap.servers</code></td></tr>
+        <tr><td>topic 名字</td><td>业务代码/配置</td><td><code>"orders"</code></td></tr>
+        <tr><td>分区数、副本数</td><td>创建 topic 时（集群管理）</td><td>6 partitions, RF=3</td></tr>
+        <tr><td>消息去哪个分区</td><td>Producer</td><td>key 哈希，或显式 <code>partition=</code></td></tr>
+        <tr><td>消费组</td><td>Consumer 配置</td><td><code>group.id</code></td></tr>
+        <tr><td>从哪开始读</td><td>Consumer 配置</td><td><code>auto.offset.reset</code></td></tr>
+        <tr><td>何时提交 offset</td><td>Consumer 代码</td><td>处理成功后 <code>commit</code></td></tr>
+        <tr><td>消息格式</td><td>生产者/消费者代码约定</td><td>JSON / Avro / Protobuf</td></tr>
+        <tr><td>保留时间</td><td>topic 配置</td><td><code>retention.ms</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="topic">5. Topic / Partition 怎么创建</h2>
+  <p>
+    Topic 是逻辑名字，Partition 是物理上的有序日志。它们通常是<strong>集群级资源</strong>，
+    由运维/管理员在创建 topic 时定好，而不是生产者每发一条消息临时创建。
+  </p>
+  <h3>方式一：CLI（最常见）</h3>
+  <pre><code># 创建：6 个分区，3 副本
+kafka-topics.sh --create \
+  --topic orders \
+  --partitions 6 \
+  --replication-factor 3 \
+  --bootstrap-server localhost:9092
+
+# 扩容分区：只能增加，不能减少
+kafka-topics.sh --alter \
+  --topic orders \
+  --partitions 12 \
+  --bootstrap-server localhost:9092</code></pre>
+  <h3>方式二：代码里的 AdminClient（也能创建，但属于管理动作）</h3>
+  <pre><code>from confluent_kafka.admin import AdminClient, NewTopic, NewPartitions
+
+admin = AdminClient({"bootstrap.servers": "localhost:9092"})
+
+futures = admin.create_topics([
+    NewTopic(
+        "orders",
+        num_partitions=6,
+        replication_factor=3,
+        config={"retention.ms": "604800000"},  # 保留 7 天
+    )
+])
+for topic, future in futures.items():
+    try:
+        future.result()
+        print("created", topic)
+    except Exception as e:
+        print("create failed", topic, e)
+
+# 扩容分区：12 是新的总数，不是“再加 12 个”
+admin.create_partitions([NewPartitions("orders", 12)])</code></pre>
+  <div class="callout warn">
+    <span class="callout-label">三个边界</span>
+    <ul>
+      <li><strong>分区只能增不能减</strong>；副本数调整更复杂，通常通过分区重分配工具。</li>
+      <li><strong>增加分区会改变 key 的分区映射</strong>，同一个 key 的新旧消息可能落到不同分区，顺序保证会被打破；高峰期不要随手加。</li>
+      <li><strong>不要依赖自动创建</strong>：broker 的 <code>auto.create.topics.enable=true</code> 会用默认分区/副本数创建，容易埋坑；生产一般关闭。</li>
+    </ul>
+  </div>
+
+  <h2 id="key">6. key、partition、consumer group 的关系</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>key</strong>order-123</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>partition</strong>hash(key) % 分区数</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>group</strong>一个分区只给一个消费者</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>顺序</strong>只保证分区内</div>
+  </div>
+  <ul>
+    <li><strong>同一个 key 默认进同一分区</strong>，所以同一订单/同一会话的消息能按顺序消费。</li>
+    <li><strong>一个分区同一时刻只会分给同一个 group 里的一个消费者</strong>；消费者数超过分区数，多出来的空闲。</li>
+    <li><strong>不同 group.id 各自消费全量</strong>：审计、计费、报表可以各用一个 group。</li>
+    <li>生产者可以显式指定 <code>partition=0</code>，但容易造成热点；一般让 key 哈希决定。</li>
+    <li>消费者想直接消费某个分区，可以 <code>assign([TopicPartition("orders", 0)])</code>，绕过组协调，通常用于特殊场景。</li>
+  </ul>
+
+  <h2 id="rabbit">7. RabbitMQ 的写法：拓扑常在代码里声明</h2>
+  <p>
+    RabbitMQ 和 Kafka 的代码风格不同：exchange、queue、binding 这些拓扑，经常在应用启动时
+    用代码声明（幂等，重复声明不会重复创建）；Kafka 的 topic/partition 更像集群资源，通常由运维/AdminClient 管理。
+  </p>
+  <pre><code>import pika
+
+connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
+channel = connection.channel()
+
+# 声明队列；durable=True 表示 broker 重启后队列还在
+channel.queue_declare(queue="tasks", durable=True)
+
+channel.basic_publish(
+    exchange="",
+    routing_key="tasks",
+    body=b'{"task_id": "t-1"}',
+    properties=pika.BasicProperties(delivery_mode=2),  # 消息持久化
+)
+connection.close()</code></pre>
+  <pre><code>def callback(ch, method, properties, body):
+    handle(body)
+    ch.basic_ack(delivery_tag=method.delivery_tag)  # 处理成功才确认
+
+channel.basic_qos(prefetch_count=10)  # 未确认消息上限，控制背压
+channel.basic_consume(queue="tasks", on_message_callback=callback)
+channel.start_consuming()</code></pre>
+  <p>
+    RabbitMQ 常见的是“push 给消费者回调 + 单条 ack”；Kafka 是“消费者 pull + 提交 offset”。
+    两者本质一样：客户端库负责通信，你的代码负责处理。
+  </p>
+
+  <h2 id="run">8. 本地跑通（最小验证）</h2>
+  <pre><code># 1. 启动单节点 Kafka
+docker run -d --name hc-kafka -p 9092:9092 apache/kafka:4.4.0
+
+# 2. 创建 topic（单节点副本数只能 1）
+docker exec -it hc-kafka /opt/kafka/bin/kafka-topics.sh \
+  --create --topic orders --partitions 3 --replication-factor 1 \
+  --bootstrap-server localhost:9092
+
+# 3. Python 依赖
+pip install confluent-kafka
+
+# 4. 先跑 consumer.py，再跑 producer.py；观察 offset 和分区</code></pre>
+  <p>
+    如果宿主机 Python 连不上 9092，先用容器内的 console producer/consumer 验证 topic 是否正常；
+    多节点/生产环境需要显式配置 <code>advertised.listeners</code>。
+  </p>
+
+  <h2 id="qa">9. 面试一句话</h2>
+  <div class="qa-list">
+    <div class="qa"><div class="qa-q">生产者/消费者是 SDK 吗？</div><div class="qa-a">是客户端库；它通过 Kafka 协议连 broker，替你处理分区、批量、重试、组协调和 offset。</div></div>
+    <div class="qa"><div class="qa-q">消费者是 Kafka 在执行任务吗？</div><div class="qa-a">不是；broker 只存消息，消费者应用 poll 到消息后执行自己的 handler。</div></div>
+    <div class="qa"><div class="qa-q">Topic/Partition 在代码里定义吗？</div><div class="qa-a">topic 名在代码里引用；分区/副本通常在创建 topic 时由 CLI/AdminClient/控制台设置。</div></div>
+    <div class="qa"><div class="qa-q">分区数能改吗？</div><div class="qa-a">只能增加，不能减少；增加会改变 key 映射，可能破坏同一 key 的顺序。</div></div>
+    <div class="qa"><div class="qa-q">消息怎么保证同一订单有序？</div><div class="qa-a">用订单 ID 做 key，同一 key 进同一分区；一个分区只给一个消费者处理。</div></div>
+    <div class="qa"><div class="qa-q">RabbitMQ 和 Kafka 代码上最大区别？</div><div class="qa-a">RabbitMQ 拓扑常在代码里 declare，push + 单条 ack；Kafka topic 多由运维建，pull + offset。</div></div>
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套课程</span>
+    <a href="../lessons/0006-mq-value-and-selection.html">L06 MQ 价值与选型</a> ·
+    <a href="../lessons/0007-kafka-architecture-reliability.html">L07 Kafka 架构与可靠性</a> ·
+    <a href="kafka-cheatsheet.html">Kafka 速查</a>
+  </div>
+
+</main>
+</body>
+</html>

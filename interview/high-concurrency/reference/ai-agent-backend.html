@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI / Agent 后端一页纸 · 高并发面试</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="reference">
+
+  <header class="ref-header">
+    <span class="kicker">Reference · AI Backend</span>
+    <h1>AI / Agent 后端一页纸</h1>
+    <p class="ref-lead">
+      把 Redis / Kafka 映射到你的项目，并准备好“没用过生产中间件”的诚实说法。
+      面试前 5 分钟翻这一页即可。
+    </p>
+  </header>
+
+  <h2>1. 先记住三个不同</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>电商高并发</th><th>AI/Agent 后端</th></tr></thead>
+      <tbody>
+        <tr><td>请求耗时</td><td>几十–几百 ms</td><td>几秒–几十秒，流式</td></tr>
+        <tr><td>瓶颈</td><td>DB 写、热点读</td><td>LLM 配额、token 成本、外部 API</td></tr>
+        <tr><td>并发手段</td><td>线程/连接池</td><td>asyncio + 多 worker + 队列</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout key">
+    <span class="callout-label">一句话</span>
+    <p>LLM 调用是 I/O 密集型；Python 的 GIL 限制 CPU 并行，不影响“等待时切走”。</p>
+  </div>
+
+  <h2>2. 中间件映射</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>需求</th><th>组件</th><th>用法</th><th>追问</th></tr></thead>
+      <tbody>
+        <tr><td>会话/上下文</td><td>Redis</td><td><code>session:{id}</code> 存最近上下文，TTL</td><td>一致性、隐私、租户隔离</td></tr>
+        <tr><td>精确响应缓存</td><td>Redis</td><td>key 含模型/参数/租户，exact-match</td><td>命中率、失效</td></tr>
+        <tr><td>租户限流/配额</td><td>Redis + Lua</td><td>令牌桶，按 tenant/user 扣</td><td>突发、热点、故障降级</td></tr>
+        <tr><td>预算/并发锁</td><td>Redis SET NX PX</td><td>防重复执行、控并发</td><td>锁正确性、fencing</td></tr>
+        <tr><td>长任务/评测</td><td>Kafka/RabbitMQ</td><td>异步执行，状态写 Redis/DB</td><td>重复、顺序、积压、死信</td></tr>
+        <tr><td>工具/审计事件</td><td>Kafka</td><td>按 session 分区，可重放</td><td>不丢、顺序、保留</td></tr>
+        <tr><td>用量计费</td><td>Kafka</td><td>usage 事件异步聚合</td><td>重复计费、对账</td></tr>
+        <tr><td>失败重试</td><td>RabbitMQ DLX / RocketMQ</td><td>延迟重试，超限死信</td><td>重试风暴、幂等</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout warn">
+    <span class="callout-label">边界</span>
+    <p>Kafka 不做请求-响应；实时回答走 HTTP/SSE，异步副作用走 MQ。</p>
+  </div>
+
+  <h2>3. “10 万用户”答题骨架</h2>
+  <ol>
+    <li><strong>量化</strong>：在线 ≠ QPS；估活跃请求、LLM 调用频率、token 成本。</li>
+    <li><strong>入口</strong>：鉴权 + Redis 租户令牌桶 + 配额，超限 429。</li>
+    <li><strong>应用</strong>：FastAPI/uvicorn 多 worker，asyncio + 异步客户端连接池，超时/取消。</li>
+    <li><strong>缓存</strong>：会话/精确响应；语义缓存加租户隔离和阈值。</li>
+    <li><strong>异步</strong>：Kafka 长任务/审计/用量；消费者幂等，失败死信。</li>
+    <li><strong>保护</strong>：LLM 熔断 + 备用模型 + 队列背压 + 成本预算。</li>
+    <li><strong>观测</strong>：TTFT、tokens/s、成本、错误率、队列 lag。</li>
+  </ol>
+
+  <h2>4. 诚实说法（可直接背）</h2>
+  <div class="callout quote">
+    <p>
+      “我在 codelotte 里没有生产级 Redis/Kafka 使用。为了回答这类问题，我做了两件事：
+      一是按 Agent 的业务链路设计了缓存、限流和异步任务方案；
+      二是在本地用 Docker 跑了 Redis 缓存和 Kafka 生产消费的最小实验。
+      所以我能讲清楚设计和取舍，但不会声称我有大规模生产运维经验。”
+    </p>
+  </div>
+
+  <h2>5. 30 分钟本地实验</h2>
+  <pre><code>docker run -d --name hc-redis -p 6379:6379 redis:7-alpine
+docker exec -it hc-redis redis-cli ping
+
+docker run -d --name hc-kafka -p 9092:9092 apache/kafka:4.4.0
+
+docker exec -it hc-kafka /opt/kafka/bin/kafka-topics.sh \
+  --create --topic demo --bootstrap-server localhost:9092
+docker exec -it hc-kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --topic demo --bootstrap-server localhost:9092
+docker exec -it hc-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --topic demo --bootstrap-server localhost:9092 --from-beginning</code></pre>
+  <p>
+    Python 侧：<code>pip install redis confluent-kafka</code>，先跑 Redis 的 SET/GET，
+    再用 confluent-kafka 发一条消息、消费一条。能说“本地跑过”即可，不夸大成生产集群。
+  </p>
+
+  <h2>6. 10 道项目追问</h2>
+  <p>
+    完整题目和关键点见 <a href="../lessons/0011-ai-agent-backend.html#mock">Lesson 11 的模拟面试</a>。
+    面试前至少自问自答这 5 道：
+  </p>
+  <ol>
+    <li>哪里适合用 Redis？为什么不用本地内存？</li>
+    <li>10 万用户同时用，怎么限流？</li>
+    <li>LLM 很慢，怎么提高并发？GIL 影响吗？</li>
+    <li>工具调用失败/重复怎么办？</li>
+    <li>你说没用过 Redis/Kafka，怎么保证设计可信？</li>
+  </ol>
+
+  <div class="ref-links">
+    <span class="label">配套课程</span>
+    <a href="../lessons/0011-ai-agent-backend.html">Lesson 11 · AI 后端映射</a> ·
+    <a href="scenario-playbook.html#s12">场景手册 · AI Agent 高并发</a> ·
+    <a href="interview-question-bank.html#system">题库 · 49</a>
+  </div>
+
+</main>
+</body>
+</html>

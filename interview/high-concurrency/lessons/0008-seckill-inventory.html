@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 08 · 秒杀与库存扣减</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 08 · 经典场景</span>
+    <h1>秒杀系统：把 10 万 QPS 挡在数据库之前</h1>
+    <p class="subtitle">
+      秒杀是面试里的“综合大题”：缓存、MQ、限流、幂等、库存、对账全都能串起来。
+      这一课给你一套从入口到 DB 的分层答法，并标出每一步的失败窗口。
+    </p>
+    <div class="meta">
+      <span>35 分钟</span>
+      <span>前置：Lesson 03、06、07</span>
+      <span>产出：3 分钟白板方案</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>按“客户端 → 网关 → 应用 → Redis → MQ → DB → 对账”分层设计秒杀。</li>
+      <li>用 Redis Lua 原子完成“查库存 + 防重复 + 扣减”，并说清为什么必须原子。</li>
+      <li>讲清超卖、少卖、Redis 成功但 MQ 失败、DB 失败等异常怎么兜底。</li>
+    </ul>
+  </section>
+
+  <h2>1. 先定义问题：秒杀到底难在哪</h2>
+  <ul>
+    <li><strong>瞬时流量极高</strong>：平时 1 千 QPS，活动开始瞬间 10 万 QPS。</li>
+    <li><strong>不能超卖</strong>：库存 100 件，绝不能卖出 101 件。</li>
+    <li><strong>要防重复</strong>：同一用户刷接口，不能买多次。</li>
+    <li><strong>要公平/防机器人</strong>：不能全被脚本抢走。</li>
+    <li><strong>要扛住失败</strong>：Redis、MQ、DB 任一环节抖动，系统不能雪崩。</li>
+  </ul>
+  <p>
+    核心思路只有一句：<strong>把绝大多数请求挡在 DB 之前，只让少量请求走到落库</strong>。
+  </p>
+
+  <h2>2. 分层架构：每一层只做一件事</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>客户端 / CDN</strong>静态页、倒计时、按钮置灰</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>网关</strong>鉴权、限流、黑名单、验证码</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>应用</strong>校验、Redis Lua 扣减</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>MQ</strong>异步下单、削峰</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>DB</strong>条件扣减 + 唯一约束</div>
+  </div>
+  <ol>
+    <li><strong>客户端</strong>：活动页静态化走 CDN；倒计时结束才允许点击；点击后按钮置灰，防连点。</li>
+    <li><strong>网关</strong>：登录校验、按用户/IP/设备限流、黑名单、验证码/答题，把机器人和刷子挡在外面。</li>
+    <li><strong>应用</strong>：校验活动状态、库存预热、执行 Redis Lua；成功才发 MQ，失败直接返回售罄/重复。</li>
+    <li><strong>MQ</strong>：把“创建订单”异步化，消费者按 DB 能承受的速率处理；消息按用户/商品 key 分区。</li>
+    <li><strong>DB</strong>：最终扣减用条件更新，唯一索引防重复；失败进入重试/死信/对账。</li>
+  </ol>
+
+  <h2>3. Redis Lua：查库存、防重复、扣减，一步原子完成</h2>
+  <pre><code>-- KEYS[1] = stock:sku:1001
+-- KEYS[2] = buyers:sku:1001
+-- ARGV[1] = user_id
+-- 返回：>=0 剩余库存；-1 售罄；-2 重复购买
+
+local stock = tonumber(redis.call('GET', KEYS[1]))
+if stock == nil or stock &lt;= 0 then
+    return -1
+end
+
+if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then
+    return -2
+end
+
+redis.call('SADD', KEYS[2], ARGV[1])
+redis.call('DECR', KEYS[1])
+return stock - 1</code></pre>
+  <p>Python 侧调用：</p>
+  <pre><code>result = redis.eval(script, 2, stock_key, buyers_key, user_id)
+if result &gt;= 0:
+    mq.send("seckill.order", {"sku": sku, "user_id": user_id})
+elif result == -1:
+    return {"code": "SOLD_OUT"}
+else:
+    return {"code": "DUPLICATE"}</code></pre>
+  <div class="callout key">
+    <span class="callout-label">为什么必须 Lua</span>
+    <p>
+      “GET 判断库存 → 再 DECR”是两条命令，中间可能被其他请求插队，导致超卖。
+      Lua 在 Redis 里原子执行，把“查、判重、扣减、记录用户”合成一个不可分割的操作。
+      单独用 <code>DECR</code> 只能防超卖，防不了同一用户重复购买。
+    </p>
+  </div>
+
+  <h3>库存预热与 key 设计</h3>
+  <pre><code>stock:sku:1001          # 库存
+buyers:sku:1001         # 已购买用户集合
+seckill:activity:888    # 活动状态</code></pre>
+  <p>
+    活动开始前把库存从 DB 预热到 Redis，并设置合理 TTL；活动结束后清理。
+    不要等第一个请求来了才回源，否则会把 DB 打穿。
+  </p>
+
+  <h2>4. MQ 异步下单与 DB 最终扣减</h2>
+  <p>消费者拿到消息后：</p>
+  <pre><code>BEGIN;
+-- 1. 条件扣减，防超卖
+UPDATE stock
+SET stock = stock - 1
+WHERE sku_id = 1001 AND stock &gt;= 1;
+
+-- 2. 唯一索引防重复：(user_id, activity_id)
+INSERT INTO seckill_order (user_id, activity_id, sku_id, status)
+VALUES (?, ?, ?, 'CREATED');
+COMMIT;</code></pre>
+  <ul>
+    <li>如果 <code>UPDATE</code> 影响 0 行：DB 侧已无库存，说明 Redis 与 DB 不一致，记录异常并补偿。</li>
+    <li>如果 <code>INSERT</code> 唯一键冲突：说明重复消费，直接当成功处理（幂等）。</li>
+    <li>DB 成功后，订单状态从 <code>CREATED</code> 进入待支付；失败进入重试队列/死信。</li>
+  </ul>
+
+  <h2>5. 失败窗口与兜底</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>失败点</th><th>后果</th><th>处理</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Redis 扣减成功，MQ 发送失败</td>
+          <td>用户看到“抢到”，但订单没创建</td>
+          <td>发送重试 + 本地消息表/Outbox + 定时对账</td>
+        </tr>
+        <tr>
+          <td>MQ 消费失败/重复</td>
+          <td>订单漏建或重复建</td>
+          <td>重试、死信、唯一索引幂等</td>
+        </tr>
+        <tr>
+          <td>DB 扣减失败（无库存）</td>
+          <td>Redis 多扣了</td>
+          <td>回补 Redis 库存（补偿）或标记异常人工对账</td>
+        </tr>
+        <tr>
+          <td>Redis 整体挂了</td>
+          <td>无法预扣，流量直打 DB</td>
+          <td>限流 + 降级为“排队/售罄”，保护 DB</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    超卖和少卖的取舍：<strong>宁可少卖，不可超卖</strong>。少卖可以回补/人工处理，
+    超卖要赔偿用户和品牌。所以 Redis 预扣 + DB 条件扣减双保险，DB 失败时优先保护不超卖。
+  </p>
+
+  <h2>6. 热点库存：一个 key 打满一个分片</h2>
+  <p>
+    所有请求都操作 <code>stock:sku:1001</code>，这个 key 只能落在一个 Redis 分片上，
+    单分片被打满。常见解法：
+  </p>
+  <ul>
+    <li><strong>库存分桶</strong>：把 1000 件拆成 10 个 key，每个 100 件；请求按用户哈希到某个桶，桶空再尝试其他桶。复杂度上升，需要汇总和对账。</li>
+    <li><strong>本地库存</strong>：应用实例预分配一小部分库存，先在本地扣，再异步同步；要处理实例故障导致的库存丢失。</li>
+    <li><strong>请求合并</strong>：同一商品的并发请求在应用层合并成一次 Redis 操作（singleflight）。</li>
+    <li><strong>限流与排队</strong>：前端排队/令牌，控制进入 Redis 的速率。</li>
+  </ul>
+  <div class="callout warn">
+    <span class="callout-label">不要用 hash tag 解决热 key</span>
+    <p>
+      Redis Cluster 的 <code>{sku:1001}</code> hash tag 会把相关 key 放到<strong>同一个槽</strong>，
+      对多 key 操作方便，但会让热点更集中。热 key 要拆，不是绑在一起。
+    </p>
+  </div>
+
+  <h2>7. 防机器人：技术之外的一层</h2>
+  <ul>
+    <li>验证码、答题、滑块；设备指纹、行为风控。</li>
+    <li>按用户/IP/设备多维限流；黑名单和信誉分。</li>
+    <li>预约/抽签制：把“先到先得”改成“资格 + 抽签”，从根上削峰。</li>
+    <li>前端结果轮询，避免长时间占用连接。</li>
+  </ul>
+
+  <h2>8. 小测：秒杀关键点</h2>
+
+  <div class="quiz" data-quiz data-explanation="查库存、判重、扣减必须是原子操作；Lua 在 Redis 内串行执行，避免并发插队导致超卖或重复。">
+    <p class="quiz-question">秒杀扣库存必须用 Lua 的主要原因是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">Lua 比 Python 快</button>
+      <button class="quiz-option" type="button" data-correct="true">保证扣减原子性</button>
+      <button class="quiz-option" type="button" data-correct="false">Lua 能持久化数据</button>
+      <button class="quiz-option" type="button" data-correct="false">Lua 能自动扩容</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Redis 做预扣，把绝大多数请求挡在 DB 前；DB 再做条件扣减和唯一约束，形成双保险。">
+    <p class="quiz-question">秒杀库存的第一道扣减通常放在哪里？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">数据库行锁</button>
+      <button class="quiz-option" type="button" data-correct="true">Redis 原子脚本</button>
+      <button class="quiz-option" type="button" data-correct="false">MQ 消费者</button>
+      <button class="quiz-option" type="button" data-correct="false">前端按钮</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="条件更新 stock >= 1 防超卖，唯一索引 (user_id, activity_id) 防重复；两者共同兜底。">
+    <p class="quiz-question">DB 侧防止超卖和重复下单，分别靠什么？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">行锁和触发器</button>
+      <button class="quiz-option" type="button" data-correct="false">乐观锁和缓存</button>
+      <button class="quiz-option" type="button" data-correct="true">条件更新和唯一索引</button>
+      <button class="quiz-option" type="button" data-correct="false">分库分表和读写分离</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Redis 已扣减但消息没发出去，会少卖/漏单；需要发送重试、本地消息表/Outbox 和定时对账补偿。">
+    <p class="quiz-question">Redis 扣减成功但 MQ 发送失败，最直接的后果是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">超卖</button>
+      <button class="quiz-option" type="button" data-correct="true">抢到但订单没建</button>
+      <button class="quiz-option" type="button" data-correct="false">Redis 自动回滚</button>
+      <button class="quiz-option" type="button" data-correct="false">数据库自动补单</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">3 分钟白板练习</div>
+    <p class="drill-prompt">
+      面试官说：“设计一个 10 万 QPS 的秒杀系统，库存 1000 件，不能超卖，
+      同一用户限购 1 件。请从入口到落库讲一遍。”
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>入口：</strong>“活动页静态化走 CDN；网关做登录、限流、验证码和黑名单；
+          前端按钮置灰防连点。先把机器人和重复点击挡掉。”</p>
+        <p><strong>预扣：</strong>“活动前把库存预热到 Redis。请求进来执行 Lua：
+          查库存、SISMEMBER 判重、SADD 记录用户、DECR 扣减，一次原子完成。
+          返回售罄或重复就直接结束，不碰 DB。”</p>
+        <p><strong>异步：</strong>“Lua 成功后发 MQ，按商品/用户 key 分区；
+          消费者创建订单，DB 用 <code>stock &gt;= 1</code> 条件更新 +
+          <code>(user_id, activity_id)</code> 唯一索引做最终防超卖和幂等。”</p>
+        <p><strong>异常：</strong>“Redis 成功但 MQ 失败，用发送重试 + 本地消息表/Outbox；
+          DB 无库存就回补 Redis 或标记异常；Redis 挂了就限流降级，宁可少卖不超卖。”</p>
+        <p><strong>热点与对账：</strong>“单 key 热就分桶/本地库存/请求合并；
+          活动结束做 Redis 与 DB 对账，补漏单和回补库存。全程监控 QPS、售罄率、
+          MQ lag 和 DB 错误率。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    阿里云 · <a href="https://help.aliyun.com/zh/document_detail/2860128.html" target="_blank" rel="noopener">打造高性能秒杀系统：技术深析与实践</a>。
+    重点看它的分层和数据库冲突处理，再对照本课的失败窗口。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/scenario-playbook.html">场景手册 · 秒杀</a> ·
+    <a href="../reference/redis-cheatsheet.html">Redis 速查 · Lua/库存</a> ·
+    <a href="../reference/capacity-numbers.html">容量数字</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0007-kafka-architecture-reliability.html">
+      <span class="dir">Prev</span>
+      Lesson 07 · Kafka 架构
+    </a>
+    <a class="next" href="0009-delay-queue-and-transaction.html">
+      <span class="dir">Next</span>
+      Lesson 09 · 延迟队列与 Outbox
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“库存分桶怎么对账”“本地消息表怎么实现”，
+    下一轮对话里说一声，我会给你画时序图。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

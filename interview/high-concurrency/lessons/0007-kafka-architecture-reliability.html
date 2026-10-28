@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 07 · Kafka 架构与可靠性</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 07 · Kafka</span>
+    <h1>Kafka 一张图：分区、副本、ISR、消费者组</h1>
+    <p class="subtitle">
+      Kafka 的面试题高度集中：为什么快、消息会不会丢、会不会重复、怎么保证顺序、积压怎么办。
+      这一课把这些问题串成一条因果链，而不是五个孤立答案。
+    </p>
+    <div class="meta">
+      <span>35 分钟</span>
+      <span>前置：Lesson 06</span>
+      <span>产出：可靠性四连问</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>画出 Kafka 的核心结构：broker、topic、partition、replica、offset、consumer group。</li>
+      <li>讲清 acks、ISR、min.insync.replicas 如何决定“消息不丢”。</li>
+      <li>回答不丢、不重、有序、积压四连问，并知道 exactly-once 的边界。</li>
+    </ul>
+  </section>
+
+  <h2>1. 一张图看懂 Kafka</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>Producer</strong>按 key 选分区，批量发送</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>Topic / Partition</strong>追加写日志，leader 接待</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>Replica</strong>follower 拉取，ISR 同步</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>Consumer Group</strong>按 offset 拉取</div>
+  </div>
+  <ul>
+    <li><strong>Broker</strong>：一个 Kafka 节点；多个 broker 组成集群。</li>
+    <li><strong>Topic</strong>：逻辑上的消息类别；<strong>Partition</strong>：物理上的有序日志，Kafka 的并行单位。</li>
+    <li><strong>Offset</strong>：消费者在分区里的位置；提交 offset 表示“我处理到哪了”。</li>
+    <li><strong>Replica</strong>：每个分区有 leader 和 follower；leader 处理读写，follower 复制。</li>
+    <li><strong>Consumer Group</strong>：同一 group 内，一个分区只会分给一个消费者；不同 group 各自独立消费全量。</li>
+    <li><strong>Controller / KRaft</strong>：管理集群元数据和 leader 选举；新版本用 KRaft 替代 ZooKeeper。</li>
+  </ul>
+
+  <div class="callout key">
+    <span class="callout-label">为什么是分区，不是全局有序</span>
+    <p>
+      分区让吞吐可以水平扩展；代价是 Kafka 只保证<strong>分区内有序</strong>。
+      要全局有序就只能单分区，吞吐会被锁死。所以业务上通常按订单 ID / 用户 ID 做 key，
+      让同一业务实体落到同一分区。
+    </p>
+  </div>
+
+  <h2>2. 为什么快：顺序写 + 批量 + 零拷贝</h2>
+  <ol>
+    <li><strong>追加写日志</strong>：消息顺序追加到分区文件，磁盘顺序写远快于随机写。</li>
+    <li><strong>Page cache</strong>：broker 大量依赖操作系统页缓存，读写都在内存里完成，再异步刷盘。</li>
+    <li><strong>批量 + 压缩</strong>：producer 攒 batch，broker 存压缩后的批次，网络和磁盘都更省。</li>
+    <li><strong>零拷贝（sendfile）</strong>：消费时把页缓存直接送到 socket，减少用户态拷贝；TLS/压缩等场景可能退化。</li>
+    <li><strong>分区并行</strong>：多个分区分布在不同 broker，生产和消费都能并行。</li>
+    <li><strong>Pull 模型</strong>：消费者按自己的速率拉取，天然有背压。</li>
+  </ol>
+
+  <h2>3. 写入可靠性：acks、ISR、min.insync.replicas</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>配置</th><th>含义</th><th>取舍</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>acks=0</code></td>
+          <td>producer 发出去就认为成功</td>
+          <td>最快，可能丢</td>
+        </tr>
+        <tr>
+          <td><code>acks=1</code></td>
+          <td>leader 写入成功即返回</td>
+          <td>折中；leader 挂了、follower 没同步会丢</td>
+        </tr>
+        <tr>
+          <td><code>acks=all</code></td>
+          <td>ISR 中所有副本都写入才返回</td>
+          <td>最安全，延迟最高</td>
+        </tr>
+        <tr>
+          <td><code>replication.factor=3</code></td>
+          <td>每个分区 3 个副本</td>
+          <td>容忍 1–2 个 broker 故障，成本更高</td>
+        </tr>
+        <tr>
+          <td><code>min.insync.replicas=2</code></td>
+          <td>至少 2 个 ISR 副本确认才算成功</td>
+          <td>只剩 1 个副本时写入报错，而不是静默丢</td>
+        </tr>
+        <tr>
+          <td><code>unclean.leader.election=false</code></td>
+          <td>不让落后太多的副本当 leader</td>
+          <td>牺牲可用性，避免数据回退</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    经典组合：<strong>RF=3 + min.insync.replicas=2 + acks=all</strong>。
+    挂 1 个 broker 仍能写；挂 2 个就拒绝写，保护数据不丢。
+  </p>
+  <p>
+    <strong>幂等 producer</strong>：<code>enable.idempotence=true</code> 后，producer 带 PID + 序列号，
+    broker 会去重重试造成的重复。它解决的是“producer 重试导致的重复”，
+    不解决跨进程重启、跨系统写入的重复。
+  </p>
+
+  <h2>4. 消费可靠性：消费者组与 offset</h2>
+  <ul>
+    <li>同一 group 内，<strong>一个分区只会被一个消费者消费</strong>；消费者数超过分区数，多出来的会空闲。</li>
+    <li>消费者加入/离开、分区变化、心跳超时、<code>max.poll.interval.ms</code> 超时，都会触发 <strong>rebalance</strong>。</li>
+    <li><code>enable.auto.commit=true</code> 可能在处理前提交 offset，导致消息丢失；要“至少一次”，用<strong>手动提交</strong>，处理成功后再 commit。</li>
+    <li>Rebalance 期间消费会暂停；用 cooperative sticky、静态成员、合理超时减少抖动。</li>
+    <li><code>auto.offset.reset</code> 只在没有已提交 offset 时生效：<code>earliest</code> 从头，<code>latest</code> 从最新。</li>
+  </ul>
+
+  <h2>5. 投递语义：三种，不要混着说</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>语义</th><th>怎么做到</th><th>结果</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>At most once</strong></td>
+          <td>先提交 offset，再处理</td>
+          <td>可能丢，不重复</td>
+        </tr>
+        <tr>
+          <td><strong>At least once</strong></td>
+          <td>处理成功后再提交 offset；失败重试</td>
+          <td>不丢，可能重复（默认）</td>
+        </tr>
+        <tr>
+          <td><strong>Exactly once</strong></td>
+          <td>幂等 producer + 事务 + <code>read_committed</code></td>
+          <td>Kafka 内部读写不重不丢；外部系统要配合</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Kafka 的 exactly-once 主要覆盖“从 Kafka 读 → 处理 → 写回 Kafka”的链路。
+    如果最后写的是 MySQL、Redis 或第三方 API，仍需要<strong>幂等 sink</strong>
+    或事务消息/Outbox 来保证端到端不重。
+  </p>
+
+  <h3>四条面试必答</h3>
+  <ol>
+    <li><strong>不丢</strong>：producer <code>acks=all</code> + 重试 + 幂等；broker RF=3、min.insync=2、<code>unclean.leader.election=false</code>；consumer 处理成功后再提交 offset。</li>
+    <li><strong>不重</strong>：默认 at-least-once，消费端做幂等：业务唯一键、去重表、状态机条件更新、版本号。</li>
+    <li><strong>有序</strong>：同一业务 key 发到同一分区；一个分区同一时刻只被一个消费者处理；不要追求全局有序。</li>
+    <li><strong>积压</strong>：看 lag → 判断是生产突增还是消费变慢 → 扩消费者（不超过分区数）→ 增加分区/批处理/异步化 → 降级或转存 → 死信。</li>
+  </ol>
+
+  <h2>6. 积压：先定位，再扩容</h2>
+  <div class="flow">
+    <div class="flow-step"><strong>看 lag</strong>生产 offset − 消费 offset</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>定位</strong>突增 / 消费慢 / 分区倾斜</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>扩容</strong>消费者 ≤ 分区数</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><strong>兜底</strong>降级 / 转存 / 死信</div>
+  </div>
+  <ul>
+    <li>消费者数不能超过分区数；超过只是多几个空闲实例。</li>
+    <li>增加分区可以提升并行度，但会改变 key 的分区映射，影响既有顺序；不要在高峰随意加。</li>
+    <li>如果消费逻辑里有同步 HTTP/DB 慢调用，先优化下游或改异步，不要盲目加消费者。</li>
+    <li>积压严重时可以把消息临时转存到另一个 topic/对象存储，先恢复主链路，再慢慢补。</li>
+  </ul>
+
+  <h2>7. 小测：Kafka 可靠性</h2>
+
+  <div class="quiz" data-quiz data-explanation="RF=3、min.insync=2、acks=all：挂 1 个 broker 还剩 2 个 ISR，仍可写；挂 2 个只剩 1 个 ISR，写入会被拒绝以保护数据。">
+    <p class="quiz-question">RF=3、min.insync.replicas=2、acks=all，最多能容忍几个 broker 故障同时继续写？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">0 个</button>
+      <button class="quiz-option" type="button" data-correct="true">1 个</button>
+      <button class="quiz-option" type="button" data-correct="false">2 个</button>
+      <button class="quiz-option" type="button" data-correct="false">3 个</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="处理成功后再提交 offset，崩溃重放会重复消费，因此是 at-least-once；这正是需要消费端幂等的原因。">
+    <p class="quiz-question">消费者处理完业务后手动提交 offset，属于哪种语义？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">At most once</button>
+      <button class="quiz-option" type="button" data-correct="true">At least once</button>
+      <button class="quiz-option" type="button" data-correct="false">Exactly once</button>
+      <button class="quiz-option" type="button" data-correct="false">Best effort</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Kafka 只保证分区内有序；同一业务 key 走同一分区，才能让同一订单/用户的消息按顺序消费。">
+    <p class="quiz-question">要让同一订单的消息按顺序消费，最直接的做法是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">增加消费者数量</button>
+      <button class="quiz-option" type="button" data-correct="false">设置 acks=0</button>
+      <button class="quiz-option" type="button" data-correct="true">按 key 发同一分区</button>
+      <button class="quiz-option" type="button" data-correct="false">关闭自动提交</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="先看 lag 和分区分布定位原因；消费者不能超过分区数，盲目加实例不会提升并行度。">
+    <p class="quiz-question">发现 Kafka 消费积压，第一步最合理的是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">立刻扩容消费者 10 倍</button>
+      <button class="quiz-option" type="button" data-correct="false">立刻删除积压消息</button>
+      <button class="quiz-option" type="button" data-correct="true">看 lag 与分区分布</button>
+      <button class="quiz-option" type="button" data-correct="false">把 acks 改成 0</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">2 分钟口述练习</div>
+    <p class="drill-prompt">
+      面试官问：“Kafka 怎么保证消息不丢？”
+      请按“生产者 → broker → 消费者 → 端到端验证”四段回答。
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>生产者：</strong>“acks=all，失败重试，开启幂等 producer 防止重试重复；
+          设置合理的 delivery.timeout 和 retries，不要一失败就丢。”</p>
+        <p><strong>Broker：</strong>“副本数 3，min.insync.replicas=2，acks=all 时至少两个 ISR 确认；
+          unclean.leader.election=false，避免落后副本当 leader 导致数据回退；
+          再配合磁盘和页缓存监控。”</p>
+        <p><strong>消费者：</strong>“关闭自动提交，业务处理成功后再提交 offset；
+          失败重试或进死信；消费端幂等，接受 at-least-once 的重复。”</p>
+        <p><strong>端到端：</strong>“监控 producer 错误率、ISR 收缩、consumer lag 和死信量；
+          定期做故障演练和消息对账。Kafka 的 exactly-once 只在 Kafka 内部链路成立，
+          写到外部系统仍要靠幂等或事务消息。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    Apache Kafka 官方 · <a href="https://kafka.apache.org/43/design/design/" target="_blank" rel="noopener">Design</a>。
+    重点读“Message Delivery Semantics”和“Replication”两节，面试里的标准表述基本都来自这里。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/mq-code-basics.html">MQ 代码层入门</a> ·
+    <a href="../reference/kafka-cheatsheet.html">Kafka 速查</a> ·
+    <a href="../reference/interview-question-bank.html">题库 · Kafka</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0006-mq-value-and-selection.html">
+      <span class="dir">Prev</span>
+      Lesson 06 · MQ 价值与选型
+    </a>
+    <a class="next" href="0008-seckill-inventory.html">
+      <span class="dir">Next</span>
+      Lesson 08 · 秒杀与库存扣减
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“ISR 收缩时到底还能不能写”“rebalance 怎么减少抖动”，
+    下一轮对话里说一声，我会用时序图重讲。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

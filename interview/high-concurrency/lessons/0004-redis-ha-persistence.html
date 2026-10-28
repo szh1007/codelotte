@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 04 · Redis 高可用与持久化</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="lesson">
+
+  <header class="lesson-header">
+    <span class="kicker">Lesson 04 · Redis 运维</span>
+    <h1>RDB、AOF、主从、Sentinel、Cluster：把 Redis 讲成一套系统</h1>
+    <p class="subtitle">
+      会写 <code>GET/SET</code> 只是入门。面试官追问“Redis 挂了怎么办”时，
+      他要听的是持久化、复制、故障切换和分片这四层，而不是“重启一下”。
+    </p>
+    <div class="meta">
+      <span>30 分钟</span>
+      <span>前置：Lesson 02–03</span>
+      <span>产出：高可用答法</span>
+    </div>
+  </header>
+
+  <section class="objectives">
+    <h2>本课目标</h2>
+    <ul>
+      <li>按 RPO/RTO 选择 RDB、AOF 或混合持久化，并说出代价。</li>
+      <li>讲清主从复制、Sentinel 故障切换、Cluster 分片三者的分工。</li>
+      <li>回答“Redis 挂了怎么办”：检测、降级、恢复、防再发。</li>
+    </ul>
+  </section>
+
+  <h2>1. 持久化：RDB 与 AOF 的取舍</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>RDB</th><th>AOF</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>记录什么</td>
+          <td>某一时刻的数据快照</td>
+          <td>写命令日志（追加）</td>
+        </tr>
+        <tr>
+          <td>恢复速度</td>
+          <td>快，直接加载快照</td>
+          <td>慢，要重放命令；7.0 多部分 AOF 有优化</td>
+        </tr>
+        <tr>
+          <td>数据丢失</td>
+          <td>可能丢失最后一次快照之后的数据</td>
+          <td>取决于 fsync：always 最安全，everysec 最多约 1 秒</td>
+        </tr>
+        <tr>
+          <td>对性能影响</td>
+          <td>fork 子进程 + copy-on-write，瞬间内存和 IO 压力</td>
+          <td>持续写盘；always 模式延迟明显</td>
+        </tr>
+        <tr>
+          <td>适用</td>
+          <td>缓存、可重建数据、备份</td>
+          <td>对丢失敏感、能接受更大文件和恢复时间</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    AOF 的 <code>appendfsync</code> 三档：
+  </p>
+  <ul>
+    <li><code>always</code>：每条写命令都 fsync，最安全，性能最差。</li>
+    <li><code>everysec</code>：每秒 fsync，默认档；故障时最多丢约 1 秒。</li>
+    <li><code>no</code>：交给操作系统，性能最好，丢失窗口不可控。</li>
+  </ul>
+  <div class="callout key">
+    <span class="callout-label">工程选择</span>
+    <p>
+      缓存类数据：可以只开 RDB，甚至不持久化，挂了从 DB 重建。
+      会话/计数等“丢了会疼”的数据：AOF <code>everysec</code> + RDB 备份 + 副本。
+      要求 RPO 接近 0：AOF <code>always</code>，但同时要接受写延迟；并且要明白
+      <strong>Redis 复制默认是异步的，持久化不等于强一致</strong>。
+    </p>
+  </div>
+  <p>
+    Redis 4.0 起支持混合持久化：AOF 重写时前半段用 RDB 格式，后半段追加增量命令，
+    兼顾恢复速度和丢失窗口。Redis 7.0 使用 multi-part AOF（base + 多个增量文件 + manifest）。
+  </p>
+
+  <h2>2. 主从复制：读扩展与故障基础</h2>
+  <p>
+    主从复制默认是<strong>异步</strong>的：主节点处理完写就返回，再异步把命令发给从节点。
+    从节点可以分担读流量，但可能读到旧数据；主节点挂了，未同步的写可能丢失。
+  </p>
+  <ul>
+    <li><strong>全量同步</strong>：从节点首次连接，主节点生成 RDB 发给它，再补发增量命令。</li>
+    <li><strong>部分重同步</strong>：网络短暂断开后，靠 replication backlog、replid 和 offset 补发缺口，避免每次全量。</li>
+    <li><strong>复制延迟</strong>：从节点 <code>INFO replication</code> 看 offset 差；读己之写场景要读主库或做会话粘滞。</li>
+    <li><strong>WAIT</strong>：可以让主节点等待 N 个副本确认，但它不是强一致协议，故障切换仍可能丢数据。</li>
+  </ul>
+  <div class="callout warn">
+    <span class="callout-label">主从不是高可用</span>
+    <p>
+      主从只解决“有副本、能读扩展”。主节点挂了，谁来把从节点提升为主？
+      这需要 Sentinel 或 Cluster 的故障转移。
+    </p>
+  </div>
+
+  <h2>3. Sentinel：不负责分片，只负责“谁是新主”</h2>
+  <p>
+    Sentinel 是一组独立进程，监控主从节点；主节点不可用时，Sentinel 之间投票，
+    选出一个从节点提升为主，并通知客户端新地址。
+  </p>
+  <ul>
+    <li>至少 3 个 Sentinel，且部署在不同故障域，避免“裁判一起挂”。</li>
+    <li><code>quorum</code> 决定“多少个 Sentinel 认为主挂了才触发选举”；真正切换还需要多数派授权。</li>
+    <li>客户端通过 Sentinel 查询当前 master 地址，不能写死 IP。</li>
+    <li>Sentinel <strong>不做数据分片</strong>；数据量/吞吐超过单机时要用 Cluster。</li>
+  </ul>
+
+  <h2>4. Cluster：16384 个槽的分片世界</h2>
+  <p>
+    Redis Cluster 把 key 空间分成 <strong>16384 个 hash slot</strong>，
+    每个 key 用 CRC16 取模落到某个槽，槽再分配给主节点。每个主节点可以带从节点做副本。
+  </p>
+  <pre><code>slot = CRC16(key) mod 16384
+
+# 需要多个 key 在同一槽时，用 hash tag
+{user:42}:profile
+{user:42}:orders</code></pre>
+  <ul>
+    <li>至少 3 主 3 从，才能容忍单主故障并保持多数派。</li>
+    <li>节点间用 gossip 传播集群状态；客户端收到 <code>MOVED</code>（槽已迁移）或 <code>ASK</code>（迁移中临时重定向）。</li>
+    <li>扩容/缩容本质是<strong>迁移槽</strong>，不是搬整个库；迁移期间要注意热 key 和大 key。</li>
+    <li>多 key 操作、事务、Lua 脚本要求 key 在同一槽；跨槽要么拆业务，要么用 hash tag。</li>
+    <li>Cluster 自带故障转移，通常不再需要 Sentinel。</li>
+  </ul>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th></th><th>主从</th><th>Sentinel</th><th>Cluster</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>解决什么</td><td>副本、读扩展</td><td>自动故障切换</td><td>分片 + 故障切换</td></tr>
+        <tr><td>是否分片</td><td>否</td><td>否</td><td>是（16384 槽）</td></tr>
+        <tr><td>典型规模</td><td>单机内存够</td><td>单机内存够，要高可用</td><td>数据/吞吐超过单机</td></tr>
+        <tr><td>客户端</td><td>直连主/从</td><td>先问 Sentinel 要主地址</td><td>支持集群协议的客户端</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>5. 内存满了：淘汰策略</h2>
+  <p>
+    设置 <code>maxmemory</code> 后，达到上限时按 <code>maxmemory-policy</code> 处理：
+  </p>
+  <ul>
+    <li><code>noeviction</code>：不淘汰，写命令报错（读还能用）。适合不能丢的数据，但要监控和扩容。</li>
+    <li><code>allkeys-lru</code> / <code>allkeys-lfu</code>：所有 key 里按最近最少使用/最不常用淘汰。缓存常用。</li>
+    <li><code>volatile-lru</code> / <code>volatile-lfu</code> / <code>volatile-ttl</code>：只在设置了 TTL 的 key 里淘汰。</li>
+    <li><code>allkeys-random</code> / <code>volatile-random</code>：随机淘汰，简单但命中率不稳定。</li>
+  </ul>
+  <p>
+    LRU 是近似实现（采样若干 key），LFU 更适合“曾经很热、现在不热”的访问模式。
+    面试里要补一句：<strong>淘汰策略是兜底，不是容量规划</strong>；根本办法是拆 key、设 TTL、扩容/分片。
+  </p>
+
+  <h2>6. 小测：高可用与持久化</h2>
+
+  <div class="quiz" data-quiz data-explanation="RPO 接近 0 意味着尽量不丢写，AOF always 每条都 fsync 最安全，但写延迟最高；everysec 仍可能丢约 1 秒。">
+    <p class="quiz-question">要求 RPO 尽量接近 0，且能接受写性能下降，应选择？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">RDB 每小时快照</button>
+      <button class="quiz-option" type="button" data-correct="false">AOF everysec</button>
+      <button class="quiz-option" type="button" data-correct="true">AOF always</button>
+      <button class="quiz-option" type="button" data-correct="false">关闭持久化</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Sentinel 负责监控和自动故障切换，不做数据分片；分片是 Cluster 的职责。">
+    <p class="quiz-question">Sentinel 的核心职责是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">数据分片与扩容</button>
+      <button class="quiz-option" type="button" data-correct="true">监控与故障切换</button>
+      <button class="quiz-option" type="button" data-correct="false">持久化与落盘</button>
+      <button class="quiz-option" type="button" data-correct="false">缓存淘汰策略</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="Redis Cluster 固定 16384 个 hash slot；槽数是为了在集群规模和 gossip 开销之间取平衡。">
+    <p class="quiz-question">Redis Cluster 的 hash slot 数量是？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="false">1024</button>
+      <button class="quiz-option" type="button" data-correct="false">4096</button>
+      <button class="quiz-option" type="button" data-correct="true">16384</button>
+      <button class="quiz-option" type="button" data-correct="false">65536</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="quiz" data-quiz data-explanation="不能丢数据时不应让 Redis 静默淘汰；noeviction 会让写失败并暴露问题，配合监控和扩容处理。">
+    <p class="quiz-question">Redis 存的是不能丢的数据，内存达到上限时应该优先选？</p>
+    <div class="quiz-options">
+      <button class="quiz-option" type="button" data-correct="true">noeviction</button>
+      <button class="quiz-option" type="button" data-correct="false">allkeys-lru</button>
+      <button class="quiz-option" type="button" data-correct="false">volatile-lru</button>
+      <button class="quiz-option" type="button" data-correct="false">allkeys-random</button>
+    </div>
+    <div class="quiz-feedback" hidden></div>
+    <div class="quiz-footer"><button class="quiz-reset" type="button">再试一次</button></div>
+  </div>
+
+  <div class="drill">
+    <div class="drill-title">90 秒口述练习</div>
+    <p class="drill-prompt">
+      面试官问：“如果 Redis 整个集群挂了，你们的系统会怎样？怎么处理？”
+      请按“影响 → 检测 → 降级 → 恢复 → 防再发”回答。
+    </p>
+    <details class="answer">
+      <summary>展开参考答案</summary>
+      <div class="answer-body">
+        <p><strong>影响：</strong>“先区分用途。缓存挂了，读请求会打到 DB，可能把 DB 拖垮；
+          锁/限流挂了，会影响写路径和入口保护；会话挂了，用户可能掉登录。
+          所以不同用途要有不同的降级策略。”</p>
+        <p><strong>检测：</strong>“客户端超时和错误率上升，Sentinel/Cluster 触发故障转移；
+          监控看 Redis 连接数、错误率、DB QPS 和 P99。”</p>
+        <p><strong>降级：</strong>“缓存场景启用本地缓存和限流，非核心功能关闭，
+          核心读走 DB 但限流；锁场景退化为 DB 唯一约束/乐观锁；
+          会话场景允许重新登录或读备用存储。”</p>
+        <p><strong>恢复：</strong>“故障转移完成后，先预热热点 key，再逐步放量；
+          检查数据丢失窗口，用 DB 或 MQ 对账修复；重复消费靠幂等兜底。”</p>
+        <p><strong>防再发：</strong>“主从 + Sentinel 或 Cluster、多可用区部署、容量留余量、
+          定期故障演练；持久化按 RPO 选 AOF everysec/always，并做备份恢复演练。”</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="primary-source">
+    <span class="label">Primary source</span>
+    Redis 官方 · <a href="https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/" target="_blank" rel="noopener">Persistence</a>
+    与 <a href="https://redis.io/docs/latest/operate/oss_and_stack/management/replication/" target="_blank" rel="noopener">Replication</a>。
+    先读“RDB vs AOF 怎么选”和“复制是异步的”这两段，足够覆盖大多数追问。
+  </div>
+
+  <div class="ref-links">
+    <span class="label">配套速查</span>
+    <a href="../reference/redis-cheatsheet.html">Redis 速查 · 高可用</a> ·
+    <a href="../reference/glossary.html">术语表</a> ·
+    <a href="../reference/interview-question-bank.html">题库 · Redis 高可用</a>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0003-cache-problems-and-consistency.html">
+      <span class="dir">Prev</span>
+      Lesson 03 · 缓存三大问题
+    </a>
+    <a class="next" href="0005-redis-lock-and-rate-limit.html">
+      <span class="dir">Next</span>
+      Lesson 05 · 分布式锁与限流
+    </a>
+  </nav>
+
+  <div class="ask-teacher">
+    <strong>有不清楚的，直接问老师。</strong>
+    比如“Sentinel 的 quorum 和多数派到底差在哪”“Cluster 扩容时业务会不会报错”，
+    下一轮对话里说一声，我会画图重讲。
+  </div>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>
