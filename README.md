@@ -338,7 +338,8 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 | [SECURITY.md](SECURITY.md) | 安全模型、威胁边界、漏洞报告途径与已知限制 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试/评测约定、代码风格与 PR 流程 |
 | [docs/dev/v1/ROADMAP.md](docs/dev/v1/ROADMAP.md) | v1 未来方向、明确不做的事与优先级规则（归档） |
-| [docs/dev/v2/](docs/dev/v2/README.md) | v0.2.0 开发资料与票据（计划中） |
+| [docs/dev/v2/](docs/dev/v2/README.md) | v0.2.0 服务化与中间件：Redis 缓存 / Kafka 消息队列 / PostgreSQL（计划中） |
+| [docs/dev/v3/](docs/dev/v3/README.md) | v0.3.0 开发资料与票据：MCP / Skill / 权限 v2（计划中，原 v2 内容顺延） |
 | [interview/](interview/README.md) | 面试材料包：一页数据表、20 分钟 walkthrough、简历 bullet、简历项目经历 v1、Pi/Claude Code 对比 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录 0001–0009 与索引 |
 | [docs/dev/v1/tickets/](docs/dev/v1/tickets/README.md) | v1 的 22 张曳光弹票据与状态（归档） |
@@ -363,6 +364,12 @@ uv run codelotte eval compaction --dry-run # 校验专用测评 - 压缩回归 v
 
 票据 01–22 均已完成并标记 done。其中 3 分钟录屏、连续 dogfood 记录、整场 20 分钟口述计时
 是作者待补项，已在 [面试材料](interview/README.md) 中如实标注。
+
+**v0.2.0 已立项（2026-10-28，规划阶段，未开工）**：新增 `codelotte serve` 服务形态，落地
+Redis（限流 / 缓存 / 配额 / 锁）、Kafka（任务队列 / 事件总线）与 PostgreSQL，并产出八个
+「错误版本 → 正确版本」的对比实验。原 v0.2.0 的 MCP / Skill / 权限 v2 计划顺延为 **v0.3.0**，
+票据与 ADR 原样保留。入口：[docs/dev/v2/](docs/dev/v2/README.md)、
+[docs/dev/v3/](docs/dev/v3/README.md)。
 
 ### 1. 核心 agent（票据 01–13）
 

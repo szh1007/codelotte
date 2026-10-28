@@ -14,6 +14,9 @@
 | [0007](0007-permission-scopes-and-command-classes.md) | 权限：显式决策、命令类与会话规则 | accepted | 2026-10-20 | deny > 显式批准 > ask > allow；bash 按 segment/命令类匹配，文件工具按工作区路径范围；会话规则可重放 |
 | [0008](0008-system-prompt-and-session-v2.md) | 系统提示词组装与 session/v2 | accepted | 2026-10-20 | prompt 请求时组装、不写消息树、与压缩摘要合并；写 v2、读 v1+v2，不重写历史 run |
 | [0009](0009-skills-loading-and-invocation.md) | Skill：SKILL.md 渐进加载与显式调用 | accepted | 2026-10-20 | 不新增 skill 工具，正文用 read 加载；`/skill:<name>` 显式调用并把正文写入会话 |
+| [0010](0010-agent-service-and-job-model.md) | Agent 服务化：serve 入口与全异步 job 模型 | accepted | 2026-10-28 | 新增 `codelotte serve`；run 提交成 Job 入队，worker 独立扩容；内核零改动 |
+| [0011](0011-data-ownership-and-cache-strategy.md) | 数据所有权：配额以 Redis 为主存 | accepted | 2026-10-28 | 配额不能超支故缓存不当副本；Session entries 留 JSONL，元数据进 PG |
+| [0012](0012-kafka-for-jobs-and-events.md) | Kafka 同时承担 Job 队列与事件总线 | accepted | 2026-10-28 | 选 Kafka 是为了可重放与分区保序；ack 语义靠手动提交 + 幂等 + DLQ 自补 |
 
 ## 如何新增
 

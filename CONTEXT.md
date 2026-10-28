@@ -87,3 +87,27 @@ _Avoid_: 授权（指单次工具调用时）
 **Slash Command**:
 TUI 中以 `/` 开头、由 codelotte 解析而不发给模型的内建命令（如 `/model`、`/clear`）。Skill 显式调用是其中一种特殊形式。
 _Avoid_: 命令（指 bash 命令时）
+
+**Serve（服务模式）**:
+codelotte 的第三种运行形态 `codelotte serve`：多用户、多实例、带中间件依赖的 Agent 后端。与 TUI（交互式）和 `-p`（无头单次）并列；内核行为与另两种形态一致。
+_Avoid_: 服务端（太泛）、后端（指整个项目时）
+
+**User**:
+调用 serve 的账号，是配额、限流与账单的唯一主体。本项目没有「组织」层级；一个 User 可以有多个 API Key。它不指 agent 在对话中服务的终端用户。
+_Avoid_: 租户（tenant）、客户（customer）
+
+**API Key**:
+User 调用 serve 的凭证；数据库只存 `sha256` 摘要，不存明文；吊销后立即失效。
+_Avoid_: Token、密钥（指 LLM provider 的 key 时）
+
+**Job**:
+一次 Run 的调度单元：提交后入队，由 Worker 领取执行，状态为 `queued / running / succeeded / failed / cancelled`。一个 Job 恰好执行一次 Run；Job 回答「排到哪了、跑到哪了」，Run 回答「模型和工具做了什么」。
+_Avoid_: 任务（指评测 task 时）、请求（指 HTTP 请求时）
+
+**Worker**:
+消费 Job 队列、执行 Run 的独立进程；可多实例部署，与 API 进程分开扩容。
+_Avoid_: 执行器（指 sandbox executor 时）
+
+**Quota**:
+User 在某个自然日内的可用额度，以「分」计。提交 Job 时预扣、Run 结束时结算；权威值在 Redis，PostgreSQL 只记流水。
+_Avoid_: 余额（容易被理解为账户余额）
